@@ -1,0 +1,133 @@
+import Database from 'better-sqlite3';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { mkdirSync } from 'node:fs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = process.env.DATA_DIR ?? join(__dirname, '..', '..', 'data');
+
+let db: Database.Database | null = null;
+
+export function getDb(): Database.Database {
+  if (db) return db;
+  mkdirSync(DATA_DIR, { recursive: true });
+  db = new Database(join(DATA_DIR, 'whispers.db'));
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  migrate(db);
+  return db;
+}
+
+export function getDataDir(): string {
+  return DATA_DIR;
+}
+
+function migrate(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id TEXT PRIMARY KEY,
+      join_code TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      dm_preset TEXT NOT NULL,
+      scenario_id TEXT,
+      system_id TEXT NOT NULL DEFAULT 'fate-core',
+      host_user_id TEXT,
+      house_rules TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS characters (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      player_user_id TEXT,
+      definition TEXT NOT NULL,
+      state TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS entities (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      disposition TEXT,
+      alive INTEGER NOT NULL DEFAULT 1,
+      location_id TEXT,
+      metadata TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS locations (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      name TEXT NOT NULL,
+      description TEXT,
+      terrain TEXT,
+      connections TEXT,
+      coords TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS items (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      name TEXT NOT NULL,
+      description TEXT,
+      properties TEXT,
+      holder_id TEXT,
+      location_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      scene_number INTEGER NOT NULL,
+      description TEXT NOT NULL,
+      participants TEXT,
+      outcome TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS relationships (
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      entity_a_id TEXT NOT NULL,
+      entity_b_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      description TEXT,
+      PRIMARY KEY (campaign_id, entity_a_id, entity_b_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS scenes (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      scene_number INTEGER NOT NULL,
+      transcript TEXT NOT NULL,
+      summary TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS checkpoints (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      scene_number INTEGER NOT NULL,
+      turn_number INTEGER NOT NULL,
+      game_state TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS rule_chunks USING fts5(
+      system_id,
+      source_book,
+      section,
+      content,
+      tokenize='porter'
+    );
+  `);
+}
+
+export function closeDb(): void {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}

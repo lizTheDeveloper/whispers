@@ -1,0 +1,36 @@
+{
+  "name": "@multiverse-studios/whispers",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "license": "AGPL-3.0",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"tsx watch src/server/index.ts\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:client": "vite",
+    "build": "tsc --noEmit && vite build && tsc -p tsconfig.server.json",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "start": "node dist/server/index.js"
+  },
+  "dependencies": {
+    "@dice-roller/rpg-dice-roller": "^5.5.0",
+    "@sentry/browser": "^10.68.0",
+    "@sentry/node": "^10.68.0",
+    "better-sqlite3": "^11.7.0",
+    "express": "^5.1.0",
+    "pdf-parse": "^1.1.1",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/ws": "^8.18.0",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.5"
+  }
+}

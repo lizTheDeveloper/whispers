@@ -1,0 +1,34 @@
+import type {
+  CharacterDefinition, CharacterState, DiceResult, GamePhase,
+} from './types.js';
+
+export type ClientMessage =
+  | { type: 'join'; joinCode: string; playerName: string }
+  | { type: 'create'; name: string; dmPreset: string; scenarioId: string | null; systemId: string; houseRules: string | null }
+  | { type: 'submit-character'; definition: CharacterDefinition }
+  | { type: 'whisper'; text: string }
+  | { type: 'dm-answer'; text: string }
+  | { type: 'dm-inject'; text: string }
+  | { type: 'dm-override'; text: string }
+  | { type: 'start-game' }
+  | { type: 'end-game' };
+
+export type ServerMessage =
+  | { type: 'room-joined'; campaignId: string; joinCode: string; isHost: boolean }
+  | { type: 'room-state'; state: import('./types.js').RoomState }
+  | { type: 'player-joined'; playerName: string; characterId: string | null }
+  | { type: 'player-left'; playerName: string }
+  | { type: 'character-submitted'; characterId: string; definition: CharacterDefinition }
+  | { type: 'character-validated'; characterId: string; approved: boolean; feedback: string }
+  | { type: 'phase-change'; phase: GamePhase }
+  | { type: 'narration'; text: string; sceneNumber: number }
+  | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; whisperTrust: number }
+  | { type: 'whisper-prompt'; characterId: string; characterName: string }
+  | { type: 'action-taken'; characterId: string; characterName: string; action: string; innerThought: string }
+  | { type: 'dice-roll'; result: DiceResult; context: string }
+  | { type: 'resolution'; text: string }
+  | { type: 'dm-question'; question: string }
+  | { type: 'scene-end'; summary: string; sceneNumber: number }
+  | { type: 'character-state-update'; characterId: string; state: CharacterState }
+  | { type: 'token-usage'; used: number; remaining: number | null }
+  | { type: 'error'; message: string };

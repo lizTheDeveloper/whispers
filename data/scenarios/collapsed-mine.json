@@ -1,0 +1,21 @@
+{
+  "id": "collapsed-mine",
+  "name": "The Collapsed Mine",
+  "description": "A classic dungeon crawl through an abandoned mine. Good for learning the basics.",
+  "openingNarration": "The village of Thornhaven has a problem. Three days ago, a tremor shook the old silver mine on the hill above town. The entrance collapsed, trapping five miners inside. The village elder has offered a reward to anyone brave enough to find another way in and bring the miners home alive. You stand at the base of the hill, studying the overgrown paths that wind up through the forest. Somewhere up there, there's supposed to be a ventilation shaft — if it hasn't collapsed too.",
+  "npcs": [
+    { "name": "Elder Maren", "description": "The village elder, a weathered woman in her sixties with kind eyes and a firm handshake.", "disposition": "grateful", "motivation": "Save the trapped miners at any cost" },
+    { "name": "Tobias", "description": "A young miner who escaped the collapse. Shaken, with a bandaged arm.", "disposition": "nervous", "motivation": "Wants to help but is terrified of going back underground" }
+  ],
+  "locations": [
+    { "name": "Thornhaven", "description": "A small mining village at the base of a forested hill", "terrain": "settlement" },
+    { "name": "The Old Mine Entrance", "description": "Blocked by rubble. Dust still drifts from the cracks.", "terrain": "underground" },
+    { "name": "The Ventilation Shaft", "description": "A narrow shaft hidden in the forest, partially overgrown", "terrain": "underground" }
+  ],
+  "plotHooks": [
+    "The collapse wasn't natural — something in the deep tunnels caused it",
+    "One of the trapped miners found something before the collapse",
+    "The forest path to the ventilation shaft is not as abandoned as it seems"
+  ],
+  "difficulty": "beginner"
+}

@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  web:
+    build: .
+    container_name: whispers-server
+    restart: unless-stopped
+    environment:
+      LLM_PROXY_URL: http://llm-token-proxy:4242
+      PORT: "3000"
+      DATA_DIR: /app/data
+    networks:
+      - coolify
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.whispers-play.rule=Host(`play.multiversestudios.xyz`) && PathPrefix(`/whispers`)
+      - traefik.http.routers.whispers-play.entrypoints=https
+      - traefik.http.routers.whispers-play.tls.certresolver=letsencrypt
+      - traefik.http.routers.whispers-play.priority=200
+      - traefik.http.routers.whispers-play.middlewares=whispers-strip
+      - traefik.http.middlewares.whispers-strip.stripprefix.prefixes=/whispers
+      - traefik.http.routers.whispers-play-http.rule=Host(`play.multiversestudios.xyz`) && PathPrefix(`/whispers`)
+      - traefik.http.routers.whispers-play-http.entrypoints=http
+      - traefik.http.routers.whispers-play-http.middlewares=whispers-redirect
+      - traefik.http.middlewares.whispers-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.whispers-redirect.redirectscheme.permanent=true
+      - traefik.http.services.whispers.loadbalancer.server.port=3000
+
+networks:
+  coolify:
+    external: true
