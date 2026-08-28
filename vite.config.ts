@@ -3,7 +3,7 @@ import { resolve } from 'path';
 
 export default defineConfig({
   root: '.',
-  base: process.env.NODE_ENV === 'production' ? '/whispers/' : '/',
+  base: '/',
   build: {
     outDir: 'dist/client',
     target: 'esnext',
