@@ -23,7 +23,7 @@ app.get('/healthz', (_req, res) => { res.json({ status: 'ok' }); });
 const clientDir = join(__dirname, '..', 'client');
 if (existsSync(clientDir)) {
   app.use(express.static(clientDir));
-  app.get('*', (_req, res) => { res.sendFile(join(clientDir, 'index.html')); });
+  app.get('{*path}', (_req, res) => { res.sendFile(join(clientDir, 'index.html')); });
 }
 
 const server = createServer(app);
