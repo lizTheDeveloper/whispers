@@ -64,6 +64,44 @@ button {
 button:hover { opacity: 0.9; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.creator-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+.creator-tabs .tab {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  padding: 0.5rem 1.2rem;
+  font-size: 0.9rem;
+}
+.creator-tabs .tab.active {
+  background: var(--ember);
+  color: var(--void);
+}
+
+.paste-hint {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-bottom: 0.75rem;
+  line-height: 1.5;
+}
+
+#char-markdown {
+  width: 100%;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.parse-preview {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(0,212,255,0.08);
+  border: 1px solid rgba(0,212,255,0.2);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--signal);
+  line-height: 1.5;
+}
+
 .form-grid { display: flex; flex-direction: column; gap: 0.75rem; }
 .form-grid label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; color: var(--text-dim); }
 
@@ -100,5 +138,33 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .action-proposals h3 { color: var(--biolume); margin-bottom: 0.5rem; }
 .action-proposals li { margin-left: 1.5rem; margin-bottom: 0.5rem; }
+
+.scene-image-container {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+.scene-image-container img {
+  width: 100%;
+  height: auto;
+  display: block;
+  opacity: 0;
+  animation: scene-fade-in 1.5s ease forwards;
+}
+@keyframes scene-fade-in { to { opacity: 1; } }
+.scene-image-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.5rem 1rem;
+  background: linear-gradient(transparent, rgba(10,10,15,0.85));
+  font-family: system-ui, sans-serif;
+  font-size: 0.85rem;
+  color: var(--signal);
+  letter-spacing: 0.05em;
+}
 
 #dm-controls { margin-top: 1rem; }

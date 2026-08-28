@@ -22,6 +22,7 @@ export type ServerMessage =
   | { type: 'character-validated'; characterId: string; approved: boolean; feedback: string }
   | { type: 'phase-change'; phase: GamePhase }
   | { type: 'narration'; text: string; sceneNumber: number }
+  | { type: 'scene-image'; imageUrl: string; locationName: string }
   | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; whisperTrust: number }
   | { type: 'whisper-prompt'; characterId: string; characterName: string }
   | { type: 'action-taken'; characterId: string; characterName: string; action: string; innerThought: string }

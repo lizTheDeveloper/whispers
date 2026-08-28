@@ -9,6 +9,7 @@ services:
       LLM_PROXY_URL: http://llm-token-proxy:4242
       PORT: "3000"
       DATA_DIR: /app/data
+      DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
     networks:
       - coolify
     labels:

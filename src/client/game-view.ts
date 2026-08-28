@@ -3,6 +3,10 @@ import type { WsClient } from './ws-client.js';
 export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean): void {
   root.innerHTML = `
     <div class="game-view">
+      <div class="scene-image-container" id="scene-image" style="display:none">
+        <img id="scene-img" alt="" />
+        <div class="scene-image-label" id="scene-label"></div>
+      </div>
       <div class="narration-log" id="narration-log"></div>
       <div id="action-area"></div>
       <div class="whisper-input" id="whisper-area" style="display:none">
@@ -31,7 +35,24 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
 
   ws.on('narration', (msg) => { if (msg.type === 'narration') appendLog(msg.text, 'dm'); });
   ws.on('resolution', (msg) => { if (msg.type === 'resolution') appendLog(msg.text, 'dm'); });
-  ws.on('scene-end', (msg) => { if (msg.type === 'scene-end') appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system'); });
+  ws.on('scene-end', (msg) => {
+    if (msg.type === 'scene-end') {
+      appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system');
+      const sceneImage = root.querySelector('#scene-image') as HTMLElement;
+      sceneImage.style.display = 'none';
+    }
+  });
+
+  ws.on('scene-image', (msg) => {
+    if (msg.type !== 'scene-image') return;
+    const container = root.querySelector('#scene-image') as HTMLElement;
+    const img = root.querySelector('#scene-img') as HTMLImageElement;
+    const label = root.querySelector('#scene-label') as HTMLElement;
+    img.src = msg.imageUrl;
+    img.alt = msg.locationName;
+    label.textContent = msg.locationName;
+    container.style.display = 'block';
+  });
 
   ws.on('dice-roll', (msg) => {
     if (msg.type === 'dice-roll') appendLog(`[dice] ${msg.result.description} (${msg.context})`, 'dice');
