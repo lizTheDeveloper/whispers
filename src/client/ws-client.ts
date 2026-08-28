@@ -10,7 +10,8 @@ export class WsClient {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      this.ws = new WebSocket(`${proto}//${location.host}/ws`);
+      const base = location.pathname.replace(/\/+$/, '');
+      this.ws = new WebSocket(`${proto}//${location.host}${base}/ws`);
       this.ws.onopen = () => resolve();
       this.ws.onerror = () => reject(new Error('WebSocket connection failed'));
       this.ws.onmessage = (evt) => {
