@@ -18,4 +18,4 @@ EXPOSE 3000
 ENV NODE_ENV=production
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=10s \
   CMD wget -qO- http://localhost:3000/healthz || exit 1
-CMD ["node", "dist/server/index.js"]
+CMD ["node", "dist/server/server/index.js"]

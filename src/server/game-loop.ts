@@ -6,6 +6,7 @@ import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint } from './checkpoint.js';
+import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import type { Character, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
@@ -84,6 +85,16 @@ export class GameLoop {
 
     this.addTranscript('dm', narration.narration);
     this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene });
+
+    if (narration.currentLocationName) {
+      generateSceneImage(this.campaignId, narration.currentLocationName, narration.narration)
+        .then(result => {
+          if (result.imageUrl) {
+            this.broadcastFn({ type: 'scene-image', imageUrl: result.imageUrl, locationName: narration.currentLocationName });
+          }
+        })
+        .catch(() => {});
+    }
 
     if (narration.isSceneEnd) {
       await this.endScene();
@@ -216,6 +227,7 @@ export class GameLoop {
 
     this.transcript = [];
     this.state.currentScene++;
+    clearCampaignImageCache(this.campaignId);
   }
 
   handleWhisper(text: string): void {
@@ -240,7 +252,7 @@ export class GameLoop {
   private applyStateChange(characterId: string, field: string, action: string, value: unknown): void {
     const char = this.characters.get(characterId);
     if (!char) return;
-    const state = char.state as Record<string, unknown>;
+    const state = char.state as unknown as Record<string, unknown>;
     if (action === 'set') {
       state[field] = value;
     } else if (action === 'add' && Array.isArray(state[field])) {

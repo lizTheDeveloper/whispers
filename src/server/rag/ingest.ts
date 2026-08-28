@@ -58,6 +58,7 @@ function chunkText(text: string, maxChars: number, overlap: number): string[] {
 }
 
 export async function ingestPdf(db: Database.Database, systemId: string, sourceBook: string, buffer: Buffer): Promise<number> {
+  // @ts-ignore — pdf-parse has no type declarations
   const pdfParse = (await import('pdf-parse')).default;
   const data = await pdfParse(buffer);
   return ingestText(db, systemId, sourceBook, data.text);
