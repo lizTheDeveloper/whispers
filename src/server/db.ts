@@ -130,6 +130,22 @@ function migrate(db: Database.Database): void {
       chunk_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS character_memories (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL REFERENCES characters(id),
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      scene_number INTEGER NOT NULL,
+      turn_number INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      emotional_valence REAL NOT NULL DEFAULT 0.0,
+      importance REAL NOT NULL DEFAULT 0.5,
+      decay_rate REAL NOT NULL DEFAULT 0.05,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_char_memories_char ON character_memories(character_id);
+    CREATE INDEX IF NOT EXISTS idx_char_memories_importance ON character_memories(importance DESC);
   `);
 
   const cols = db.pragma('table_info(campaigns)') as Array<{ name: string }>;

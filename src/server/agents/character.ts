@@ -2,12 +2,14 @@ import { callLlm } from './llm-client.js';
 import { ActionProposalSchema, ActionDecisionSchema } from './schemas.js';
 import type { ActionProposal, ActionDecision } from './schemas.js';
 import type { CharacterDefinition, CharacterState, TranscriptMessage } from '../../shared/types.js';
+import type { CharacterMemory } from '../character-memory.js';
 
 interface CharacterContext {
   definition: CharacterDefinition;
   state: CharacterState;
   sceneNarration: string;
   transcript: TranscriptMessage[];
+  memories?: CharacterMemory[];
 }
 
 export class CharacterAgent {
@@ -18,7 +20,7 @@ export class CharacterAgent {
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nWhat actions are you considering? Propose 2-4 actions that fit your personality and abilities. Respond as JSON: { "actions": [{ "description": "...", "reasoning": "..." }, ...] }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nWhat actions are you considering? Propose 2-4 actions that fit your personality, abilities, and what you remember from past events. Respond as JSON: { "actions": [{ "description": "...", "reasoning": "..." }, ...] }` },
       ],
       schema: ActionProposalSchema,
     });
@@ -27,13 +29,13 @@ export class CharacterAgent {
   async decideAction(ctx: CharacterContext, whisper: string | null): Promise<ActionDecision> {
     const charPrompt = this.buildCharacterPrompt(ctx);
     const whisperText = whisper
-      ? `\nA voice whispers in your mind: "${whisper}"\nYour trust in this voice: ${ctx.state.whisperTrust.toFixed(2)} (0=ignore, 1=obey). Consider the whisper alongside your personality.`
+      ? `\nA voice whispers in your mind: "${whisper}"\nYour trust in this voice: ${ctx.state.whisperTrust.toFixed(2)} (0=ignore, 1=obey). Consider the whisper alongside your personality and memories.`
       : '\n(No whisper this turn — act on your own judgment.)';
 
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `You must now choose your action.${whisperText}\n\nRespond as JSON: { "chosenAction": "what you do", "innerThought": "your internal reasoning, showing how the whisper influenced (or didn't influence) your decision", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": 0.0 }` },
+        { role: 'user', content: `You must now choose your action.${whisperText}\n\nRespond as JSON: { "chosenAction": "what you do", "innerThought": "your internal reasoning, showing how the whisper and your memories influenced (or didn't influence) your decision", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": 0.0 }` },
       ],
       schema: ActionDecisionSchema,
     });
@@ -41,6 +43,10 @@ export class CharacterAgent {
 
   private buildCharacterPrompt(ctx: CharacterContext): string {
     const d = ctx.definition;
+    const memoryBlock = ctx.memories && ctx.memories.length > 0
+      ? this.formatMemories(ctx.memories)
+      : '';
+
     return [
       `You ARE ${d.name}. Stay completely in character.`,
       `High concept: ${d.highConcept}`,
@@ -50,7 +56,19 @@ export class CharacterAgent {
       `Skills: ${Object.entries(d.skills).map(([k, v]) => `${k}: +${v}`).join(', ')}`,
       `Current state: ${ctx.state.stress} stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
       `Consequences: ${ctx.state.consequences.length > 0 ? ctx.state.consequences.join(', ') : 'none'}`,
+      memoryBlock,
       `\nAlways respond with valid JSON matching the requested format.`,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
+  }
+
+  private formatMemories(memories: CharacterMemory[]): string {
+    if (memories.length === 0) return '';
+
+    const lines = memories.map(m => {
+      const mood = m.emotionalValence > 0.3 ? '(positive)' : m.emotionalValence < -0.3 ? '(painful)' : '';
+      return `- ${m.content} ${mood}`.trim();
+    });
+
+    return `\nYour memories from this adventure:\n${lines.join('\n')}`;
   }
 }

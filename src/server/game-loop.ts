@@ -4,6 +4,7 @@ import { DmAgent } from './agents/dm.js';
 import { CharacterAgent } from './agents/character.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
+import { CharacterMemoryStore } from './character-memory.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint } from './checkpoint.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
@@ -18,6 +19,7 @@ export class GameLoop {
   private characterAgent = new CharacterAgent();
   private extractor = new ExtractorAgent();
   private worldBible: WorldBible;
+  private memoryStore: CharacterMemoryStore;
   private transcript: TranscriptMessage[] = [];
   private state: RoomState;
   private characters = new Map<string, Character>();
@@ -33,6 +35,7 @@ export class GameLoop {
   ) {
     this.dm = new DmAgent(db);
     this.worldBible = new WorldBible(db);
+    this.memoryStore = new CharacterMemoryStore(db);
     this.state = initialState;
   }
 
@@ -123,11 +126,14 @@ export class GameLoop {
     const worldSummary = this.worldBible.getSummary(this.campaignId);
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
+    const memories = this.memoryStore.recall(characterId, 8);
+
     const proposals = await this.characterAgent.proposeActions({
       definition: character.definition,
       state: character.state,
       sceneNarration,
       transcript: this.transcript,
+      memories,
     });
 
     this.broadcastFn({
@@ -149,7 +155,7 @@ export class GameLoop {
     }
 
     const decision = await this.characterAgent.decideAction(
-      { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript },
+      { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories },
       whisper,
     );
 
@@ -191,6 +197,12 @@ export class GameLoop {
     this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
       .run(JSON.stringify(character.state), characterId);
 
+    this.memoryStore.extractAndStore(
+      characterId, this.campaignId, character.definition.name,
+      decision.chosenAction, resolution.narration, whisper,
+      this.state.currentScene, this.state.currentTurn,
+    ).catch(e => console.error('[memory] extraction failed:', e));
+
     saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state);
 
     await this.maybeCompactTranscript();
@@ -230,6 +242,10 @@ export class GameLoop {
       this.worldBible.applyDiff(this.campaignId, facts);
     } catch (e) {
       console.error('Fact extraction failed:', e);
+    }
+
+    for (const charId of this.characters.keys()) {
+      this.memoryStore.decayMemories(charId);
     }
 
     this.transcript = [];
