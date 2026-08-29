@@ -259,9 +259,17 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
       'Search the ruins for clues about the disappearances.',
       'The elder knows more than she lets on. Press her.',
       'Retreat! This fight is not worth dying for.',
+      'Use the obsidian shard — it might reveal hidden truths.',
+      'Ally with the stranger. You need friends here.',
+      'The curse can be broken if you find the source.',
+      'Someone is following you. Set an ambush.',
+      'Make peace, not war. Negotiate with the spirit.',
     ];
 
-    for (let turn = 0; turn < 5; turn++) {
+    let scenesCompleted = 0;
+    const TOTAL_TURNS = 10;
+
+    for (let turn = 0; turn < TOTAL_TURNS; turn++) {
       const turnStart = Date.now();
       console.log(`\n[playtest] === Turn ${turn + 1} ===`);
 
@@ -287,20 +295,38 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
 
         if (actionMsg.type === 'narration') {
           console.log(`[playtest]   Narration: "${actionMsg.text.slice(0, 80)}..."`);
-          const proposalMsg = await waitForMsg(player, 'action-proposals', 120_000);
-          if (proposalMsg.type === 'action-proposals') {
-            console.log(`[playtest]   Proposals for ${proposalMsg.characterName}: ${proposalMsg.actions.length} actions`);
-            proposalMsg.actions.forEach((a, i) => console.log(`[playtest]     ${i + 1}. ${a.slice(0, 60)}`));
-            if (proposalMsg.actions.length < 2) findings.push(`ISSUE: Turn ${turn + 1} only proposed ${proposalMsg.actions.length} actions (min 2)`);
+          const nextMsg = await waitForAnyMsg(player, ['action-proposals', 'scene-end'], 120_000);
+          if (nextMsg.type === 'scene-end') {
+            scenesCompleted++;
+            console.log(`[playtest]   Scene ${scenesCompleted} ended after narration: "${(nextMsg as any).summary?.slice(0, 80)}..."`);
+            player.off('message', autoWhisper);
+            const nextNarration = await waitForMsg(player, 'narration', 120_000);
+            console.log(`[playtest]   New scene narration: "${nextNarration.type === 'narration' ? nextNarration.text.slice(0, 80) : '??'}..."`);
+            turnsCompleted++;
+            const turnTime = Date.now() - turnStart;
+            turnTimings.push(turnTime);
+            console.log(`[playtest]   Turn ${turn + 1} complete — scene transition (${turnTime}ms)`);
+            continue;
+          }
+          if (nextMsg.type === 'action-proposals') {
+            const proposalMsg = nextMsg;
+            console.log(`[playtest]   Proposals for ${(proposalMsg as any).characterName}: ${(proposalMsg as any).actions.length} actions`);
+            (proposalMsg as any).actions.forEach((a: string, i: number) => console.log(`[playtest]     ${i + 1}. ${a.slice(0, 60)}`));
+            if ((proposalMsg as any).actions.length < 2) findings.push(`ISSUE: Turn ${turn + 1} only proposed ${(proposalMsg as any).actions.length} actions (min 2)`);
           }
         } else if (actionMsg.type === 'action-proposals') {
           console.log(`[playtest]   Proposals for ${actionMsg.characterName}: ${actionMsg.actions.length} actions`);
           actionMsg.actions.forEach((a, i) => console.log(`[playtest]     ${i + 1}. ${a.slice(0, 60)}`));
         } else if (actionMsg.type === 'scene-end') {
-          console.log(`[playtest]   Scene ended: "${actionMsg.summary?.slice(0, 80)}..."`);
+          scenesCompleted++;
+          console.log(`[playtest]   Scene ${scenesCompleted} ended: "${actionMsg.summary?.slice(0, 80)}..."`);
           player.off('message', autoWhisper);
           const nextNarration = await waitForMsg(player, 'narration', 120_000);
           console.log(`[playtest]   New scene narration: "${nextNarration.type === 'narration' ? nextNarration.text.slice(0, 80) : '??'}..."`);
+          turnsCompleted++;
+          const turnTime = Date.now() - turnStart;
+          turnTimings.push(turnTime);
+          console.log(`[playtest]   Turn ${turn + 1} complete — scene transition (${turnTime}ms)`);
           continue;
         }
 
@@ -409,8 +435,13 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
     console.log('[playtest] Player disconnect/reconnect (no crash = pass)');
 
     // ---- Summary ----
+    if (scenesCompleted === 0 && turnsCompleted >= 8) {
+      findings.push('ISSUE: No scene transitions after 8+ turns — DM never sets isSceneEnd=true');
+    }
+
     console.log('\n=== PLAYTEST SUMMARY ===');
-    console.log(`Turns completed: ${turnsCompleted}/5`);
+    console.log(`Turns completed: ${turnsCompleted}/${TOTAL_TURNS}`);
+    console.log(`Scene transitions: ${scenesCompleted}`);
     console.log(`Timings:`, timings);
     if (turnTimings.length > 0) {
       console.log(`Turn times: avg=${Math.round(turnTimings.reduce((a, b) => a + b, 0) / turnTimings.length)}ms, min=${Math.min(...turnTimings)}ms, max=${Math.max(...turnTimings)}ms`);

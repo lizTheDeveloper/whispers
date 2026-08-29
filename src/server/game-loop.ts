@@ -94,6 +94,7 @@ export class GameLoop {
         sceneNumber: this.state.currentScene,
         sceneTurnCount: this.sceneTurnCount,
         characterSummaries: this.getCharacterSummaries(),
+        partySize: this.characters.size || 1,
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
@@ -279,9 +280,16 @@ export class GameLoop {
 
     try {
       const facts = await this.extractor.extractFacts(this.transcript, this.state.currentScene);
+      console.log('[game-loop] Fact extraction succeeded:', JSON.stringify({
+        locations: facts.newLocations.length,
+        entities: facts.newEntities.length,
+        items: facts.newItems.length,
+        events: facts.newEvents.length,
+        relationships: facts.newRelationships.length,
+      }));
       this.worldBible.applyDiff(this.campaignId, facts);
-    } catch (e) {
-      console.error('Fact extraction failed:', e);
+    } catch (e: any) {
+      console.error('[game-loop] Fact extraction failed:', e.message?.slice(0, 200));
     }
 
     for (const charId of this.characters.keys()) {

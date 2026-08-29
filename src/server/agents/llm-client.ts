@@ -62,11 +62,19 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
     try {
       let promptMessages: Array<{ role: string; content: string }>;
       if (attempt > 0 && lastBadResponse) {
-        promptMessages = [
-          ...messages,
-          { role: 'assistant', content: lastBadResponse },
-          { role: 'user', content: 'That was not valid JSON. You MUST respond with ONLY a raw JSON object matching the requested schema. No prose, no roleplay, no markdown fences, no narration. Output the JSON object and nothing else.' },
-        ];
+        const isRoleplay = lastBadResponse.startsWith('*') || (!lastBadResponse.includes('{') && lastBadResponse.length < 100);
+        if (isRoleplay) {
+          promptMessages = [
+            { role: 'system', content: 'You are a JSON API endpoint. You output ONLY valid JSON objects. No roleplay, no asterisks, no prose, no markdown. Raw JSON only.' },
+            ...messages.slice(1),
+          ];
+        } else {
+          promptMessages = [
+            ...messages,
+            { role: 'assistant', content: lastBadResponse },
+            { role: 'user', content: 'That was not valid JSON. You MUST respond with ONLY a raw JSON object matching the requested schema. No prose, no roleplay, no markdown fences, no narration. Output the JSON object and nothing else.' },
+          ];
+        }
       } else {
         promptMessages = messages;
       }
@@ -98,8 +106,15 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       }
 
       const parsed = JSON.parse(repaired);
-      const validated = schema.parse(parsed);
-      return validated as CallLlmResult<S>;
+      try {
+        const validated = schema.parse(parsed);
+        return validated as CallLlmResult<S>;
+      } catch (zodErr: any) {
+        console.error('[llm-client] JSON parsed but Zod rejected:', JSON.stringify(parsed).slice(0, 300));
+        lastBadResponse = repaired;
+        if (attempt >= maxAttempts - 1) throw zodErr;
+        continue;
+      }
     } catch (e) {
       if (attempt >= maxAttempts - 1) throw e;
       if (!lastBadResponse) lastBadResponse = String(e);

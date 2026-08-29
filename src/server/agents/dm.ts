@@ -9,6 +9,7 @@ export interface ScenePacing {
   sceneNumber: number;
   sceneTurnCount: number;
   characterSummaries: string;
+  partySize: number;
 }
 
 interface DmContext {
@@ -29,16 +30,18 @@ export class DmAgent {
     const recentTranscript = ctx.transcript.slice(-20).map(m => `[${m.role}${m.characterId ? ':' + m.characterId : ''}] ${m.content}`).join('\n');
 
     const turnCount = pacing?.sceneTurnCount ?? 0;
-    const pacingHint = turnCount === 0
+    const partySize = pacing?.partySize ?? 1;
+    const roundCount = Math.floor(turnCount / partySize);
+    const pacingHint = roundCount === 0
       ? 'This is the opening of a new scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Hint at trouble or opportunity.'
-      : turnCount < 4
+      : roundCount < 3
       ? 'The scene is developing. Introduce complications, NPCs with agendas, or environmental obstacles. Not everything should go smoothly.'
-      : turnCount < 8
+      : roundCount < 6
       ? 'The scene is in full swing. Escalate stakes — consequences from earlier actions catch up, allies may be threatened, hard choices emerge. Move toward a dramatic turning point.'
-      : 'The scene has been going for many turns. Look for a natural climactic moment. If a dramatic beat just landed or tension has peaked, set isSceneEnd to true to transition.';
+      : `The scene has run for ${roundCount} rounds. Actively look for a climactic moment to end the scene. If a dramatic beat just landed, tension peaked, the party reached a new location, combat concluded, or a key revelation dropped — set isSceneEnd to true. Transition to keep the narrative moving.`;
 
     const charBlock = pacing?.characterSummaries ? `\n\nParty status:\n${pacing.characterSummaries}` : '';
-    const sceneLabel = pacing ? `Scene ${pacing.sceneNumber}, turn ${turnCount + 1}` : 'Scene';
+    const sceneLabel = pacing ? `Scene ${pacing.sceneNumber}, round ${roundCount + 1} (turn ${turnCount + 1})` : 'Scene';
 
     return callLlm({
       messages: [
@@ -127,11 +130,11 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
 
     return callLlm({
       messages: [
-        { role: 'system', content: `You are a character sheet validation API. You receive TTRPG character data and return a JSON validation result. You do not roleplay, narrate, or produce any text other than the JSON response object.\n\nRules reference:\n${ruleContext}\n\nYou MUST respond with ONLY a JSON object. No prose, no asterisks, no narration, no markdown.` },
-        { role: 'user', content: `Validate this character sheet against the rules:\n${JSON.stringify(definition, null, 2)}\n\nReturn ONLY this JSON (no other output):\n{"approved": true, "feedback": "one sentence summary", "modifications": null}` },
+        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.\n\nRules reference:\n${ruleContext}\n\nApproval criteria — approve if ALL are present:\n- name (non-empty string)\n- highConcept (non-empty string)\n- trouble (non-empty string)\n- aspects (array with at least 2 entries)\n- skills (object with at least 1 entry)\n- stunts (array with at least 1 entry)\n\nIf all criteria are met, set approved=true. Only reject if required fields are missing or empty.` },
+        { role: 'user', content: `Validate:\n${JSON.stringify(definition, null, 2)}\n\nReturn ONLY: {"approved": true, "feedback": "one sentence", "modifications": null}` },
       ],
       schema: CharacterValidationSchema,
-      temperature: 0.3,
+      temperature: 0.2,
     });
   }
 

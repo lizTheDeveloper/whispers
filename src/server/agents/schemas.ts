@@ -49,11 +49,31 @@ export const ActionDecisionSchema = z.object({
 export type ActionDecision = z.infer<typeof ActionDecisionSchema>;
 
 export const FactExtractionSchema = z.object({
-  newLocations: z.array(z.object({ name: z.string(), description: z.string().nullable(), terrain: z.string().nullable() })),
-  newEntities: z.array(z.object({ name: z.string(), type: z.enum(['npc', 'creature', 'organization']), description: z.string().nullable(), disposition: z.string().nullable() })),
-  newItems: z.array(z.object({ name: z.string(), description: z.string().nullable() })),
-  newEvents: z.array(z.object({ sceneNumber: z.number(), description: z.string(), participants: z.array(z.string()), outcome: z.string().nullable() })),
-  newRelationships: z.array(z.object({ entityAName: z.string(), entityBName: z.string(), type: z.string(), description: z.string().nullable() })),
+  newLocations: z.array(z.object({ name: z.string(), description: z.string().nullable().default(null), terrain: z.string().nullable().default(null) }).passthrough()).default([]),
+  newEntities: z.array(z.object({
+    name: z.string(),
+    type: z.string().transform(t => {
+      const valid = ['npc', 'creature', 'organization'] as const;
+      return valid.includes(t as any) ? t as typeof valid[number] : 'npc' as const;
+    }),
+    description: z.string().nullable().default(null),
+    disposition: z.string().nullable().default(null),
+  }).passthrough()).default([]),
+  newItems: z.array(z.object({ name: z.string(), description: z.string().nullable().default(null) }).passthrough()).default([]),
+  newEvents: z.array(z.object({ sceneNumber: z.number().default(0), description: z.string(), participants: z.array(z.string()).default([]), outcome: z.string().nullable().default(null) }).passthrough()).default([]),
+  newRelationships: z.array(z.object({
+    entityAName: z.string().optional(),
+    entityBName: z.string().optional(),
+    source: z.string().optional(),
+    target: z.string().optional(),
+    type: z.string(),
+    description: z.string().nullable().default(null),
+  }).passthrough().transform(r => ({
+    entityAName: r.entityAName ?? r.source ?? '',
+    entityBName: r.entityBName ?? r.target ?? '',
+    type: r.type,
+    description: r.description,
+  }))).default([]),
 });
 export type FactExtraction = z.infer<typeof FactExtractionSchema>;
 
