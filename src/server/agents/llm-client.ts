@@ -11,7 +11,7 @@ interface CallLlmOpts<S extends z.ZodType | undefined = undefined> {
   maxTokens?: number;
 }
 
-type CallLlmResult<S> = S extends z.ZodType<infer T> ? T : string;
+type CallLlmResult<S> = S extends z.ZodTypeAny ? z.output<S> : string;
 
 function tryRepairJson(text: string): string | null {
   let candidate = text.match(/\{[\s\S]*\}/)?.[0];

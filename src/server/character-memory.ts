@@ -23,7 +23,7 @@ const MEMORY_TYPES = ['action', 'outcome', 'social', 'whisper', 'discovery', 'em
 const MemoryExtractionSchema = z.object({
   memories: z.array(z.object({
     type: z.string().transform(t => {
-      const first = t.split(/[|,/]/).map(s => s.trim().toLowerCase())[0];
+      const first = t.split(/[|,/]/).map(s => s.trim().toLowerCase())[0] ?? 'action';
       return (MEMORY_TYPES as readonly string[]).includes(first) ? first as MemoryType : 'action' as MemoryType;
     }),
     content: z.string(),
@@ -63,7 +63,12 @@ export class CharacterMemoryStore {
         schema: MemoryExtractionSchema,
         temperature: 0.3,
       });
-      memories = result.memories;
+      memories = result.memories.map(m => ({
+        type: m.type as MemoryType,
+        content: m.content,
+        emotionalValence: m.emotionalValence ?? 0,
+        importance: m.importance ?? 0.5,
+      }));
     } catch {
       memories = [{
         type: 'action' as const,

@@ -205,7 +205,7 @@ export class GameLoop {
     }
     // Trust drops fast (up to -0.15) but recovers slowly (capped at +0.05)
     if (effectiveDelta > 0.05) effectiveDelta = 0.05;
-    character.state.whisperTrust = Math.max(0, Math.min(1, character.state.whisperTrust + effectiveDelta));
+    character.state.whisperTrust = Math.max(0, Math.min(0.95, character.state.whisperTrust + effectiveDelta));
 
     const diceResult = rollDice(this.getSystemDefaultDice(campaign.system_id));
     this.addTranscript('dice', diceResult.description);
@@ -280,7 +280,13 @@ export class GameLoop {
   }
 
   private async endScene(): Promise<void> {
-    const summary = await this.dm.summarizeScene(this.transcript);
+    let summary: string;
+    try {
+      summary = await this.dm.summarizeScene(this.transcript);
+    } catch (e) {
+      console.error('[game-loop] Scene summary failed:', e);
+      summary = 'The scene draws to a close.';
+    }
     this.broadcastFn({ type: 'scene-end', summary, sceneNumber: this.state.currentScene });
 
     this.db.prepare('INSERT INTO scenes (id, campaign_id, scene_number, transcript, summary) VALUES (?, ?, ?, ?, ?)')

@@ -155,8 +155,8 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     const text = transcript.map(m => `[${m.role}] ${m.content}`).join('\n');
     const result = await callLlm({
       messages: [
-        { role: 'system', content: 'Summarize this TTRPG scene in 2-3 sentences. Focus on what happened, who was involved, and what changed.' },
-        { role: 'user', content: text },
+        { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
+        { role: 'user', content: `${text}\n\nSummarize in 2-3 sentences. Focus on what happened, who was involved, and what changed.\n\nRespond as JSON: {"summary": "your summary here"}` },
       ],
       schema: SceneSummarySchema,
     });

@@ -115,6 +115,6 @@ export const CharInterviewReplySchema = z.object({
 export type CharInterviewReply = z.infer<typeof CharInterviewReplySchema>;
 
 export const SceneSummarySchema = z.object({
-  summary: z.string().min(1),
+  summary: z.string().min(1).default('The scene unfolds...'),
 });
 export type SceneSummary = z.infer<typeof SceneSummarySchema>;
