@@ -391,7 +391,7 @@ describe('E2E: Character submission', () => {
       { name: 'Grunk', highConcept: 'Barbarian Berserker', trouble: 'Sees Red', aspects: ['Unstoppable'], personality: 'Simple and direct', backstory: 'Raised by wolves.', skills: { Fight: 3, Physique: 3 }, stunts: [] },
     ];
 
-    const allMsgs = collectMsgs(player, 6);
+    const allMsgs = collectMsgs(player, 6, 10_000);
     for (const def of chars) {
       sendMsg(player, { type: 'submit-character', definition: def });
     }

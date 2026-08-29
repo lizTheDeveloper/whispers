@@ -78,16 +78,22 @@ export class GameLoop {
     if (this.stopped) return;
 
     const worldSummary = this.worldBible.getSummary(this.campaignId);
-    const narration = await this.dm.narrate({
-      preset: campaign.dm_preset,
-      houseRules: campaign.house_rules,
-      dmInstructions: campaign.dm_instructions ?? null,
-      dmCustomPrompt: campaign.dm_custom_prompt ?? null,
-      campaignId: this.campaignId,
-      worldSummary,
-      transcript: this.transcript,
-      systemId: campaign.system_id,
-    });
+    let narration;
+    try {
+      narration = await this.dm.narrate({
+        preset: campaign.dm_preset,
+        houseRules: campaign.house_rules,
+        dmInstructions: campaign.dm_instructions ?? null,
+        dmCustomPrompt: campaign.dm_custom_prompt ?? null,
+        campaignId: this.campaignId,
+        worldSummary,
+        transcript: this.transcript,
+        systemId: campaign.system_id,
+      });
+    } catch (e) {
+      console.error('[game-loop] narration failed:', e);
+      narration = { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [], isSceneEnd: false };
+    }
 
     this.addTranscript('dm', narration.narration);
     this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene });
@@ -128,13 +134,19 @@ export class GameLoop {
 
     const memories = this.memoryStore.recall(characterId, 8);
 
-    const proposals = await this.characterAgent.proposeActions({
-      definition: character.definition,
-      state: character.state,
-      sceneNarration,
-      transcript: this.transcript,
-      memories,
-    });
+    let proposals;
+    try {
+      proposals = await this.characterAgent.proposeActions({
+        definition: character.definition,
+        state: character.state,
+        sceneNarration,
+        transcript: this.transcript,
+        memories,
+      });
+    } catch (e) {
+      console.error('[game-loop] action proposal failed:', e);
+      proposals = { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }] };
+    }
 
     this.broadcastFn({
       type: 'action-proposals',
@@ -154,10 +166,21 @@ export class GameLoop {
       this.addTranscript('whisper', whisper, characterId);
     }
 
-    const decision = await this.characterAgent.decideAction(
-      { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories },
-      whisper,
-    );
+    let decision;
+    try {
+      decision = await this.characterAgent.decideAction(
+        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories },
+        whisper,
+      );
+    } catch (e) {
+      console.error('[game-loop] action decision failed:', e);
+      decision = {
+        chosenAction: proposals.actions[0]?.description ?? 'Waits and observes',
+        innerThought: 'Something feels off...',
+        whisperedInfluence: 'ignored' as const,
+        trustDelta: 0,
+      };
+    }
 
     this.addTranscript('character', `${character.definition.name}: ${decision.chosenAction}`, characterId);
     this.broadcastFn({
@@ -170,15 +193,26 @@ export class GameLoop {
 
     character.state.whisperTrust = Math.max(0, Math.min(1, character.state.whisperTrust + decision.trustDelta));
 
-    const resolution = await this.dm.resolve(
-      {
-        preset: campaign.dm_preset, houseRules: campaign.house_rules,
-        dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
-        campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
-      },
-      decision.chosenAction,
-      null,
-    );
+    let resolution;
+    try {
+      resolution = await this.dm.resolve(
+        {
+          preset: campaign.dm_preset, houseRules: campaign.house_rules,
+          dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
+          campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
+        },
+        decision.chosenAction,
+        null,
+      );
+    } catch (e) {
+      console.error('[game-loop] resolution failed, narrating without mechanics:', e);
+      resolution = {
+        diceExpression: null, difficulty: null, skill: null,
+        outcome: 'success' as const,
+        narration: `${character.definition.name} attempts to ${decision.chosenAction.toLowerCase()}...`,
+        stateChanges: [],
+      };
+    }
 
     if (resolution.diceExpression) {
       const diceResult = rollDice(resolution.diceExpression);
@@ -187,7 +221,9 @@ export class GameLoop {
     }
 
     for (const change of resolution.stateChanges) {
-      this.applyStateChange(change.characterId, change.field, change.action, change.value);
+      if (change.characterId && change.field && change.action) {
+        this.applyStateChange(change.characterId, change.field, change.action, change.value);
+      }
     }
 
     this.addTranscript('dm', resolution.narration);

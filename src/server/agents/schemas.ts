@@ -9,17 +9,17 @@ export const DmNarrationSchema = z.object({
 export type DmNarration = z.infer<typeof DmNarrationSchema>;
 
 export const DmResolutionSchema = z.object({
-  diceExpression: z.string().nullable(),
-  difficulty: z.number().nullable(),
-  skill: z.string().nullable(),
-  outcome: z.enum(['success', 'failure', 'tie', 'success-with-cost']),
+  diceExpression: z.string().nullable().default(null),
+  difficulty: z.number().nullable().default(null),
+  skill: z.string().nullable().default(null),
+  outcome: z.enum(['success', 'failure', 'tie', 'success-with-cost']).default('success'),
   narration: z.string().min(1),
   stateChanges: z.array(z.object({
-    characterId: z.string(),
-    field: z.enum(['stress', 'consequences', 'fatePoints', 'inventory']),
-    action: z.enum(['set', 'add', 'remove']),
-    value: z.unknown(),
-  })),
+    characterId: z.string().optional(),
+    field: z.enum(['stress', 'consequences', 'fatePoints', 'inventory']).optional(),
+    action: z.enum(['set', 'add', 'remove']).optional(),
+    value: z.unknown().optional(),
+  }).passthrough()).default([]),
 });
 export type DmResolution = z.infer<typeof DmResolutionSchema>;
 
@@ -56,8 +56,8 @@ export type FactExtraction = z.infer<typeof FactExtractionSchema>;
 
 export const CharacterValidationSchema = z.object({
   approved: z.boolean(),
-  feedback: z.string(),
-  modifications: z.record(z.unknown()).nullable(),
+  feedback: z.string().default('Character reviewed.'),
+  modifications: z.record(z.unknown()).nullable().default(null),
 });
 export type CharacterValidation = z.infer<typeof CharacterValidationSchema>;
 
