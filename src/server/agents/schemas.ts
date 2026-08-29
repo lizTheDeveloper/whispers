@@ -3,7 +3,10 @@ import { z } from 'zod';
 export const DmNarrationSchema = z.object({
   narration: z.string().min(1),
   currentLocationName: z.string(),
-  activeNpcs: z.array(z.string()),
+  activeNpcs: z.array(z.union([
+    z.string(),
+    z.object({ name: z.string() }).passthrough().transform(o => o.name),
+  ])),
   isSceneEnd: z.boolean(),
 });
 export type DmNarration = z.infer<typeof DmNarrationSchema>;

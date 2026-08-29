@@ -253,17 +253,40 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
     const whisperResponses: string[] = [];
     let turnsCompleted = 0;
 
+    const whispers = [
+      'Be careful, something watches from the shadows.',
+      'Trust no one in the village.',
+      'Search the ruins for clues about the disappearances.',
+      'The elder knows more than she lets on. Press her.',
+      'Retreat! This fight is not worth dying for.',
+    ];
+
     for (let turn = 0; turn < 5; turn++) {
       const turnStart = Date.now();
       console.log(`\n[playtest] === Turn ${turn + 1} ===`);
 
-      // Wait for action proposals OR narration (scene continuation)
       try {
+        // Reactively respond to whisper-prompt as soon as it arrives
+        // (game loop has a 15s timeout — can't wait for sequential processing)
+        const whisperText = whispers[turn % whispers.length];
+        let whisperSent = false;
+        const autoWhisper = (data: Buffer) => {
+          try {
+            const msg: ServerMessage = JSON.parse(data.toString());
+            if (msg.type === 'whisper-prompt' && !whisperSent) {
+              whisperSent = true;
+              console.log(`[playtest]   Whisper prompt for ${(msg as any).characterName}`);
+              sendMsg(player, { type: 'whisper', text: whisperText });
+              console.log(`[playtest]   Whispered: "${whisperText}"`);
+            }
+          } catch {}
+        };
+        player.on('message', autoWhisper);
+
         const actionMsg = await waitForAnyMsg(player, ['action-proposals', 'narration', 'scene-end'], 120_000);
 
         if (actionMsg.type === 'narration') {
           console.log(`[playtest]   Narration: "${actionMsg.text.slice(0, 80)}..."`);
-          // Narration received — next should be action proposals
           const proposalMsg = await waitForMsg(player, 'action-proposals', 120_000);
           if (proposalMsg.type === 'action-proposals') {
             console.log(`[playtest]   Proposals for ${proposalMsg.characterName}: ${proposalMsg.actions.length} actions`);
@@ -275,48 +298,35 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           actionMsg.actions.forEach((a, i) => console.log(`[playtest]     ${i + 1}. ${a.slice(0, 60)}`));
         } else if (actionMsg.type === 'scene-end') {
           console.log(`[playtest]   Scene ended: "${actionMsg.summary?.slice(0, 80)}..."`);
-          // Scene ended — wait for next scene's narration + proposals
+          player.off('message', autoWhisper);
           const nextNarration = await waitForMsg(player, 'narration', 120_000);
           console.log(`[playtest]   New scene narration: "${nextNarration.type === 'narration' ? nextNarration.text.slice(0, 80) : '??'}..."`);
           continue;
         }
 
-        // Wait for whisper prompt
-        const whisperPrompt = await waitForMsg(player, 'whisper-prompt', 30_000);
-        if (whisperPrompt.type === 'whisper-prompt') {
-          console.log(`[playtest]   Whisper prompt for ${whisperPrompt.characterName}`);
-
-          // Send a whisper (varied to test different inputs)
-          const whispers = [
-            'Be careful, something watches from the shadows.',
-            'Trust no one in the village.',
-            'Search the ruins for clues about the disappearances.',
-            'The elder knows more than she lets on. Press her.',
-            'Retreat! This fight is not worth dying for.',
-          ];
-          const whisperText = whispers[turn % whispers.length];
-          sendMsg(player, { type: 'whisper', text: whisperText });
-          console.log(`[playtest]   Whispered: "${whisperText}"`);
-        }
-
-        // Wait for action taken
+        // Whisper is handled reactively above — wait for action-taken
         const actionTaken = await waitForMsg(player, 'action-taken', 120_000);
         if (actionTaken.type === 'action-taken') {
           console.log(`[playtest]   Action: "${actionTaken.action.slice(0, 80)}"`);
           console.log(`[playtest]   Inner thought: "${actionTaken.innerThought.slice(0, 80)}"`);
           whisperResponses.push(actionTaken.innerThought);
-
           if (actionTaken.action.length === 0) findings.push(`BUG: Turn ${turn + 1} returned empty action`);
           if (actionTaken.innerThought.length === 0) findings.push(`BUG: Turn ${turn + 1} returned empty inner thought`);
         }
 
-        // Wait for resolution
+        // Dice roll arrives BEFORE resolution (pre-rolled by server)
+        const diceMsg = await waitForMsg(player, 'dice-roll', 30_000);
+        if (diceMsg.type === 'dice-roll') {
+          console.log(`[playtest]   Dice: ${diceMsg.result.description} (total: ${diceMsg.result.total})`);
+        }
+
         const resolution = await waitForMsg(player, 'resolution', 120_000);
         if (resolution.type === 'resolution') {
           console.log(`[playtest]   Resolution: "${resolution.text.slice(0, 80)}..."`);
           if (resolution.text.length < 10) findings.push(`ISSUE: Turn ${turn + 1} resolution suspiciously short`);
         }
 
+        player.off('message', autoWhisper);
         turnsCompleted++;
         const turnTime = Date.now() - turnStart;
         turnTimings.push(turnTime);

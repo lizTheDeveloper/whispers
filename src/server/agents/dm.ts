@@ -5,6 +5,12 @@ import { searchRules, type RuleChunk } from '../rag/search.js';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, TranscriptMessage, DiceResult } from '../../shared/types.js';
 
+export interface ScenePacing {
+  sceneNumber: number;
+  sceneTurnCount: number;
+  characterSummaries: string;
+}
+
 interface DmContext {
   preset: string;
   houseRules: string | null;
@@ -19,27 +25,45 @@ interface DmContext {
 export class DmAgent {
   constructor(private db: Database.Database) {}
 
-  async narrate(ctx: DmContext): Promise<DmNarration> {
+  async narrate(ctx: DmContext, pacing?: ScenePacing): Promise<DmNarration> {
     const recentTranscript = ctx.transcript.slice(-20).map(m => `[${m.role}${m.characterId ? ':' + m.characterId : ''}] ${m.content}`).join('\n');
+
+    const turnCount = pacing?.sceneTurnCount ?? 0;
+    const pacingHint = turnCount === 0
+      ? 'This is the opening of a new scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Hint at trouble or opportunity.'
+      : turnCount < 4
+      ? 'The scene is developing. Introduce complications, NPCs with agendas, or environmental obstacles. Not everything should go smoothly.'
+      : turnCount < 8
+      ? 'The scene is in full swing. Escalate stakes — consequences from earlier actions catch up, allies may be threatened, hard choices emerge. Move toward a dramatic turning point.'
+      : 'The scene has been going for many turns. Look for a natural climactic moment. If a dramatic beat just landed or tension has peaked, set isSceneEnd to true to transition.';
+
+    const charBlock = pacing?.characterSummaries ? `\n\nParty status:\n${pacing.characterSummaries}` : '';
+    const sceneLabel = pacing ? `Scene ${pacing.sceneNumber}, turn ${turnCount + 1}` : 'Scene';
 
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `World state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nNarrate what happens next. Respond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": [...], "isSceneEnd": false }` },
+        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nPacing: ${pacingHint}\n\nNarrate what happens next. Respond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
       ],
       schema: DmNarrationSchema,
+      maxTokens: 1024,
     });
   }
 
-  async resolve(ctx: DmContext, action: string, _diceResult: DiceResult | null): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
+
+    const diceBlock = diceResult
+      ? `\nDice result: ${diceResult.description} (total: ${diceResult.total}). Use this roll to determine the outcome — do not invent your own. In FATE, add the relevant skill rank to the total and compare against the difficulty you set. Failures and success-with-cost make better stories than constant success.`
+      : '';
 
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `Action: "${action}"\n\nRelevant rules:\n${ruleContext}\n\nResolve this action. Respond as JSON: { "diceExpression": null, "difficulty": null, "skill": null, "outcome": "success|failure|tie|success-with-cost", "narration": "...", "stateChanges": [] }` },
+        { role: 'user', content: `Action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve this action. Determine the appropriate skill, set a fair difficulty (0=Mediocre, 2=Fair, 4=Great), and narrate the outcome based on the dice. Apply meaningful consequences for failures — stress, complications, or narrative setbacks.\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "...", "stateChanges": [] }` },
       ],
       schema: DmResolutionSchema,
+      maxTokens: 1024,
     });
   }
 
@@ -128,8 +152,19 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     if (ctx.dmCustomPrompt) {
       prompt = ctx.dmCustomPrompt + '\n';
     } else {
-      prompt = `You are a TTRPG Dungeon Master with the "${ctx.preset}" personality. Run the game faithfully.\n`;
+      prompt = `You are a TTRPG Dungeon Master with the "${ctx.preset}" personality.\n`;
     }
+
+    prompt += `
+Storytelling principles:
+- Actions have real consequences. Not every plan works. Failure creates drama.
+- NPCs have their own goals and react to the party's actions, even between scenes.
+- The world moves forward whether characters act or not — time pressure matters.
+- Introduce complications that force hard choices, not just combat encounters.
+- Use the environment as an active element — weather, terrain, crowds, lighting.
+- When characters succeed, success should change the situation, not just confirm it.
+`;
+
     if (ctx.houseRules) prompt += `\nHouse rules: ${ctx.houseRules}\n`;
     if (ctx.dmInstructions) prompt += `\nDM direction: ${ctx.dmInstructions}\n`;
 
@@ -138,7 +173,7 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
       prompt += `\nCampaign reference materials:\n${campaignMaterials}\n`;
     }
 
-    prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls.`;
+    prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
     return prompt;
   }
 

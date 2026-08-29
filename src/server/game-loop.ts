@@ -25,6 +25,7 @@ export class GameLoop {
   private characters = new Map<string, Character>();
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private stopped = false;
+  private sceneTurnCount = 0;
 
   constructor(
     private db: Database.Database,
@@ -89,6 +90,10 @@ export class GameLoop {
         worldSummary,
         transcript: this.transcript,
         systemId: campaign.system_id,
+      }, {
+        sceneNumber: this.state.currentScene,
+        sceneTurnCount: this.sceneTurnCount,
+        characterSummaries: this.getCharacterSummaries(),
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
@@ -127,6 +132,7 @@ export class GameLoop {
     if (!character) return;
 
     this.state.currentTurn++;
+    this.sceneTurnCount++;
     this.state.activeCharacterId = characterId;
 
     const worldSummary = this.worldBible.getSummary(this.campaignId);
@@ -193,6 +199,10 @@ export class GameLoop {
 
     character.state.whisperTrust = Math.max(0, Math.min(1, character.state.whisperTrust + decision.trustDelta));
 
+    const diceResult = rollDice(this.getSystemDefaultDice(campaign.system_id));
+    this.addTranscript('dice', diceResult.description);
+    this.broadcastFn({ type: 'dice-roll', result: diceResult, context: decision.chosenAction });
+
     let resolution;
     try {
       resolution = await this.dm.resolve(
@@ -202,7 +212,7 @@ export class GameLoop {
           campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
         },
         decision.chosenAction,
-        null,
+        diceResult,
       );
     } catch (e) {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
@@ -212,12 +222,6 @@ export class GameLoop {
         narration: `${character.definition.name} attempts to ${decision.chosenAction.toLowerCase()}...`,
         stateChanges: [],
       };
-    }
-
-    if (resolution.diceExpression) {
-      const diceResult = rollDice(resolution.diceExpression);
-      this.addTranscript('dice', diceResult.description);
-      this.broadcastFn({ type: 'dice-roll', result: diceResult, context: decision.chosenAction });
     }
 
     for (const change of resolution.stateChanges) {
@@ -285,6 +289,7 @@ export class GameLoop {
     }
 
     this.transcript = [];
+    this.sceneTurnCount = 0;
     this.state.currentScene++;
     clearCampaignImageCache(this.campaignId);
   }
@@ -321,6 +326,24 @@ export class GameLoop {
       const idx = arr.indexOf(value);
       if (idx >= 0) arr.splice(idx, 1);
     }
+  }
+
+  private getSystemDefaultDice(systemId: string): string {
+    switch (systemId) {
+      case 'fate-core': return '4dF';
+      case 'dnd-5e': return '1d20';
+      default: return '4dF';
+    }
+  }
+
+  private getCharacterSummaries(): string {
+    return Array.from(this.characters.values())
+      .map(c => {
+        const d = c.definition;
+        const s = c.state;
+        return `${d.name}: ${d.highConcept} | Stress: ${s.stress} | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints}`;
+      })
+      .join('\n');
   }
 
   private addTranscript(role: TranscriptMessage['role'], content: string, characterId?: string): void {

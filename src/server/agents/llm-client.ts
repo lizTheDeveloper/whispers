@@ -8,6 +8,7 @@ interface CallLlmOpts<S extends z.ZodType | undefined = undefined> {
   schema?: S;
   temperature?: number;
   timeout?: number;
+  maxTokens?: number;
 }
 
 type CallLlmResult<S> = S extends z.ZodType<infer T> ? T : string;
@@ -50,7 +51,7 @@ function tryRepairJson(text: string): string | null {
 export async function callLlm<S extends z.ZodType | undefined = undefined>(
   opts: CallLlmOpts<S>
 ): Promise<CallLlmResult<S>> {
-  const { messages, schema, temperature, timeout = DEFAULT_TIMEOUT } = opts;
+  const { messages, schema, temperature, timeout = DEFAULT_TIMEOUT, maxTokens } = opts;
   const maxAttempts = schema ? 4 : 1;
   let lastBadResponse = '';
 
@@ -78,7 +79,7 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
           'Content-Type': 'application/json',
           'X-Game': 'whispers',
         },
-        body: JSON.stringify({ messages: promptMessages, temperature: retryTemp }),
+        body: JSON.stringify({ messages: promptMessages, temperature: retryTemp, ...(maxTokens ? { max_tokens: maxTokens } : {}) }),
         signal: controller.signal,
       });
 
