@@ -59,6 +59,12 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
 
   isClosed(): boolean { return this.closed; }
 
+  isParticipant(ws: WebSocket): 'host' | 'player' | null {
+    if (ws === this.hostWs) return 'host';
+    if (ws === this.playerWs) return 'player';
+    return null;
+  }
+
   close(): void { this.closed = true; }
 
   private async runAgentTurns(): Promise<void> {

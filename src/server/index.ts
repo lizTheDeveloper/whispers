@@ -254,7 +254,8 @@ wss.on('connection', (ws) => {
     if (msg.type === 'negotiation-message' && currentJoinCode && currentPlayer) {
       const negotiation = negotiations.get(msg.characterId);
       if (!negotiation || negotiation.isClosed()) return;
-      const sender = currentPlayer.isHost ? 'host' : 'player';
+      const sender = negotiation.isParticipant(ws);
+      if (!sender) return;
       negotiation.handleMessage(sender, currentPlayer.playerName, msg.text)
         .catch(e => console.error('[negotiation] message handling failed:', e));
     }
