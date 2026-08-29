@@ -723,6 +723,42 @@ button:disabled {
 .dm-char-status.approved { color: var(--biolume); }
 .dm-char-status.rejected { color: var(--gene-pink); }
 
+.dm-char-card.pending {
+  flex-direction: column;
+  align-items: stretch;
+  border-color: rgba(255, 107, 53, 0.15);
+}
+.dm-char-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.dm-char-ai-feedback {
+  font-size: 0.82rem;
+  color: var(--signal);
+  font-style: italic;
+  line-height: 1.5;
+}
+.dm-char-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+.approve-btn {
+  background: linear-gradient(135deg, var(--biolume) 0%, #00cc6a 100%);
+  color: var(--void);
+  font-size: 0.85rem;
+  padding: 0.4rem 1rem;
+}
+.approve-btn:hover { box-shadow: 0 4px 16px rgba(0, 255, 136, 0.3); }
+.reject-btn {
+  font-size: 0.85rem;
+  padding: 0.4rem 1rem;
+  color: var(--gene-pink);
+  border-color: rgba(255, 61, 127, 0.2);
+}
+.reject-btn:hover { border-color: rgba(255, 61, 127, 0.4); }
+
 /* ─── DM Controls ─── */
 
 #dm-controls {

@@ -13,6 +13,8 @@ export type ClientMessage =
   | { type: 'dm-override'; text: string }
   | { type: 'update-dm-settings'; dmCustomPrompt: string | null; dmInstructions: string | null }
   | { type: 'dm-chat'; text: string }
+  | { type: 'host-approve-character'; characterId: string }
+  | { type: 'host-reject-character'; characterId: string; reason: string }
   | { type: 'start-game' }
   | { type: 'end-game' };
 
@@ -23,6 +25,7 @@ export type ServerMessage =
   | { type: 'player-left'; playerName: string }
   | { type: 'character-submitted'; characterId: string; definition: CharacterDefinition }
   | { type: 'character-validated'; characterId: string; approved: boolean; feedback: string }
+  | { type: 'character-pending-review'; characterId: string; definition: CharacterDefinition; aiApproved: boolean; aiFeedback: string; playerName: string }
   | { type: 'phase-change'; phase: GamePhase }
   | { type: 'narration'; text: string; sceneNumber: number }
   | { type: 'scene-image'; imageUrl: string; locationName: string }
@@ -34,7 +37,7 @@ export type ServerMessage =
   | { type: 'dm-question'; question: string }
   | { type: 'scene-end'; summary: string; sceneNumber: number }
   | { type: 'character-state-update'; characterId: string; state: CharacterState }
-  | { type: 'dm-settings'; presetName: string; presetPrompt: string; dmCustomPrompt: string | null; dmInstructions: string | null; materials: import('./types.js').CampaignMaterial[] }
+  | { type: 'dm-settings'; presetName: string; presetPrompt: string; dmCustomPrompt: string | null; dmInstructions: string | null; materials: import('./types.js').CampaignMaterial[]; uploadToken: string }
   | { type: 'dm-chat-reply'; text: string; done: boolean }
   | { type: 'char-chat-reply'; text: string; definition: CharacterDefinition | null }
   | { type: 'material-uploaded'; material: import('./types.js').CampaignMaterial }

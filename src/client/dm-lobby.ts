@@ -55,6 +55,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   let playerCount = 0;
   let approvedCount = 0;
   let dmReady = false;
+  let uploadToken = '';
 
   function addChatMessage(text: string, sender: 'dm' | 'host') {
     const bubble = document.createElement('div');
@@ -113,7 +114,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
         const base = location.pathname.replace(/\/+$/, '');
         const resp = await fetch(`${base}/api/campaigns/${campaignId}/materials`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
+          headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name, 'X-Upload-Token': uploadToken },
           body: buffer,
         });
 
@@ -130,6 +131,10 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     }
     fileInput.value = '';
     setTimeout(() => { uploadStatus.classList.add('hidden'); }, 4000);
+  });
+
+  ws.on('dm-settings', (msg) => {
+    if (msg.type === 'dm-settings') uploadToken = msg.uploadToken;
   });
 
   ws.on('dm-chat-reply', (msg) => {
@@ -173,24 +178,65 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     }
   });
 
-  ws.on('character-submitted', (msg) => {
-    if (msg.type !== 'character-submitted') return;
+  ws.on('character-pending-review', (msg) => {
+    if (msg.type !== 'character-pending-review') return;
     const card = document.createElement('div');
-    card.className = 'dm-char-card';
+    card.className = 'dm-char-card pending';
     card.dataset.charId = msg.characterId;
 
+    const info = document.createElement('div');
+    info.className = 'dm-char-info';
     const name = document.createElement('strong');
-    name.textContent = msg.definition.name;
+    name.textContent = `${msg.playerName}: ${msg.definition.name}`;
     const concept = document.createElement('span');
     concept.className = 'dm-char-concept';
     concept.textContent = msg.definition.highConcept;
+    const aiFeedback = document.createElement('span');
+    aiFeedback.className = 'dm-char-ai-feedback';
+    aiFeedback.textContent = `AI DM: ${msg.aiFeedback}`;
+    info.append(name, concept, aiFeedback);
+
+    const actions = document.createElement('div');
+    actions.className = 'dm-char-actions';
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'approve-btn';
+    approveBtn.textContent = 'Approve';
+    approveBtn.addEventListener('click', () => {
+      ws.send({ type: 'host-approve-character', characterId: msg.characterId });
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      const status = card.querySelector('.dm-char-status');
+      if (status) { status.textContent = 'Approved'; status.className = 'dm-char-status approved'; }
+    });
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = 'reject-btn ghost-btn';
+    rejectBtn.textContent = 'Reject';
+    rejectBtn.addEventListener('click', () => {
+      const reason = prompt('Reason for rejection:') || 'Character needs revision';
+      ws.send({ type: 'host-reject-character', characterId: msg.characterId, reason });
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      const status = card.querySelector('.dm-char-status');
+      if (status) { status.textContent = 'Rejected'; status.className = 'dm-char-status rejected'; }
+    });
+    actions.append(approveBtn, rejectBtn);
+
     const status = document.createElement('span');
     status.className = 'dm-char-status';
-    status.textContent = 'Approved';
-    status.classList.add('approved');
+    status.textContent = 'Awaiting your review';
 
-    card.append(name, concept, status);
+    card.append(info, status, actions);
     submissions.appendChild(card);
+  });
+
+  ws.on('character-submitted', (msg) => {
+    if (msg.type !== 'character-submitted') return;
+    const existing = submissions.querySelector(`[data-char-id="${msg.characterId}"]`);
+    if (existing) {
+      existing.classList.remove('pending');
+      const actionsEl = existing.querySelector('.dm-char-actions');
+      if (actionsEl) actionsEl.remove();
+    }
     approvedCount++;
     updateStartButton();
   });

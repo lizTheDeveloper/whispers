@@ -19,6 +19,8 @@ const PORT = parseInt(process.env.PORT ?? '3000', 10);
 const app = express();
 app.use(express.json());
 
+const uploadTokens = new Map<string, { campaignId: string; expires: number }>();
+
 app.get('/healthz', (_req, res) => { res.json({ status: 'ok' }); });
 
 function loadPresetPrompt(presetName: string): string {
@@ -37,6 +39,15 @@ app.post('/api/campaigns/:id/materials', express.raw({ type: '*/*', limit: '10mb
   const db = getDb();
   const campaignId = req.params.id;
   const filename = (req.headers['x-filename'] as string) || 'uploaded-file.txt';
+  const token = req.headers['x-upload-token'] as string | undefined;
+
+  if (!token) { res.status(403).json({ error: 'Missing upload token' }); return; }
+  const session = uploadTokens.get(token);
+  if (!session || session.campaignId !== campaignId || session.expires < Date.now()) {
+    uploadTokens.delete(token ?? '');
+    res.status(403).json({ error: 'Invalid or expired upload token' });
+    return;
+  }
 
   const campaign = db.prepare('SELECT id, system_id FROM campaigns WHERE id = ?').get(campaignId) as any;
   if (!campaign) { res.status(404).json({ error: 'Campaign not found' }); return; }
@@ -85,6 +96,17 @@ interface ConnectedPlayer {
 const rooms = new Map<string, ConnectedPlayer[]>();
 const gameLoops = new Map<string, GameLoop>();
 
+interface PendingCharacter {
+  charId: string;
+  definition: import('../shared/types.js').CharacterDefinition;
+  playerWs: WebSocket;
+  playerName: string;
+  aiApproved: boolean;
+  aiFeedback: string;
+  campaignId: string;
+}
+const pendingCharacters = new Map<string, PendingCharacter>();
+
 function broadcast(joinCode: string, msg: ServerMessage): void {
   const players = rooms.get(joinCode);
   if (!players) return;
@@ -121,6 +143,8 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'room-joined', campaignId, joinCode, isHost: true });
 
       const presetPrompt = loadPresetPrompt(msg.dmPreset);
+      const uploadToken = randomBytes(32).toString('hex');
+      uploadTokens.set(uploadToken, { campaignId, expires: Date.now() + 4 * 60 * 60 * 1000 });
       send(ws, {
         type: 'dm-settings',
         presetName: msg.dmPreset,
@@ -128,6 +152,7 @@ wss.on('connection', (ws) => {
         dmCustomPrompt: null,
         dmInstructions: null,
         materials: [],
+        uploadToken,
       });
 
       const dm = new DmAgent(db);
@@ -158,25 +183,61 @@ wss.on('connection', (ws) => {
       const validation = await dm.validateCharacter(msg.definition, campaign.systemId);
       const charId = randomBytes(16).toString('hex');
       let finalDef = msg.definition;
-      if (validation.approved) {
-        if (validation.modifications) {
-          finalDef = { ...msg.definition, ...validation.modifications } as typeof msg.definition;
-        }
-        const initialState = JSON.stringify({
-          stress: 0, consequences: [], fatePoints: 3,
-          inventory: [], xpMilestones: [], whisperTrust: 0.5,
-        });
-        db.prepare('INSERT INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
-          .run(charId, campaign.id, null, JSON.stringify(finalDef), initialState);
-        if (currentPlayer) currentPlayer.characterId = charId;
+      if (validation.modifications) {
+        finalDef = { ...msg.definition, ...validation.modifications } as typeof msg.definition;
       }
+
       const feedbackText = validation.modifications
         ? `${validation.feedback} (DM adjusted: ${Object.keys(validation.modifications).join(', ')})`
         : validation.feedback;
-      send(ws, { type: 'character-validated', characterId: charId, approved: validation.approved, feedback: feedbackText });
-      if (validation.approved) {
-        broadcast(currentJoinCode, { type: 'character-submitted', characterId: charId, definition: finalDef });
+
+      if (!validation.approved) {
+        send(ws, { type: 'character-validated', characterId: charId, approved: false, feedback: feedbackText });
+        return;
       }
+
+      send(ws, { type: 'character-validated', characterId: charId, approved: true, feedback: `AI DM approved: ${feedbackText}. Awaiting host review...` });
+
+      pendingCharacters.set(charId, {
+        charId, definition: finalDef, playerWs: ws,
+        playerName: currentPlayer?.playerName ?? 'Unknown',
+        aiApproved: true, aiFeedback: feedbackText, campaignId: campaign.id,
+      });
+
+      const players = rooms.get(currentJoinCode);
+      const host = players?.find(p => p.isHost);
+      if (host) {
+        send(host.ws, {
+          type: 'character-pending-review', characterId: charId,
+          definition: finalDef, aiApproved: true, aiFeedback: feedbackText,
+          playerName: currentPlayer?.playerName ?? 'Unknown',
+        });
+      }
+    }
+
+    if (msg.type === 'host-approve-character' && currentJoinCode && currentPlayer?.isHost) {
+      const pending = pendingCharacters.get(msg.characterId);
+      if (!pending) return;
+      const initialState = JSON.stringify({
+        stress: 0, consequences: [], fatePoints: 3,
+        inventory: [], xpMilestones: [], whisperTrust: 0.5,
+      });
+      db.prepare('INSERT INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
+        .run(pending.charId, pending.campaignId, null, JSON.stringify(pending.definition), initialState);
+
+      const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.ws === pending.playerWs);
+      if (playerInRoom) playerInRoom.characterId = pending.charId;
+
+      send(pending.playerWs, { type: 'character-validated', characterId: pending.charId, approved: true, feedback: 'Approved by both AI DM and host!' });
+      broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.charId, definition: pending.definition });
+      pendingCharacters.delete(msg.characterId);
+    }
+
+    if (msg.type === 'host-reject-character' && currentJoinCode && currentPlayer?.isHost) {
+      const pending = pendingCharacters.get(msg.characterId);
+      if (!pending) return;
+      send(pending.playerWs, { type: 'character-validated', characterId: pending.charId, approved: false, feedback: `Host feedback: ${msg.reason}` });
+      pendingCharacters.delete(msg.characterId);
     }
 
     if (msg.type === 'char-chat' && currentJoinCode && currentPlayer) {
