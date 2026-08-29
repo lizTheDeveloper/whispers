@@ -1,4 +1,5 @@
 import type { WsClient } from './ws-client.js';
+import { renderNegotiationChat } from './negotiation-chat.js';
 
 export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string, campaignId: string, onGameStart: () => void): void {
   root.innerHTML = `
@@ -239,6 +240,13 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     }
     approvedCount++;
     updateStartButton();
+  });
+
+  ws.on('negotiation-opened', (msg) => {
+    if (msg.type !== 'negotiation-opened') return;
+    const existing = submissions.querySelector(`[data-char-id="${msg.characterId}"]`);
+    if (existing) existing.remove();
+    renderNegotiationChat(submissions, ws, msg.characterId, msg.characterName, msg.playerName, true);
   });
 
   startBtn.addEventListener('click', () => {

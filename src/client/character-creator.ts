@@ -1,6 +1,7 @@
 import type { WsClient } from './ws-client.js';
 import type { CharacterDefinition } from '../shared/types.js';
 import { parseOneCharacter, parseCharacters } from '../shared/markdown-parser.js';
+import { renderNegotiationChat } from './negotiation-chat.js';
 
 export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string, onApproved: () => void): void {
   root.innerHTML = `
@@ -251,5 +252,18 @@ Born in the slums of Veridian...
       submitBtn.textContent = 'Resubmit';
       chatSubmitBtn.textContent = 'Resubmit character';
     }
+  });
+
+  ws.on('negotiation-opened', (msg) => {
+    if (msg.type !== 'negotiation-opened') return;
+    const feedback = root.querySelector('#dm-feedback') as HTMLElement;
+    feedback.classList.remove('hidden');
+    feedback.textContent = 'AI DM approved your character. Entering negotiation with the host...';
+    feedback.className = 'feedback';
+
+    const negContainer = document.createElement('div');
+    negContainer.id = 'negotiation-container';
+    root.querySelector('.character-creator')!.appendChild(negContainer);
+    renderNegotiationChat(negContainer, ws, msg.characterId, msg.characterName, msg.playerName, false);
   });
 }

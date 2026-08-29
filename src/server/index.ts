@@ -10,6 +10,7 @@ import { createRoom, joinRoom } from './room.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
+import { NegotiationRoom } from './negotiation.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import type { CampaignMaterial } from '../shared/types.js';
 
@@ -106,6 +107,7 @@ interface PendingCharacter {
   campaignId: string;
 }
 const pendingCharacters = new Map<string, PendingCharacter>();
+const negotiations = new Map<string, NegotiationRoom>();
 
 function broadcast(joinCode: string, msg: ServerMessage): void {
   const players = rooms.get(joinCode);
@@ -196,22 +198,23 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      send(ws, { type: 'character-validated', characterId: charId, approved: true, feedback: `AI DM approved: ${feedbackText}. Awaiting host review...` });
+      send(ws, { type: 'character-validated', characterId: charId, approved: true, feedback: `AI DM approved: ${feedbackText}. Opening negotiation...` });
 
+      const playerName = currentPlayer?.playerName ?? 'Unknown';
       pendingCharacters.set(charId, {
         charId, definition: finalDef, playerWs: ws,
-        playerName: currentPlayer?.playerName ?? 'Unknown',
-        aiApproved: true, aiFeedback: feedbackText, campaignId: campaign.id,
+        playerName, aiApproved: true, aiFeedback: feedbackText, campaignId: campaign.id,
       });
 
       const players = rooms.get(currentJoinCode);
       const host = players?.find(p => p.isHost);
       if (host) {
-        send(host.ws, {
-          type: 'character-pending-review', characterId: charId,
-          definition: finalDef, aiApproved: true, aiFeedback: feedbackText,
-          playerName: currentPlayer?.playerName ?? 'Unknown',
-        });
+        const negotiation = new NegotiationRoom(
+          charId, finalDef, feedbackText, playerName,
+          ws, host.ws, campaign.id, campaign.dmPreset,
+        );
+        negotiations.set(charId, negotiation);
+        negotiation.open().catch(e => console.error('[negotiation] open failed:', e));
       }
     }
 
@@ -232,6 +235,8 @@ wss.on('connection', (ws) => {
 
       send(pending.playerWs, { type: 'character-validated', characterId: pending.charId, approved: true, feedback: 'Approved by both AI DM and host!' });
       broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.charId, definition: pending.definition });
+      const neg = negotiations.get(msg.characterId);
+      if (neg) { neg.close(); negotiations.delete(msg.characterId); }
       pendingCharacters.delete(msg.characterId);
     }
 
@@ -241,7 +246,17 @@ wss.on('connection', (ws) => {
       const hostCampaign = joinRoom(db, currentJoinCode);
       if (!hostCampaign || hostCampaign.id !== pending.campaignId) return;
       send(pending.playerWs, { type: 'character-validated', characterId: pending.charId, approved: false, feedback: `Host feedback: ${msg.reason}` });
+      const neg = negotiations.get(msg.characterId);
+      if (neg) { neg.close(); negotiations.delete(msg.characterId); }
       pendingCharacters.delete(msg.characterId);
+    }
+
+    if (msg.type === 'negotiation-message' && currentJoinCode && currentPlayer) {
+      const negotiation = negotiations.get(msg.characterId);
+      if (!negotiation || negotiation.isClosed()) return;
+      const sender = currentPlayer.isHost ? 'host' : 'player';
+      negotiation.handleMessage(sender, currentPlayer.playerName, msg.text)
+        .catch(e => console.error('[negotiation] message handling failed:', e));
     }
 
     if (msg.type === 'char-chat' && currentJoinCode && currentPlayer) {
