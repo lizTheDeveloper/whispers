@@ -182,8 +182,17 @@ wss.on('connection', (ws) => {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
       const dm = new DmAgent(db);
-      const validation = await dm.validateCharacter(msg.definition, campaign.systemId);
       const charId = randomBytes(16).toString('hex');
+
+      let validation;
+      try {
+        validation = await dm.validateCharacter(msg.definition, campaign.systemId);
+      } catch (e) {
+        console.error('[submit-character] validation failed:', e);
+        send(ws, { type: 'character-validated', characterId: charId, approved: false, feedback: 'Character validation failed — please try again.' });
+        return;
+      }
+
       let finalDef = msg.definition;
       if (validation.modifications) {
         finalDef = { ...msg.definition, ...validation.modifications } as typeof msg.definition;
@@ -271,7 +280,7 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
       } catch (e) {
         console.error('[char-chat] error:', e);
-        send(ws, { type: 'error', message: 'Character creation agent failed' });
+        send(ws, { type: 'char-chat-reply', text: 'I had trouble building your character — could you rephrase or give me more details?', definition: null });
       }
     }
 
@@ -290,7 +299,8 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: reply.done });
       } catch (e) {
         console.error('[dm-chat] error:', e);
-        send(ws, { type: 'error', message: 'DM setup agent failed' });
+        currentPlayer.setupChat.pop();
+        send(ws, { type: 'dm-chat-reply', text: 'Sorry, I lost my train of thought. Could you repeat that?', done: false });
       }
     }
 

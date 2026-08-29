@@ -19,8 +19,8 @@ export default defineConfig({
   server: {
     port: 5190,
     proxy: {
-      '/api': { target: 'http://localhost:3000', changeOrigin: true },
-      '/ws': { target: 'ws://localhost:3000', ws: true },
+      '/whispers/api': { target: 'http://localhost:3000', changeOrigin: true, rewrite: (path) => path.replace(/^\/whispers/, '') },
+      '/whispers/ws': { target: 'ws://localhost:3000', ws: true, rewrite: (path) => path.replace(/^\/whispers/, '') },
     },
   },
   test: {

@@ -71,24 +71,30 @@ Respond as JSON: { "reply": "your message", "done": false, "dmInstructions": nul
   async interviewForCharacter(systemId: string, history: Array<{ role: string; content: string }>): Promise<CharInterviewReply> {
     const ruleContext = this.lookupRules(systemId, 'character creation aspects skills stunts');
 
-    const systemPrompt = `You are a friendly TTRPG character creation assistant. Help the player build their character through conversation.
+    const systemPrompt = `You are a character creation API for a TTRPG game. You help players build characters through conversation.
 
 Rules reference:
 ${ruleContext}
 
-Ask about their character concept, backstory, personality, skills, and abilities. Be encouraging and creative. Help them if they're stuck — suggest ideas that fit their concept.
+Ask about their concept, backstory, skills. Be encouraging. Help if they're stuck.
 
-When you have enough info to build a complete character sheet, include the full "definition" object. Until then, set "definition" to null.
+CRITICAL: You MUST respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON. Every response must be valid JSON.
 
-Respond as JSON: { "reply": "your message", "definition": null }
-When ready: { "reply": "Here's your character! ...", "definition": { "name": "...", "highConcept": "...", "trouble": "...", "aspects": [...], "personality": "...", "backstory": "...", "skills": {"Skill": 3, ...}, "stunts": [...] } }`;
+When you don't have enough info yet: {"reply": "your question here", "definition": null}
+When you have enough info: {"reply": "summary", "definition": {"name": "...", "highConcept": "...", "trouble": "...", "aspects": ["..."], "personality": "...", "backstory": "...", "skills": {"Skill": 3}, "stunts": ["..."]}}`;
+
+    const lastMsg = history[history.length - 1];
+    const augmentedHistory = lastMsg?.role === 'user'
+      ? [...history.slice(0, -1), { role: 'user', content: `${lastMsg.content}\n\n(Remember: respond with ONLY a JSON object, no other text)` }]
+      : history;
 
     return callLlm({
       messages: [
         { role: 'system', content: systemPrompt },
-        ...history,
+        ...augmentedHistory,
       ],
       schema: CharInterviewReplySchema,
+      temperature: 0.5,
     });
   }
 
@@ -97,10 +103,11 @@ When ready: { "reply": "Here's your character! ...", "definition": { "name": "..
 
     return callLlm({
       messages: [
-        { role: 'system', content: `You are a TTRPG Game Master validating a character sheet. Be fair but enforce the rules.\n\nRules reference:\n${ruleContext}` },
-        { role: 'user', content: `Validate this character sheet:\n${JSON.stringify(definition, null, 2)}\n\nIf the sheet needs small fixes to match the rules (skill values, missing required fields, balance issues), approve it and include the fixes in "modifications" as a partial object with only the changed fields. If the concept itself is problematic, reject it.\n\nRespond as JSON: { "approved": true/false, "feedback": "...", "modifications": null or { "skills": {...}, ... } }` },
+        { role: 'system', content: `You are a character sheet validation API. You receive TTRPG character data and return a JSON validation result. You do not roleplay, narrate, or produce any text other than the JSON response object.\n\nRules reference:\n${ruleContext}\n\nYou MUST respond with ONLY a JSON object. No prose, no asterisks, no narration, no markdown.` },
+        { role: 'user', content: `Validate this character sheet against the rules:\n${JSON.stringify(definition, null, 2)}\n\nReturn ONLY this JSON (no other output):\n{"approved": true, "feedback": "one sentence summary", "modifications": null}` },
       ],
       schema: CharacterValidationSchema,
+      temperature: 0.3,
     });
   }
 
