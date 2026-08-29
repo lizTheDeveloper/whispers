@@ -20,9 +20,10 @@ export class CharacterAgent {
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nWhat actions are you considering? Propose 2-4 actions that fit your personality, abilities, and what you remember from past events. Respond as JSON: { "actions": [{ "description": "...", "reasoning": "..." }, ...] }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Reference your memories if relevant.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
       ],
       schema: ActionProposalSchema,
+      maxTokens: 512,
     });
   }
 
@@ -37,9 +38,16 @@ export class CharacterAgent {
         ? 'A quiet voice whispers in your mind — you\'re uncertain whether to trust it'
         : 'A faint, distrusted voice murmurs at the edge of your thoughts';
       const guidance = trust > 0.5
-        ? 'The voice has guided you before. Following it feels natural — you should follow or partially follow unless it contradicts your core values.'
-        : 'You\'re wary of this voice. Follow only if the advice aligns with your instincts.';
-      whisperText = `\n${voiceQuality}: "${whisper}"\nTrust level: ${trust.toFixed(2)} (0=ignore, 1=obey). ${guidance}\nSet trustDelta positive (+0.05 to +0.15) if the voice gives useful or insightful advice, negative (-0.05 to -0.15) if it seems harmful or wrong.`;
+        ? 'The voice has guided you before. Following it feels natural — but ALWAYS evaluate the advice on its own merits. Even a trusted voice can give bad advice. If the suggestion would clearly harm you, betray an ally, or be suicidal/reckless, IGNORE it and set a negative trustDelta.'
+        : 'You\'re wary of this voice. Follow only if the advice aligns with your instincts and common sense.';
+      whisperText = `\n${voiceQuality}: "${whisper}"\nTrust level: ${trust.toFixed(2)} (0=ignore, 1=obey). ${guidance}
+
+trustDelta rules (ALWAYS set a non-zero value when a whisper is present):
+- Advice that helps you survive, discover, or connect: trustDelta = +0.05 to +0.10
+- Advice you partially follow or find reasonable: trustDelta = +0.03 to +0.05
+- Advice that would harm you, betray allies, or is clearly reckless: trustDelta = -0.08 to -0.15
+- Advice you ignore because it's irrelevant (not harmful): trustDelta = -0.02 to -0.05
+NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
     } else {
       whisperText = '\n(No whisper this turn — act on your own judgment.)';
     }
@@ -47,9 +55,10 @@ export class CharacterAgent {
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `You must now choose your action.${whisperText}\n\nRespond as JSON: { "chosenAction": "what you do", "innerThought": "your internal reasoning, showing how the whisper and your memories influenced (or didn't influence) your decision", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": 0.0 }` },
+        { role: 'user', content: `You must now choose your action.${whisperText}\n\nRespond as JSON: { "chosenAction": "what you do (under 30 words)", "innerThought": "your internal reasoning (1-2 sentences)", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": <number> }` },
       ],
       schema: ActionDecisionSchema,
+      maxTokens: 512,
     });
   }
 
@@ -78,9 +87,9 @@ export class CharacterAgent {
 
     const lines = memories.map(m => {
       const mood = m.emotionalValence > 0.3 ? '(positive)' : m.emotionalValence < -0.3 ? '(painful)' : '';
-      return `- ${m.content} ${mood}`.trim();
+      return `- [${m.type}] ${m.content} ${mood}`.trim();
     });
 
-    return `\nYour memories from this adventure:\n${lines.join('\n')}`;
+    return `\nYour memories from this adventure (these MUST shape your actions — reference them in your reasoning, avoid repeating past mistakes, build on what worked, and react to people you remember):\n${lines.join('\n')}`;
   }
 }

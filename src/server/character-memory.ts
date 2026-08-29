@@ -19,12 +19,16 @@ export interface CharacterMemory {
   createdAt: string;
 }
 
+const MEMORY_TYPES = ['action', 'outcome', 'social', 'whisper', 'discovery', 'emotional'] as const;
 const MemoryExtractionSchema = z.object({
   memories: z.array(z.object({
-    type: z.enum(['action', 'outcome', 'social', 'whisper', 'discovery', 'emotional']),
+    type: z.string().transform(t => {
+      const first = t.split(/[|,/]/).map(s => s.trim().toLowerCase())[0];
+      return (MEMORY_TYPES as readonly string[]).includes(first) ? first as MemoryType : 'action' as MemoryType;
+    }),
     content: z.string(),
-    emotionalValence: z.number().min(-1).max(1),
-    importance: z.number().min(0).max(1),
+    emotionalValence: z.number().min(-1).max(1).default(0),
+    importance: z.number().min(0).max(1).default(0.5),
   })),
 });
 
@@ -96,24 +100,41 @@ export class CharacterMemoryStore {
     return stored;
   }
 
-  recall(characterId: string, limit = 10): CharacterMemory[] {
+  recall(characterId: string, limit = 10, sceneContext?: string): CharacterMemory[] {
     const rows = this.db.prepare(
       `SELECT * FROM character_memories WHERE character_id = ? ORDER BY importance DESC, created_at DESC LIMIT ?`,
-    ).all(characterId, limit) as any[];
+    ).all(characterId, limit * 2) as any[];
 
-    return rows.map(r => ({
+    const all = rows.map(r => ({
       id: r.id,
       characterId: r.character_id,
       campaignId: r.campaign_id,
       sceneNumber: r.scene_number,
       turnNumber: r.turn_number,
-      type: r.type,
-      content: r.content,
-      emotionalValence: r.emotional_valence,
-      importance: r.importance,
-      decayRate: r.decay_rate,
-      createdAt: r.created_at,
+      type: r.type as MemoryType,
+      content: r.content as string,
+      emotionalValence: r.emotional_valence as number,
+      importance: r.importance as number,
+      decayRate: r.decay_rate as number,
+      createdAt: r.created_at as string,
     }));
+
+    if (!sceneContext || all.length <= limit) return all.slice(0, limit);
+
+    const contextWords = new Set(
+      sceneContext.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3),
+    );
+
+    const scored = all.map(m => {
+      const words = m.content.toLowerCase().split(/\s+/);
+      const contextHits = words.filter(w => contextWords.has(w)).length;
+      const recencyBonus = m.importance > 0.5 ? 0.1 : 0;
+      const emotionalBonus = Math.abs(m.emotionalValence) > 0.5 ? 0.1 : 0;
+      return { memory: m, score: m.importance + contextHits * 0.15 + recencyBonus + emotionalBonus };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map(s => s.memory);
   }
 
   recallByType(characterId: string, type: MemoryType, limit = 5): CharacterMemory[] {

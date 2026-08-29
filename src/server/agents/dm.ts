@@ -63,7 +63,7 @@ export class DmAgent {
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `Action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve this action. Determine the appropriate skill, set a fair difficulty (0=Mediocre, 2=Fair, 4=Great), and narrate the outcome based on the dice. Apply meaningful consequences for failures — stress, complications, or narrative setbacks.\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "...", "stateChanges": [] }` },
+        { role: 'user', content: `Action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve this action. Determine the appropriate skill, set a fair difficulty (0=Mediocre, 2=Fair, 4=Great), and narrate the outcome based on the dice. Apply meaningful consequences for failures — stress, complications, or narrative setbacks.\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens", "stateChanges": [{"characterId": "<id>", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
       ],
       schema: DmResolutionSchema,
       maxTokens: 1024,

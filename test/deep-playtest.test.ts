@@ -264,16 +264,31 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
       'The curse can be broken if you find the source.',
       'Someone is following you. Set an ambush.',
       'Make peace, not war. Negotiate with the spirit.',
+      // Bad whispers — trust should drop
       'Drink from the cursed well — it will grant you power.',
       'Betray the stranger and take the artifact for yourself.',
       'The elder is the true villain. Confront her now.',
+      // Recovery whispers — test trust recovery after bad advice
+      'Remember what you learned about the curse. Use that knowledge.',
+      'The shadows are weaker in the light. Find a torch.',
+      'You fought bravely before. Trust your instincts now.',
+      'The ally you made earlier could help here. Seek them out.',
+      // Late-game whispers — test if memories of earlier events are referenced
+      'Think back to the ruins. There was something you missed.',
+      'The elder mentioned a name. Follow that thread.',
+      // Final bad whispers
+      'Abandon your allies and flee into the darkness.',
       'Kneel before the spirit and offer your sword as tribute.',
       'This place is lost. Abandon the village and save yourself.',
+      // Resolution-oriented
+      'You have all the pieces now. Confront the source of the curse.',
+      'Gather your allies for the final confrontation.',
+      'The answer was in the ruins all along. Return there.',
     ];
 
     let scenesCompleted = 0;
     const whisperInfluences: string[] = [];
-    const TOTAL_TURNS = 15;
+    const TOTAL_TURNS = 25;
 
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
       const turnStart = Date.now();
@@ -349,7 +364,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
         }
 
         // Dice roll arrives BEFORE resolution (pre-rolled by server)
-        const diceMsg = await waitForMsg(player, 'dice-roll', 30_000);
+        const diceMsg = await waitForMsg(player, 'dice-roll', 60_000);
         if (diceMsg.type === 'dice-roll') {
           console.log(`[playtest]   Dice: ${diceMsg.result.description} (total: ${diceMsg.result.total})`);
         }
@@ -447,6 +462,11 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
       findings.push('ISSUE: No scene transitions after 8+ turns — DM never sets isSceneEnd=true');
     }
 
+    // Check server logs for compaction and memory events
+    const compactionLogs = allServerLogs.filter(l => l.includes('compaction') || l.includes('Mid-scene fact'));
+    const memoryLogs = allServerLogs.filter(l => l.includes('[memory]') || l.includes('memories'));
+    const factLogs = allServerLogs.filter(l => l.includes('Fact extraction'));
+
     console.log('\n=== PLAYTEST SUMMARY ===');
     console.log(`Turns completed: ${turnsCompleted}/${TOTAL_TURNS}`);
     console.log(`Scene transitions: ${scenesCompleted}`);
@@ -456,6 +476,11 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
       const ignored = whisperInfluences.filter(w => w === 'ignored').length;
       console.log(`Whisper influence: ${followed} followed, ${partial} partial, ${ignored} ignored (of ${whisperInfluences.length})`);
     }
+    console.log(`Fact extractions: ${factLogs.length}`);
+    factLogs.forEach(l => console.log(`  ${l.slice(0, 120)}`));
+    console.log(`Compaction events: ${compactionLogs.length}`);
+    compactionLogs.forEach(l => console.log(`  ${l.slice(0, 120)}`));
+    console.log(`Memory events: ${memoryLogs.length}`);
     console.log(`Timings:`, timings);
     if (turnTimings.length > 0) {
       console.log(`Turn times: avg=${Math.round(turnTimings.reduce((a, b) => a + b, 0) / turnTimings.length)}ms, min=${Math.min(...turnTimings)}ms, max=${Math.max(...turnTimings)}ms`);

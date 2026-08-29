@@ -139,7 +139,7 @@ export class GameLoop {
     const worldSummary = this.worldBible.getSummary(this.campaignId);
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
-    const memories = this.memoryStore.recall(characterId, 8);
+    const memories = this.memoryStore.recall(characterId, 8, sceneNarration);
 
     let proposals;
     try {
@@ -199,7 +199,13 @@ export class GameLoop {
       whisperInfluence: whisper ? decision.whisperedInfluence : 'none',
     });
 
-    character.state.whisperTrust = Math.max(0, Math.min(1, character.state.whisperTrust + decision.trustDelta));
+    let effectiveDelta = decision.trustDelta;
+    if (whisper && effectiveDelta === 0) {
+      effectiveDelta = decision.whisperedInfluence === 'ignored' ? -0.05 : 0.03;
+    }
+    // Trust drops fast (up to -0.15) but recovers slowly (capped at +0.05)
+    if (effectiveDelta > 0.05) effectiveDelta = 0.05;
+    character.state.whisperTrust = Math.max(0, Math.min(1, character.state.whisperTrust + effectiveDelta));
 
     const diceResult = rollDice(this.getSystemDefaultDice(campaign.system_id));
     this.addTranscript('dice', diceResult.description);

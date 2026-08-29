@@ -11,18 +11,25 @@ export const DmNarrationSchema = z.object({
 });
 export type DmNarration = z.infer<typeof DmNarrationSchema>;
 
+const StateChangeItem = z.union([
+  z.object({
+    characterId: z.string().optional(),
+    field: z.enum(['stress', 'consequences', 'fatePoints', 'inventory']).optional(),
+    action: z.enum(['set', 'add', 'remove']).optional(),
+    value: z.unknown().optional(),
+  }).passthrough(),
+  z.string(),
+]);
+
 export const DmResolutionSchema = z.object({
   diceExpression: z.string().nullable().default(null),
   difficulty: z.number().nullable().default(null),
   skill: z.string().nullable().default(null),
   outcome: z.enum(['success', 'failure', 'tie', 'success-with-cost']).default('success'),
-  narration: z.string().min(1),
-  stateChanges: z.array(z.object({
-    characterId: z.string().optional(),
-    field: z.enum(['stress', 'consequences', 'fatePoints', 'inventory']).optional(),
-    action: z.enum(['set', 'add', 'remove']).optional(),
-    value: z.unknown().optional(),
-  }).passthrough()).default([]),
+  narration: z.string().min(1).default('The action unfolds...'),
+  stateChanges: z.array(StateChangeItem).default([]).transform(items =>
+    items.filter((item): item is Exclude<typeof item, string> => typeof item !== 'string')
+  ),
 });
 export type DmResolution = z.infer<typeof DmResolutionSchema>;
 
@@ -42,9 +49,9 @@ export type ActionProposal = z.infer<typeof ActionProposalSchema>;
 
 export const ActionDecisionSchema = z.object({
   chosenAction: z.string(),
-  innerThought: z.string().min(1),
-  whisperedInfluence: z.enum(['followed', 'partially-followed', 'ignored']),
-  trustDelta: z.number().min(-0.15).max(0.15),
+  innerThought: z.string().min(1).default('Something feels off...'),
+  whisperedInfluence: z.enum(['followed', 'partially-followed', 'ignored']).default('ignored'),
+  trustDelta: z.number().min(-0.15).max(0.15).default(0),
 });
 export type ActionDecision = z.infer<typeof ActionDecisionSchema>;
 
