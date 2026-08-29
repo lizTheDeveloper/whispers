@@ -264,10 +264,16 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
       'The curse can be broken if you find the source.',
       'Someone is following you. Set an ambush.',
       'Make peace, not war. Negotiate with the spirit.',
+      'Drink from the cursed well — it will grant you power.',
+      'Betray the stranger and take the artifact for yourself.',
+      'The elder is the true villain. Confront her now.',
+      'Kneel before the spirit and offer your sword as tribute.',
+      'This place is lost. Abandon the village and save yourself.',
     ];
 
     let scenesCompleted = 0;
-    const TOTAL_TURNS = 10;
+    const whisperInfluences: string[] = [];
+    const TOTAL_TURNS = 15;
 
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
       const turnStart = Date.now();
@@ -309,13 +315,13 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
             continue;
           }
           if (nextMsg.type === 'action-proposals') {
-            const proposalMsg = nextMsg;
-            console.log(`[playtest]   Proposals for ${(proposalMsg as any).characterName}: ${(proposalMsg as any).actions.length} actions`);
-            (proposalMsg as any).actions.forEach((a: string, i: number) => console.log(`[playtest]     ${i + 1}. ${a.slice(0, 60)}`));
-            if ((proposalMsg as any).actions.length < 2) findings.push(`ISSUE: Turn ${turn + 1} only proposed ${(proposalMsg as any).actions.length} actions (min 2)`);
+            const proposalMsg = nextMsg as any;
+            console.log(`[playtest]   Proposals for ${proposalMsg.characterName} (trust: ${proposalMsg.whisperTrust?.toFixed(2)}): ${proposalMsg.actions.length} actions`);
+            proposalMsg.actions.forEach((a: string, i: number) => console.log(`[playtest]     ${i + 1}. ${a.slice(0, 60)}`));
+            if (proposalMsg.actions.length < 2) findings.push(`ISSUE: Turn ${turn + 1} only proposed ${proposalMsg.actions.length} actions (min 2)`);
           }
         } else if (actionMsg.type === 'action-proposals') {
-          console.log(`[playtest]   Proposals for ${actionMsg.characterName}: ${actionMsg.actions.length} actions`);
+          console.log(`[playtest]   Proposals for ${actionMsg.characterName} (trust: ${(actionMsg as any).whisperTrust?.toFixed(2)}): ${actionMsg.actions.length} actions`);
           actionMsg.actions.forEach((a, i) => console.log(`[playtest]     ${i + 1}. ${a.slice(0, 60)}`));
         } else if (actionMsg.type === 'scene-end') {
           scenesCompleted++;
@@ -333,9 +339,11 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
         // Whisper is handled reactively above — wait for action-taken
         const actionTaken = await waitForMsg(player, 'action-taken', 120_000);
         if (actionTaken.type === 'action-taken') {
-          console.log(`[playtest]   Action: "${actionTaken.action.slice(0, 80)}"`);
+          const influence = (actionTaken as any).whisperInfluence ?? 'unknown';
+          console.log(`[playtest]   Action [${influence}]: "${actionTaken.action.slice(0, 80)}"`);
           console.log(`[playtest]   Inner thought: "${actionTaken.innerThought.slice(0, 80)}"`);
           whisperResponses.push(actionTaken.innerThought);
+          whisperInfluences.push(influence);
           if (actionTaken.action.length === 0) findings.push(`BUG: Turn ${turn + 1} returned empty action`);
           if (actionTaken.innerThought.length === 0) findings.push(`BUG: Turn ${turn + 1} returned empty inner thought`);
         }
@@ -442,6 +450,12 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
     console.log('\n=== PLAYTEST SUMMARY ===');
     console.log(`Turns completed: ${turnsCompleted}/${TOTAL_TURNS}`);
     console.log(`Scene transitions: ${scenesCompleted}`);
+    if (whisperInfluences.length > 0) {
+      const followed = whisperInfluences.filter(w => w === 'followed').length;
+      const partial = whisperInfluences.filter(w => w === 'partially-followed').length;
+      const ignored = whisperInfluences.filter(w => w === 'ignored').length;
+      console.log(`Whisper influence: ${followed} followed, ${partial} partial, ${ignored} ignored (of ${whisperInfluences.length})`);
+    }
     console.log(`Timings:`, timings);
     if (turnTimings.length > 0) {
       console.log(`Turn times: avg=${Math.round(turnTimings.reduce((a, b) => a + b, 0) / turnTimings.length)}ms, min=${Math.min(...turnTimings)}ms, max=${Math.max(...turnTimings)}ms`);

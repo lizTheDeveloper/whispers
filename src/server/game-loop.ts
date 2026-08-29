@@ -196,6 +196,7 @@ export class GameLoop {
       characterName: character.definition.name,
       action: decision.chosenAction,
       innerThought: decision.innerThought,
+      whisperInfluence: whisper ? decision.whisperedInfluence : 'none',
     });
 
     character.state.whisperTrust = Math.max(0, Math.min(1, character.state.whisperTrust + decision.trustDelta));
