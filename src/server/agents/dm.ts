@@ -32,6 +32,15 @@ export class DmAgent {
     const turnCount = pacing?.sceneTurnCount ?? 0;
     const partySize = pacing?.partySize ?? 1;
     const roundCount = Math.floor(turnCount / partySize);
+    const sceneNum = pacing?.sceneNumber ?? 1;
+
+    // Session-level three-act structure
+    const sessionArc = sceneNum <= 2
+      ? 'ACT I (Setup): Establish the world, introduce the central mystery or threat. Plant clues and introduce key NPCs. The dramatic question should be clear by scene end.'
+      : sceneNum <= 4
+      ? 'ACT II (Confrontation): Escalate complications. Alliances are tested, secrets are revealed, the threat becomes personal. Make the characters pay a cost for progress.'
+      : 'ACT III (Resolution): Drive toward the climax. The dramatic question MUST be answered this act. Converge all threads toward a final confrontation or revelation. After the climax, give a brief denouement showing consequences.';
+
     const pacingHint = roundCount === 0
       ? 'This is the opening of a new scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Hint at trouble or opportunity.'
       : roundCount < 3
@@ -46,24 +55,28 @@ export class DmAgent {
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nPacing: ${pacingHint}\n\nNarrate what happens next. Respond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
+        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}\n\nNarrate what happens next. Respond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
       ],
       schema: DmNarrationSchema,
       maxTokens: 1536,
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const diceBlock = diceResult
       ? `\nDice result: ${diceResult.description} (total: ${diceResult.total}). Use this roll to determine the outcome — do not invent your own. In FATE, add the relevant skill rank to the total and compare against the difficulty you set. Failures and success-with-cost make better stories than constant success.`
       : '';
 
+    const consequenceGuide = (sceneNumber ?? 1) >= 5
+      ? ' In Act III, failures should feel final and successes should resolve plot threads decisively.'
+      : '';
+
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `Action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve this action. Determine the appropriate skill, set a fair difficulty (0=Mediocre, 2=Fair, 4=Great), and narrate the outcome based on the dice. Apply meaningful consequences for failures — stress, complications, or narrative setbacks.\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens", "stateChanges": [{"characterId": "<id>", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
+        { role: 'user', content: `Action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve this action. Determine the appropriate skill, set a fair difficulty (0=Mediocre, 2=Fair, 4=Great), and narrate the outcome based on the dice. Apply meaningful consequences for failures — stress, complications, or narrative setbacks.${consequenceGuide}\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens", "stateChanges": [{"characterId": "<id>", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
       ],
       schema: DmResolutionSchema,
       maxTokens: 1024,

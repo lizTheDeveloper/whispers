@@ -221,6 +221,7 @@ export class GameLoop {
         },
         decision.chosenAction,
         diceResult,
+        this.state.currentScene,
       );
     } catch (e) {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
