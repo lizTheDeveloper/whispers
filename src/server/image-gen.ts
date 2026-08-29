@@ -1,4 +1,3 @@
-const DEEPINFRA_API_KEY = process.env.DEEPINFRA_API_KEY ?? '';
 const DEEPINFRA_URL = 'https://api.deepinfra.com/v1/inference/black-forest-labs/FLUX-1-schnell';
 
 interface SceneImageResult {
@@ -13,7 +12,8 @@ export async function generateSceneImage(
   locationName: string,
   narration: string,
 ): Promise<SceneImageResult> {
-  if (!DEEPINFRA_API_KEY) return { imageUrl: null, prompt: '' };
+  const apiKey = process.env.DEEPINFRA_API_KEY ?? '';
+  if (!apiKey) return { imageUrl: null, prompt: '' };
 
   const prompt = buildScenePrompt(locationName, narration);
 
@@ -25,7 +25,7 @@ export async function generateSceneImage(
     const response = await fetch(DEEPINFRA_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${DEEPINFRA_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({

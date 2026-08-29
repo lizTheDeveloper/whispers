@@ -1,69 +1,6 @@
 import type { WsClient } from './ws-client.js';
 import type { CharacterDefinition } from '../shared/types.js';
-
-function parseMarkdownCharacter(md: string): CharacterDefinition {
-  const lines = md.split('\n');
-  const def: CharacterDefinition = {
-    name: '', highConcept: '', trouble: '',
-    aspects: [], personality: '', backstory: '',
-    skills: {}, stunts: [],
-  };
-
-  let currentSection = '';
-  let sectionBuffer: string[] = [];
-
-  function flushSection() {
-    const text = sectionBuffer.join('\n').trim();
-    if (!currentSection || !text) { sectionBuffer = []; return; }
-    const key = currentSection.toLowerCase().replace(/[^a-z ]/g, '').trim();
-    if (key === 'name' || key === 'character name') {
-      def.name = text;
-    } else if (key === 'high concept' || key === 'concept') {
-      def.highConcept = text;
-    } else if (key === 'trouble') {
-      def.trouble = text;
-    } else if (key === 'aspects' || key === 'other aspects' || key === 'additional aspects') {
-      def.aspects = text.split('\n').map(l => l.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
-    } else if (key === 'personality' || key === 'personality traits') {
-      def.personality = text;
-    } else if (key === 'backstory' || key === 'background' || key === 'history') {
-      def.backstory = text;
-    } else if (key === 'skills') {
-      for (const line of text.split('\n')) {
-        const m = line.match(/[-*]?\s*(.+?)[\s:]+\+?(\d+)/);
-        if (m && m[1] && m[2]) def.skills[m[1].trim()] = parseInt(m[2], 10);
-      }
-    } else if (key === 'stunts' || key === 'special abilities') {
-      def.stunts = text.split('\n').map(l => l.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
-    }
-    sectionBuffer = [];
-  }
-
-  for (const line of lines) {
-    const heading = line.match(/^#{1,3}\s+(.+)/);
-    const boldLabel = line.match(/^\*\*(.+?)\*\*[:\s]*(.*)/);
-    if (heading && heading[1]) {
-      flushSection();
-      currentSection = heading[1];
-      continue;
-    }
-    if (boldLabel && boldLabel[1] && !currentSection) {
-      flushSection();
-      currentSection = boldLabel[1];
-      if (boldLabel[2]?.trim()) sectionBuffer.push(boldLabel[2].trim());
-      continue;
-    }
-    sectionBuffer.push(line);
-  }
-  flushSection();
-
-  if (!def.name) {
-    const firstHeading = lines.find(l => /^#\s+/.test(l));
-    if (firstHeading) def.name = firstHeading.replace(/^#+\s*/, '').trim();
-  }
-
-  return def;
-}
+import { parseOneCharacter, parseCharacters } from '../shared/markdown-parser.js';
 
 export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string, onApproved: () => void): void {
   root.innerHTML = `
@@ -90,8 +27,8 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
       </div>
 
       <div class="tab-panel hidden" id="panel-paste">
-        <p class="paste-hint">Paste a character sheet from ChatGPT, Claude, or any markdown source. Use headings or <strong>bold labels</strong> for: Name, High Concept, Trouble, Aspects, Personality, Backstory, Skills, Stunts.</p>
-        <textarea id="char-markdown" rows="16" placeholder="# Sigmund the Bold
+        <p class="paste-hint">Paste one or more character sheets from ChatGPT, Claude, or any markdown source. Separate multiple characters with <code>---</code> or use <code># Character Name</code> headings. Each character uses headings or <strong>bold labels</strong> for: Name, High Concept, Trouble, Aspects, Personality, Backstory, Skills, Stunts.</p>
+        <textarea id="char-markdown" rows="18" placeholder="# Sigmund the Bold
 
 ## High Concept
 Reformed Thief with a Heart of Gold
@@ -103,16 +40,25 @@ Can't Resist a Locked Door
 - Quick Hands
 - Loyal to a Fault
 
-## Personality
-Cautious but impulsive when gold is involved.
-
 ## Backstory
 Born in the slums of Veridian...
 
-## Skills
-- Notice: +2
-- Fight: +1
-- Stealth: +1"></textarea>
+---
+
+# Elara Moonwhisper
+
+## High Concept
+Elven Sage Who Speaks to Stars
+
+## Trouble
+Cryptic to a Fault
+
+## Aspects
+- Ancient Knowledge
+- Patient as Stone
+
+## Backstory
+Elara left the Silver Court..."></textarea>
         <div id="parse-preview" class="parse-preview hidden"></div>
       </div>
 
@@ -140,18 +86,31 @@ Born in the slums of Veridian...
 
   const markdownArea = root.querySelector('#char-markdown') as HTMLTextAreaElement;
   const preview = root.querySelector('#parse-preview') as HTMLElement;
-  let lastActiveTab = 'form';
+  const submitBtn = root.querySelector('#submit-char') as HTMLButtonElement;
 
   markdownArea.addEventListener('input', () => {
-    const parsed = parseMarkdownCharacter(markdownArea.value);
-    if (parsed.name || parsed.highConcept || parsed.backstory) {
-      preview.classList.remove('hidden');
-      preview.innerHTML = `<strong>Parsed:</strong> ${parsed.name || '(no name)'}` +
-        (parsed.highConcept ? ` — ${parsed.highConcept}` : '') +
-        (parsed.aspects.length ? `<br>Aspects: ${parsed.aspects.join(', ')}` : '') +
-        (Object.keys(parsed.skills).length ? `<br>Skills: ${Object.entries(parsed.skills).map(([k,v]) => `${k} +${v}`).join(', ')}` : '');
-    } else {
+    const chars = parseCharacters(markdownArea.value);
+    const valid = chars.filter(c => c.name);
+    if (valid.length === 0) {
       preview.classList.add('hidden');
+      submitBtn.textContent = 'Submit to DM for Approval';
+      return;
+    }
+    preview.classList.remove('hidden');
+    if (valid.length === 1) {
+      const c = valid[0]!;
+      preview.innerHTML = `<strong>Parsed:</strong> ${c.name}` +
+        (c.highConcept ? ` — ${c.highConcept}` : '') +
+        (c.aspects.length ? `<br>Aspects: ${c.aspects.join(', ')}` : '') +
+        (Object.keys(c.skills).length ? `<br>Skills: ${Object.entries(c.skills).map(([k,v]) => `${k} +${v}`).join(', ')}` : '');
+      submitBtn.textContent = 'Submit to DM for Approval';
+    } else {
+      preview.innerHTML = `<strong>${valid.length} characters parsed:</strong><br>` +
+        valid.map((c, i) => `${i + 1}. <strong>${c.name}</strong>` +
+          (c.highConcept ? ` — ${c.highConcept}` : '') +
+          (c.aspects.length ? ` (${c.aspects.length} aspects)` : '')
+        ).join('<br>');
+      submitBtn.textContent = `Submit all ${valid.length} characters`;
     }
   });
 
@@ -160,17 +119,26 @@ Born in the slums of Veridian...
     return active?.dataset.tab || 'form';
   }
 
-  const submitBtn = root.querySelector('#submit-char') as HTMLButtonElement;
-  submitBtn.addEventListener('click', () => {
-    let definition: CharacterDefinition;
+  let pendingCount = 0;
+  let approvedCount = 0;
 
+  submitBtn.addEventListener('click', () => {
     if (getActiveTab() === 'paste') {
-      definition = parseMarkdownCharacter(markdownArea.value);
-      if (!Object.keys(definition.skills).length) {
-        definition.skills = { Notice: 2, Fight: 1, Stealth: 1 };
+      const chars = parseCharacters(markdownArea.value).filter(c => c.name);
+      for (const def of chars) {
+        if (!Object.keys(def.skills).length) {
+          def.skills = { Notice: 2, Fight: 1, Stealth: 1 };
+        }
+        ws.send({ type: 'submit-character', definition: def });
       }
+      pendingCount = chars.length;
+      approvedCount = 0;
+      submitBtn.disabled = true;
+      submitBtn.textContent = chars.length > 1
+        ? `Awaiting DM review (0/${chars.length})...`
+        : 'Awaiting DM review...';
     } else {
-      definition = {
+      const definition: CharacterDefinition = {
         name: (root.querySelector('#char-name') as HTMLInputElement).value.trim(),
         highConcept: (root.querySelector('#char-concept') as HTMLInputElement).value.trim(),
         trouble: (root.querySelector('#char-trouble') as HTMLInputElement).value.trim(),
@@ -184,10 +152,12 @@ Born in the slums of Veridian...
         skills: { Notice: 2, Fight: 1, Stealth: 1 },
         stunts: [],
       };
+      ws.send({ type: 'submit-character', definition });
+      pendingCount = 1;
+      approvedCount = 0;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Awaiting DM review...';
     }
-    ws.send({ type: 'submit-character', definition });
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Awaiting DM review...';
   });
 
   ws.on('character-validated', (msg) => {
@@ -195,9 +165,18 @@ Born in the slums of Veridian...
     const feedback = root.querySelector('#dm-feedback') as HTMLElement;
     feedback.classList.remove('hidden');
     if (msg.approved) {
-      feedback.textContent = 'Character approved! Waiting for game to start...';
-      feedback.classList.add('approved');
-      onApproved();
+      approvedCount++;
+      if (pendingCount > 1) {
+        feedback.textContent = `${approvedCount}/${pendingCount} characters approved!`;
+        submitBtn.textContent = `Awaiting DM review (${approvedCount}/${pendingCount})...`;
+      }
+      if (approvedCount >= pendingCount) {
+        feedback.textContent = pendingCount > 1
+          ? `All ${pendingCount} characters approved! Waiting for game to start...`
+          : 'Character approved! Waiting for game to start...';
+        feedback.classList.add('approved');
+        onApproved();
+      }
     } else {
       feedback.textContent = `DM feedback: ${msg.feedback}`;
       feedback.classList.add('rejected');
