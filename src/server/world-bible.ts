@@ -60,9 +60,26 @@ export class WorldBible {
       if (entities.length > 0) parts.push('Present: ' + entities.map(e => `${e.name} (${e.type}, ${e.disposition ?? 'unknown disposition'})`).join(', '));
     }
     const locs = this.db.prepare('SELECT name, description FROM locations WHERE campaign_id = ?').all(campaignId) as any[];
-    if (locs.length > 0) parts.push('Known locations: ' + locs.map((l: any) => l.name).join(', '));
-    const events = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 5').all(campaignId) as any[];
-    if (events.length > 0) parts.push('Recent events: ' + events.map((e: any) => e.description).join('; '));
+    if (locs.length > 0) parts.push('Known locations: ' + locs.map((l: any) => `${l.name}${l.description ? ' — ' + l.description : ''}`).join('; '));
+
+    const npcs = this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1').all(campaignId) as any[];
+    if (npcs.length > 0) {
+      parts.push('Known NPCs/creatures: ' + npcs.map((n: any) => `${n.name} (${n.type}${n.disposition ? ', ' + n.disposition : ''})`).join('; '));
+    }
+
+    const rels = this.db.prepare(`SELECT r.type, r.description, e1.name as a_name, e2.name as b_name
+      FROM relationships r
+      JOIN entities e1 ON r.entity_a_id = e1.id
+      JOIN entities e2 ON r.entity_b_id = e2.id
+      WHERE r.campaign_id = ?`).all(campaignId) as any[];
+    if (rels.length > 0) {
+      parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}${r.description ? ' — ' + r.description : ''}`).join('; '));
+    }
+
+    const events = this.db.prepare('SELECT description, outcome FROM events WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 8').all(campaignId) as any[];
+    if (events.length > 0) {
+      parts.push('Story so far: ' + events.map((e: any) => `${e.description}${e.outcome ? ' → ' + e.outcome : ''}`).join('. '));
+    }
     return parts.join('\n\n') || 'No world knowledge yet.';
   }
 
@@ -89,6 +106,13 @@ export class WorldBible {
       }
       for (const evt of diff.newEvents) {
         this.addEvent({ id: genId(), campaignId, sceneNumber: evt.sceneNumber, description: evt.description, participants: evt.participants, outcome: evt.outcome });
+      }
+      for (const rel of (diff.newRelationships ?? [])) {
+        const entityA = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, rel.entityAName) as any;
+        const entityB = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, rel.entityBName) as any;
+        if (entityA && entityB) {
+          this.addRelationship({ campaignId, entityAId: entityA.id, entityBId: entityB.id, type: rel.type, description: rel.description });
+        }
       }
     });
     tx();

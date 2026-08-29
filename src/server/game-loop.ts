@@ -288,7 +288,9 @@ export class GameLoop {
       this.memoryStore.decayMemories(charId);
     }
 
-    this.transcript = [];
+    this.transcript = [
+      { role: 'system' as const, content: `[Previous scene] ${summary}`, timestamp: new Date().toISOString() },
+    ];
     this.sceneTurnCount = 0;
     this.state.currentScene++;
     clearCampaignImageCache(this.campaignId);
