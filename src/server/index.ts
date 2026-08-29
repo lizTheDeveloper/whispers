@@ -218,6 +218,8 @@ wss.on('connection', (ws) => {
     if (msg.type === 'host-approve-character' && currentJoinCode && currentPlayer?.isHost) {
       const pending = pendingCharacters.get(msg.characterId);
       if (!pending) return;
+      const hostCampaign = joinRoom(db, currentJoinCode);
+      if (!hostCampaign || hostCampaign.id !== pending.campaignId) return;
       const initialState = JSON.stringify({
         stress: 0, consequences: [], fatePoints: 3,
         inventory: [], xpMilestones: [], whisperTrust: 0.5,
@@ -236,6 +238,8 @@ wss.on('connection', (ws) => {
     if (msg.type === 'host-reject-character' && currentJoinCode && currentPlayer?.isHost) {
       const pending = pendingCharacters.get(msg.characterId);
       if (!pending) return;
+      const hostCampaign = joinRoom(db, currentJoinCode);
+      if (!hostCampaign || hostCampaign.id !== pending.campaignId) return;
       send(pending.playerWs, { type: 'character-validated', characterId: pending.charId, approved: false, feedback: `Host feedback: ${msg.reason}` });
       pendingCharacters.delete(msg.characterId);
     }
