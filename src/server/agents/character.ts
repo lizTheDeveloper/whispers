@@ -28,9 +28,21 @@ export class CharacterAgent {
 
   async decideAction(ctx: CharacterContext, whisper: string | null): Promise<ActionDecision> {
     const charPrompt = this.buildCharacterPrompt(ctx);
-    const whisperText = whisper
-      ? `\nA voice whispers in your mind: "${whisper}"\nYour trust in this voice: ${ctx.state.whisperTrust.toFixed(2)} (0=ignore, 1=obey). Consider the whisper alongside your personality and memories.`
-      : '\n(No whisper this turn — act on your own judgment.)';
+    let whisperText: string;
+    if (whisper) {
+      const trust = ctx.state.whisperTrust;
+      const voiceQuality = trust > 0.7
+        ? 'A familiar, trusted voice speaks clearly in your mind'
+        : trust > 0.4
+        ? 'A quiet voice whispers in your mind — you\'re uncertain whether to trust it'
+        : 'A faint, distrusted voice murmurs at the edge of your thoughts';
+      const guidance = trust > 0.5
+        ? 'The voice has guided you before. Following it feels natural — you should follow or partially follow unless it contradicts your core values.'
+        : 'You\'re wary of this voice. Follow only if the advice aligns with your instincts.';
+      whisperText = `\n${voiceQuality}: "${whisper}"\nTrust level: ${trust.toFixed(2)} (0=ignore, 1=obey). ${guidance}\nSet trustDelta positive (+0.05 to +0.15) if the voice gives useful or insightful advice, negative (-0.05 to -0.15) if it seems harmful or wrong.`;
+    } else {
+      whisperText = '\n(No whisper this turn — act on your own judgment.)';
+    }
 
     return callLlm({
       messages: [

@@ -49,7 +49,7 @@ export class DmAgent {
         { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nPacing: ${pacingHint}\n\nNarrate what happens next. Respond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
       ],
       schema: DmNarrationSchema,
-      maxTokens: 1024,
+      maxTokens: 1536,
     });
   }
 
@@ -166,6 +166,8 @@ Storytelling principles:
 - Introduce complications that force hard choices, not just combat encounters.
 - Use the environment as an active element — weather, terrain, crowds, lighting.
 - When characters succeed, success should change the situation, not just confirm it.
+- WEAVE BACK earlier threads: if the world state lists UNRESOLVED THREADS, advance at least one per narration. Reintroduce NPCs, revisit locations, or reveal consequences of past actions.
+- Build toward a dramatic question — each scene should move the story closer to answering: will the party succeed, and at what cost?
 `;
 
     if (ctx.houseRules) prompt += `\nHouse rules: ${ctx.houseRules}\n`;

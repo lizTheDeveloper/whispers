@@ -76,10 +76,22 @@ export class WorldBible {
       parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}${r.description ? ' — ' + r.description : ''}`).join('; '));
     }
 
-    const events = this.db.prepare('SELECT description, outcome FROM events WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 8').all(campaignId) as any[];
-    if (events.length > 0) {
-      parts.push('Story so far: ' + events.map((e: any) => `${e.description}${e.outcome ? ' → ' + e.outcome : ''}`).join('. '));
+    const events = this.db.prepare('SELECT description, outcome FROM events WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 12').all(campaignId) as any[];
+    const resolved = events.filter((e: any) => e.outcome);
+    const unresolved = events.filter((e: any) => !e.outcome);
+
+    if (unresolved.length > 0) {
+      parts.push('UNRESOLVED THREADS (advance these): ' + unresolved.map((e: any) => e.description).join('; '));
     }
+    if (resolved.length > 0) {
+      parts.push('Story so far: ' + resolved.map((e: any) => `${e.description} → ${e.outcome}`).join('. '));
+    }
+
+    const unusedItems = this.db.prepare('SELECT name, description FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL').all(campaignId) as any[];
+    if (unusedItems.length > 0) {
+      parts.push('Unclaimed items: ' + unusedItems.map((i: any) => i.name).join(', '));
+    }
+
     return parts.join('\n\n') || 'No world knowledge yet.';
   }
 

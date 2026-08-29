@@ -234,7 +234,7 @@ wss.on('connection', (ws) => {
       if (!hostCampaign || hostCampaign.id !== pending.campaignId) return;
       const initialState = JSON.stringify({
         stress: 0, consequences: [], fatePoints: 3,
-        inventory: [], xpMilestones: [], whisperTrust: 0.5,
+        inventory: [], xpMilestones: [], whisperTrust: 0.65,
       });
       db.prepare('INSERT INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
         .run(pending.charId, pending.campaignId, null, JSON.stringify(pending.definition), initialState);
