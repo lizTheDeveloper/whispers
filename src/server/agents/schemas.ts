@@ -57,8 +57,32 @@ export type FactExtraction = z.infer<typeof FactExtractionSchema>;
 export const CharacterValidationSchema = z.object({
   approved: z.boolean(),
   feedback: z.string(),
+  modifications: z.record(z.unknown()).nullable(),
 });
 export type CharacterValidation = z.infer<typeof CharacterValidationSchema>;
+
+export const DmSetupReplySchema = z.object({
+  reply: z.string().min(1),
+  done: z.boolean(),
+  dmInstructions: z.string().nullable(),
+  dmCustomPrompt: z.string().nullable(),
+});
+export type DmSetupReply = z.infer<typeof DmSetupReplySchema>;
+
+export const CharInterviewReplySchema = z.object({
+  reply: z.string().min(1),
+  definition: z.object({
+    name: z.string(),
+    highConcept: z.string(),
+    trouble: z.string(),
+    aspects: z.array(z.string()),
+    personality: z.string(),
+    backstory: z.string(),
+    skills: z.record(z.number()),
+    stunts: z.array(z.string()),
+  }).nullable(),
+});
+export type CharInterviewReply = z.infer<typeof CharInterviewReplySchema>;
 
 export const SceneSummarySchema = z.object({
   summary: z.string().min(1),

@@ -122,7 +122,24 @@ function migrate(db: Database.Database): void {
       content,
       tokenize='porter'
     );
+
+    CREATE TABLE IF NOT EXISTS campaign_materials (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      filename TEXT NOT NULL,
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
+
+  const cols = db.pragma('table_info(campaigns)') as Array<{ name: string }>;
+  const colNames = new Set(cols.map(c => c.name));
+  if (!colNames.has('dm_instructions')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN dm_instructions TEXT');
+  }
+  if (!colNames.has('dm_custom_prompt')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN dm_custom_prompt TEXT');
+  }
 }
 
 export function closeDb(): void {

@@ -6,10 +6,13 @@ export type ClientMessage =
   | { type: 'join'; joinCode: string; playerName: string }
   | { type: 'create'; name: string; dmPreset: string; scenarioId: string | null; systemId: string; houseRules: string | null }
   | { type: 'submit-character'; definition: CharacterDefinition }
+  | { type: 'char-chat'; text: string }
   | { type: 'whisper'; text: string }
   | { type: 'dm-answer'; text: string }
   | { type: 'dm-inject'; text: string }
   | { type: 'dm-override'; text: string }
+  | { type: 'update-dm-settings'; dmCustomPrompt: string | null; dmInstructions: string | null }
+  | { type: 'dm-chat'; text: string }
   | { type: 'start-game' }
   | { type: 'end-game' };
 
@@ -31,5 +34,9 @@ export type ServerMessage =
   | { type: 'dm-question'; question: string }
   | { type: 'scene-end'; summary: string; sceneNumber: number }
   | { type: 'character-state-update'; characterId: string; state: CharacterState }
+  | { type: 'dm-settings'; presetName: string; presetPrompt: string; dmCustomPrompt: string | null; dmInstructions: string | null; materials: import('./types.js').CampaignMaterial[] }
+  | { type: 'dm-chat-reply'; text: string; done: boolean }
+  | { type: 'char-chat-reply'; text: string; definition: CharacterDefinition | null }
+  | { type: 'material-uploaded'; material: import('./types.js').CampaignMaterial }
   | { type: 'token-usage'; used: number; remaining: number | null }
   | { type: 'error'; message: string };

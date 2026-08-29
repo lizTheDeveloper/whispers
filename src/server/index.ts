@@ -7,10 +7,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { getDb, getDataDir } from './db.js';
 import { createRoom, joinRoom } from './room.js';
-import { ingestText } from './rag/ingest.js';
+import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
+import type { CampaignMaterial } from '../shared/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
@@ -19,6 +20,49 @@ const app = express();
 app.use(express.json());
 
 app.get('/healthz', (_req, res) => { res.json({ status: 'ok' }); });
+
+function loadPresetPrompt(presetName: string): string {
+  const presetPath = join(getDataDir(), 'dm-presets', `${presetName}.txt`);
+  if (existsSync(presetPath)) return readFileSync(presetPath, 'utf-8').trim();
+  return `You are a TTRPG Dungeon Master with the "${presetName}" personality. Run the game faithfully.`;
+}
+
+function getCampaignMaterials(campaignId: string): CampaignMaterial[] {
+  const db = getDb();
+  const rows = db.prepare('SELECT id, filename, chunk_count, created_at FROM campaign_materials WHERE campaign_id = ? ORDER BY created_at DESC').all(campaignId) as any[];
+  return rows.map(r => ({ id: r.id, filename: r.filename, chunkCount: r.chunk_count, createdAt: r.created_at }));
+}
+
+app.post('/api/campaigns/:id/materials', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
+  const db = getDb();
+  const campaignId = req.params.id;
+  const filename = (req.headers['x-filename'] as string) || 'uploaded-file.txt';
+
+  const campaign = db.prepare('SELECT id, system_id FROM campaigns WHERE id = ?').get(campaignId) as any;
+  if (!campaign) { res.status(404).json({ error: 'Campaign not found' }); return; }
+
+  const materialId = randomBytes(16).toString('hex');
+  const systemId = `campaign:${campaignId}`;
+
+  try {
+    let chunkCount: number;
+    if (filename.endsWith('.pdf')) {
+      chunkCount = await ingestPdf(db, systemId, filename, req.body as Buffer);
+    } else {
+      const text = (req.body as Buffer).toString('utf-8');
+      chunkCount = ingestText(db, systemId, filename, text);
+    }
+
+    db.prepare('INSERT INTO campaign_materials (id, campaign_id, filename, chunk_count) VALUES (?, ?, ?, ?)')
+      .run(materialId, campaignId, filename, chunkCount);
+
+    const material: CampaignMaterial = { id: materialId, filename, chunkCount, createdAt: new Date().toISOString() };
+    res.json(material);
+  } catch (err) {
+    console.error('[materials] Ingestion failed:', err);
+    res.status(500).json({ error: 'Failed to process file' });
+  }
+});
 
 const clientDir = join(__dirname, '..', '..', 'client');
 if (existsSync(clientDir)) {
@@ -34,6 +78,8 @@ interface ConnectedPlayer {
   playerName: string;
   characterId: string | null;
   isHost: boolean;
+  setupChat: Array<{ role: string; content: string }>;
+  charChat: Array<{ role: string; content: string }>;
 }
 
 const rooms = new Map<string, ConnectedPlayer[]>();
@@ -70,16 +116,34 @@ wss.on('connection', (ws) => {
         houseRules: msg.houseRules ?? undefined,
       });
       currentJoinCode = joinCode;
-      currentPlayer = { ws, playerName: 'Host', characterId: null, isHost: true };
+      currentPlayer = { ws, playerName: 'Host', characterId: null, isHost: true, setupChat: [], charChat: [] };
       rooms.set(joinCode, [currentPlayer]);
       send(ws, { type: 'room-joined', campaignId, joinCode, isHost: true });
+
+      const presetPrompt = loadPresetPrompt(msg.dmPreset);
+      send(ws, {
+        type: 'dm-settings',
+        presetName: msg.dmPreset,
+        presetPrompt,
+        dmCustomPrompt: null,
+        dmInstructions: null,
+        materials: [],
+      });
+
+      const dm = new DmAgent(db);
+      dm.setupChat(msg.dmPreset, []).then(reply => {
+        if (currentPlayer) {
+          currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
+        }
+        send(ws, { type: 'dm-chat-reply', text: reply.reply, done: false });
+      }).catch(e => console.error('[dm-setup] greeting failed:', e));
     }
 
     if (msg.type === 'join') {
       const campaign = joinRoom(db, msg.joinCode);
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
       currentJoinCode = msg.joinCode;
-      currentPlayer = { ws, playerName: msg.playerName, characterId: null, isHost: false };
+      currentPlayer = { ws, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
       const players = rooms.get(msg.joinCode) ?? [];
       players.push(currentPlayer);
       rooms.set(msg.joinCode, players);
@@ -93,19 +157,67 @@ wss.on('connection', (ws) => {
       const dm = new DmAgent(db);
       const validation = await dm.validateCharacter(msg.definition, campaign.systemId);
       const charId = randomBytes(16).toString('hex');
+      let finalDef = msg.definition;
       if (validation.approved) {
+        if (validation.modifications) {
+          finalDef = { ...msg.definition, ...validation.modifications } as typeof msg.definition;
+        }
         const initialState = JSON.stringify({
           stress: 0, consequences: [], fatePoints: 3,
           inventory: [], xpMilestones: [], whisperTrust: 0.5,
         });
         db.prepare('INSERT INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
-          .run(charId, campaign.id, null, JSON.stringify(msg.definition), initialState);
+          .run(charId, campaign.id, null, JSON.stringify(finalDef), initialState);
         if (currentPlayer) currentPlayer.characterId = charId;
       }
-      send(ws, { type: 'character-validated', characterId: charId, approved: validation.approved, feedback: validation.feedback });
+      const feedbackText = validation.modifications
+        ? `${validation.feedback} (DM adjusted: ${Object.keys(validation.modifications).join(', ')})`
+        : validation.feedback;
+      send(ws, { type: 'character-validated', characterId: charId, approved: validation.approved, feedback: feedbackText });
       if (validation.approved) {
-        broadcast(currentJoinCode, { type: 'character-submitted', characterId: charId, definition: msg.definition });
+        broadcast(currentJoinCode, { type: 'character-submitted', characterId: charId, definition: finalDef });
       }
+    }
+
+    if (msg.type === 'char-chat' && currentJoinCode && currentPlayer) {
+      const campaign = joinRoom(db, currentJoinCode);
+      if (!campaign) return;
+      currentPlayer.charChat.push({ role: 'user', content: msg.text });
+      const dm = new DmAgent(db);
+      try {
+        const reply = await dm.interviewForCharacter(campaign.systemId, currentPlayer.charChat);
+        currentPlayer.charChat.push({ role: 'assistant', content: reply.reply });
+        send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
+      } catch (e) {
+        console.error('[char-chat] error:', e);
+        send(ws, { type: 'error', message: 'Character creation agent failed' });
+      }
+    }
+
+    if (msg.type === 'dm-chat' && currentJoinCode && currentPlayer?.isHost) {
+      const campaign = joinRoom(db, currentJoinCode);
+      if (!campaign) return;
+      currentPlayer.setupChat.push({ role: 'user', content: msg.text });
+      const dm = new DmAgent(db);
+      try {
+        const reply = await dm.setupChat(campaign.dmPreset, currentPlayer.setupChat);
+        currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
+        if (reply.done && reply.dmInstructions) {
+          db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")
+            .run(reply.dmInstructions, reply.dmCustomPrompt, campaign.id);
+        }
+        send(ws, { type: 'dm-chat-reply', text: reply.reply, done: reply.done });
+      } catch (e) {
+        console.error('[dm-chat] error:', e);
+        send(ws, { type: 'error', message: 'DM setup agent failed' });
+      }
+    }
+
+    if (msg.type === 'update-dm-settings' && currentJoinCode && currentPlayer?.isHost) {
+      const campaign = joinRoom(db, currentJoinCode);
+      if (!campaign) return;
+      db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(msg.dmInstructions, msg.dmCustomPrompt, campaign.id);
     }
 
     if (msg.type === 'start-game' && currentJoinCode && currentPlayer?.isHost) {

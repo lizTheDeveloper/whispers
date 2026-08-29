@@ -10,9 +10,9 @@ const ws = new WsClient();
 async function init() {
   await ws.connect();
 
-  renderLobby(root, ws, (_campaignId, joinCode, isHost) => {
+  renderLobby(root, ws, (campaignId, joinCode, isHost) => {
     if (isHost) {
-      renderDmLobby(root, ws, joinCode, () => {
+      renderDmLobby(root, ws, joinCode, campaignId, () => {
         renderGameView(root, ws, true);
       });
     } else {

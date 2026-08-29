@@ -7,8 +7,17 @@ export interface Campaign {
   systemId: string;
   hostUserId: string | null;
   houseRules: string | null;
+  dmInstructions: string | null;
+  dmCustomPrompt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CampaignMaterial {
+  id: string;
+  filename: string;
+  chunkCount: number;
+  createdAt: string;
 }
 
 export interface CharacterDefinition {

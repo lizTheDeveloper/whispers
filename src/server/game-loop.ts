@@ -78,6 +78,9 @@ export class GameLoop {
     const narration = await this.dm.narrate({
       preset: campaign.dm_preset,
       houseRules: campaign.house_rules,
+      dmInstructions: campaign.dm_instructions ?? null,
+      dmCustomPrompt: campaign.dm_custom_prompt ?? null,
+      campaignId: this.campaignId,
       worldSummary,
       transcript: this.transcript,
       systemId: campaign.system_id,
@@ -162,7 +165,11 @@ export class GameLoop {
     character.state.whisperTrust = Math.max(0, Math.min(1, character.state.whisperTrust + decision.trustDelta));
 
     const resolution = await this.dm.resolve(
-      { preset: campaign.dm_preset, houseRules: campaign.house_rules, worldSummary, transcript: this.transcript, systemId: campaign.system_id },
+      {
+        preset: campaign.dm_preset, houseRules: campaign.house_rules,
+        dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
+        campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
+      },
       decision.chosenAction,
       null,
     );

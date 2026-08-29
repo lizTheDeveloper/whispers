@@ -42,6 +42,8 @@ export function joinRoom(db: Database.Database, joinCode: string): Campaign | nu
     systemId: row.system_id,
     hostUserId: row.host_user_id,
     houseRules: row.house_rules,
+    dmInstructions: row.dm_instructions ?? null,
+    dmCustomPrompt: row.dm_custom_prompt ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

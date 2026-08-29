@@ -498,7 +498,140 @@ button:disabled {
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 }
 
-/* ─── DM Lobby ─── */
+/* ─── DM Lobby Layout ─── */
+
+.dm-lobby {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem;
+  min-height: 80vh;
+  animation: page-enter 0.6s ease-out;
+}
+@media (max-width: 768px) {
+  .dm-lobby { grid-template-columns: 1fr; }
+}
+
+.dm-lobby-main { min-width: 0; }
+
+.dm-lobby-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.sidebar-section {
+  background: linear-gradient(160deg, var(--surface) 0%, var(--void-deep) 100%);
+  padding: 1.25rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: var(--shadow-card);
+}
+
+.sidebar-section h3 {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.6rem;
+}
+
+/* ─── DM Chat ─── */
+
+.dm-chat-panel {
+  background: linear-gradient(160deg, var(--surface) 0%, var(--void-deep) 100%);
+  padding: 1.5rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.dm-chat-panel h2 {
+  font-size: 1.3rem;
+  color: var(--star-white);
+  margin-bottom: 1rem;
+}
+
+.dm-chat-log {
+  flex: 1;
+  min-height: 300px;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  scroll-behavior: smooth;
+  border-radius: var(--radius);
+  background: rgba(6, 6, 11, 0.4);
+  margin-bottom: 1rem;
+}
+.dm-chat-log::-webkit-scrollbar { width: 6px; }
+.dm-chat-log::-webkit-scrollbar-track { background: transparent; }
+.dm-chat-log::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 3px; }
+
+.dm-chat-bubble {
+  max-width: 85%;
+  padding: 0.65rem 1rem;
+  border-radius: var(--radius);
+  line-height: 1.55;
+  animation: entry-in 0.3s ease-out;
+  word-wrap: break-word;
+}
+.dm-chat-bubble.dm {
+  align-self: flex-start;
+  background: var(--signal-dim);
+  color: var(--signal);
+  border-left: 3px solid rgba(0, 212, 255, 0.35);
+}
+.dm-chat-bubble.host, .dm-chat-bubble.player {
+  align-self: flex-end;
+  background: var(--ember-glow);
+  color: var(--star-white);
+  border-right: 3px solid rgba(255, 107, 53, 0.35);
+}
+.dm-chat-bubble.typing {
+  font-style: italic;
+  opacity: 0.6;
+  animation: whisper-pulse 2s ease-in-out infinite;
+}
+
+.dm-chat-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.dm-chat-input input {
+  flex: 1;
+}
+
+.upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  font-size: 1.2rem;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.upload-status {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.85rem;
+  background: rgba(0, 212, 255, 0.04);
+  border-radius: var(--radius);
+}
+
+/* ─── DM Lobby Elements ─── */
 
 .join-code-display {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
