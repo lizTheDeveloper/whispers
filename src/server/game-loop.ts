@@ -299,10 +299,10 @@ export class GameLoop {
         .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
         .split(/[.!]/)[0]?.trim() ?? 'act', 50);
       const memoryHook = memories.length > 0
-        ? truncAtWord(memories[0]!.content.replace(/^I\s+/i, '').split(/[.!]/)[0]?.trim() ?? '', 50) || null
+        ? truncAtWord(memories[0]!.content.split(/[.!]/)[0]?.trim() ?? '', 60) || null
         : null;
       const contextDetail = memoryHook
-        ? `I remember ${memoryHook.toLowerCase()}. Now I must ${actionSnippet.toLowerCase()}`
+        ? `${memoryHook.charAt(0).toUpperCase()}${memoryHook.slice(1)} — now I must ${actionSnippet.toLowerCase()}`
         : `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}`;
       decision.innerThought = `${contextDetail}.`;
     }
