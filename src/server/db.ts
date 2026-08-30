@@ -66,7 +66,8 @@ function migrate(db: Database.Database): void {
       description TEXT,
       terrain TEXT,
       connections TEXT,
-      coords TEXT
+      coords TEXT,
+      visited INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS items (

@@ -13,11 +13,21 @@ export interface WorldBibleDiff {
 function genId(): string { return randomBytes(16).toString('hex'); }
 
 export class WorldBible {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database) {
+    try {
+      this.db.prepare('SELECT visited FROM locations LIMIT 0').get();
+    } catch {
+      this.db.prepare('ALTER TABLE locations ADD COLUMN visited INTEGER NOT NULL DEFAULT 0').run();
+    }
+  }
 
   addLocation(loc: Location): void {
     this.db.prepare(`INSERT INTO locations (id, campaign_id, name, description, terrain, connections, coords) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(loc.id, loc.campaignId, loc.name, loc.description, loc.terrain, JSON.stringify(loc.connections), loc.coords ? JSON.stringify(loc.coords) : null);
+  }
+
+  markLocationVisited(campaignId: string, locationId: string): void {
+    this.db.prepare('UPDATE locations SET visited = 1 WHERE id = ? AND campaign_id = ?').run(locationId, campaignId);
   }
 
   addEntity(ent: Entity): void {
@@ -69,8 +79,19 @@ export class WorldBible {
       const entities = this.getEntitiesForLocation(campaignId, locationId);
       if (entities.length > 0) parts.push('Present: ' + entities.map(e => `${e.name} (${e.type}, ${e.disposition ?? 'unknown disposition'})`).join(', '));
     }
-    const locs = this.db.prepare('SELECT name, description FROM locations WHERE campaign_id = ? ORDER BY rowid DESC LIMIT 12').all(campaignId) as any[];
-    if (locs.length > 0) parts.push('Known locations: ' + locs.map((l: any) => `${l.name}${l.description ? ' — ' + l.description : ''}`).join('; '));
+    const locs = this.db.prepare('SELECT name, description, visited FROM locations WHERE campaign_id = ? ORDER BY visited ASC, rowid DESC LIMIT 12').all(campaignId) as any[];
+    if (locs.length > 0) {
+      const unvisited = locs.filter((l: any) => !l.visited);
+      const visited = locs.filter((l: any) => l.visited);
+      let locText = '';
+      if (unvisited.length > 0) {
+        locText += 'UNVISITED locations (advance the story toward these!): ' + unvisited.map((l: any) => `${l.name}${l.description ? ' — ' + l.description : ''}`).join('; ');
+      }
+      if (visited.length > 0) {
+        locText += (locText ? '\n' : '') + 'Visited locations: ' + visited.map((l: any) => l.name).join(', ');
+      }
+      parts.push(locText);
+    }
 
     const npcs = this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid DESC LIMIT 15').all(campaignId) as any[];
     if (npcs.length > 0) {

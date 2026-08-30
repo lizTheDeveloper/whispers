@@ -148,6 +148,7 @@ export class GameLoop {
       const loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
       if (loc) {
         this.state.currentLocationId = loc.id;
+        this.worldBible.markLocationVisited(this.campaignId, loc.id);
         if (narration.activeNpcs.length > 0) {
           console.log(`[game-loop] Location: "${loc.name}" (${this.locationTurnCount} turns) — NPCs present: ${narration.activeNpcs.join(', ')}`);
         }
