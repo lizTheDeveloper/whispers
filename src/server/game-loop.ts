@@ -189,6 +189,10 @@ export class GameLoop {
 
     const memories = this.memoryStore.recall(characterId, 8, sceneNarration);
 
+    const partyMembers = Array.from(this.characters.entries())
+      .filter(([id]) => id !== characterId)
+      .map(([, c]) => ({ name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble }));
+
     let proposals;
     try {
       proposals = await this.characterAgent.proposeActions({
@@ -198,6 +202,7 @@ export class GameLoop {
         transcript: this.transcript,
         memories,
         worldContext: charWorldContext,
+        partyMembers,
       });
     } catch (e) {
       console.error('[game-loop] action proposal failed:', e);
@@ -225,7 +230,7 @@ export class GameLoop {
     let decision;
     try {
       decision = await this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: charWorldContext },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: charWorldContext, partyMembers },
         whisper,
       );
     } catch (e) {
