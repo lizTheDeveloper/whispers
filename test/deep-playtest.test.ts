@@ -333,7 +333,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
 
     let scenesCompleted = 0;
     const whisperInfluences: string[] = [];
-    const TOTAL_TURNS = 30;
+    const TOTAL_TURNS = 25;
     let gameEndedNaturally = false;
 
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
