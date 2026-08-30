@@ -7,6 +7,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
         <img id="scene-img" alt="" />
         <div class="scene-image-label" id="scene-label"></div>
       </div>
+      <div class="location-bar" id="location-bar" style="display:none"></div>
       <div class="narration-log" id="narration-log"></div>
       <div id="action-area"></div>
       <div class="whisper-input" id="whisper-area" style="display:none">
@@ -33,7 +34,15 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     log.scrollTop = log.scrollHeight;
   }
 
-  ws.on('narration', (msg) => { if (msg.type === 'narration') appendLog(msg.text, 'dm'); });
+  const locationBar = root.querySelector('#location-bar') as HTMLElement;
+  ws.on('narration', (msg) => {
+    if (msg.type !== 'narration') return;
+    appendLog(msg.text, 'dm');
+    if (msg.locationName) {
+      locationBar.textContent = msg.locationName;
+      locationBar.style.display = 'block';
+    }
+  });
   ws.on('resolution', (msg) => { if (msg.type === 'resolution') appendLog(msg.text, 'dm'); });
   ws.on('scene-end', (msg) => {
     if (msg.type === 'scene-end') {
@@ -115,9 +124,10 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
 
   ws.on('character-state-update', (msg) => {
     if (msg.type !== 'character-state-update') return;
-    const s = msg.state as { stress: number; consequences: string[]; fatePoints: number; whisperTrust: number };
+    const s = msg.state as { stress: number; consequences: string[]; fatePoints: number; whisperTrust: number; inventory?: string[] };
     const parts = [`Stress: ${s.stress}/3`, `FP: ${s.fatePoints}`];
     if (s.consequences.length > 0) parts.push(`Wounds: ${s.consequences.join(', ')}`);
+    if (s.inventory && s.inventory.length > 0) parts.push(`Items: ${s.inventory.join(', ')}`);
     const existing = root.querySelector('#char-status') as HTMLElement;
     if (existing) {
       existing.textContent = parts.join(' | ');

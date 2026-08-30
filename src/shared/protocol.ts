@@ -30,7 +30,7 @@ export type ServerMessage =
   | { type: 'negotiation-message'; characterId: string; sender: 'dm-agent' | 'host' | 'player' | 'char-agent'; senderName: string; text: string }
   | { type: 'negotiation-opened'; characterId: string; characterName: string; playerName: string }
   | { type: 'phase-change'; phase: GamePhase }
-  | { type: 'narration'; text: string; sceneNumber: number }
+  | { type: 'narration'; text: string; sceneNumber: number; locationName?: string }
   | { type: 'scene-image'; imageUrl: string; locationName: string }
   | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; whisperTrust: number }
   | { type: 'whisper-prompt'; characterId: string; characterName: string }

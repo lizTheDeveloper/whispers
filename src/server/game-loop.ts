@@ -133,7 +133,7 @@ export class GameLoop {
     }
 
     this.addTranscript('dm', narration.narration);
-    this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene });
+    this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
 
     if (narration.currentLocationName) {
       const loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);

@@ -296,6 +296,18 @@ button:disabled {
 
 /* ─── Game View ─── */
 
+.location-bar {
+  padding: 0.5rem 1.25rem;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--signal);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
 .narration-log {
   max-height: 65vh;
   overflow-y: auto;
