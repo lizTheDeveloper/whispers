@@ -236,15 +236,22 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     });
   }
 
-  async summarizeScene(transcript: TranscriptMessage[], characterNames?: string[]): Promise<string> {
+  async summarizeScene(transcript: TranscriptMessage[], characterNames?: string[], worldState?: string): Promise<string> {
     const text = transcript.map(m => `[${m.role}] ${m.content}`).join('\n');
     const charHint = characterNames && characterNames.length > 0
       ? ` For each character (${characterNames.join(', ')}), note their last action and current situation.`
       : '';
+    const worldHint = worldState
+      ? `\n\nThe world bible already tracks these facts (do NOT repeat them — focus on narrative, character emotions, and unresolved tension instead):\n${worldState}`
+      : '';
+    const hasRecap = transcript.some(m => m.content.startsWith('[Session recap]'));
+    const compactionHint = hasRecap
+      ? '\nIMPORTANT: The transcript begins with a prior recap. Preserve ALL named characters, NPCs, locations, and plot threads from that recap. Add new developments from recent events. Do not lose earlier details.'
+      : '';
     const result = await callLlm({
       messages: [
         { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
-        { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
+        { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint}${compactionHint}${worldHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
       ],
       schema: SceneSummarySchema,
     });
