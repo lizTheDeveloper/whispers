@@ -247,9 +247,10 @@ export class GameLoop {
       );
     } catch (e) {
       console.error('[game-loop] action decision failed:', e);
+      const fallbackAction = proposals.actions[0]?.description ?? 'Waits and observes';
       decision = {
-        chosenAction: proposals.actions[0]?.description ?? 'Waits and observes',
-        innerThought: 'Something feels off...',
+        chosenAction: fallbackAction,
+        innerThought: `I should ${fallbackAction.toLowerCase()} — the situation demands action, even if I'm uncertain.`,
         whisperedInfluence: 'ignored' as const,
         trustDelta: 0,
       };
