@@ -42,7 +42,17 @@ export class WorldBible {
 
   getLocationByName(campaignId: string, name: string): Location | null {
     const row = this.db.prepare('SELECT * FROM locations WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) as any;
-    if (!row) return null;
+    if (!row) {
+      const stripped = name.replace(/^(the|a|an)\s+/i, '');
+      if (stripped !== name) {
+        return this.getLocationByName(campaignId, stripped);
+      }
+      const withArticle = this.db.prepare(
+        "SELECT * FROM locations WHERE campaign_id = ? AND (name = ? COLLATE NOCASE OR REPLACE(LOWER(name), 'the ', '') = LOWER(?))"
+      ).get(campaignId, name, stripped) as any;
+      if (!withArticle) return null;
+      return { id: withArticle.id, campaignId: withArticle.campaign_id, name: withArticle.name, description: withArticle.description, terrain: withArticle.terrain, connections: JSON.parse(withArticle.connections ?? '[]'), coords: withArticle.coords ? JSON.parse(withArticle.coords) : null };
+    }
     return { id: row.id, campaignId: row.campaign_id, name: row.name, description: row.description, terrain: row.terrain, connections: JSON.parse(row.connections ?? '[]'), coords: row.coords ? JSON.parse(row.coords) : null };
   }
 
