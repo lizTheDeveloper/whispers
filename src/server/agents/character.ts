@@ -54,10 +54,12 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       whisperText = '\n(No whisper this turn — act on your own judgment.)';
     }
 
+    const recentTranscript = ctx.transcript.slice(-6).map(m => `[${m.role}] ${m.content}`).join('\n');
+
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `You must now choose your action.${whisperText}\n\nRespond as JSON: { "chosenAction": "what you do (under 30 words)", "innerThought": "your internal reasoning (1-2 sentences)", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": <number> }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nYou must now choose your action.${whisperText}\n\nRespond as JSON: { "chosenAction": "what you do (under 30 words)", "innerThought": "your internal reasoning (1-2 sentences)", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": <number> }` },
       ],
       schema: ActionDecisionSchema,
       maxTokens: 512,
