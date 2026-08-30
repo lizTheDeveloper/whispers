@@ -428,7 +428,12 @@ export class GameLoop {
 
       const diff = {
         newLocations: (scenario.locations ?? []).map((l: any) => ({ name: l.name, description: l.description, terrain: l.terrain ?? null })),
-        newEntities: (scenario.npcs ?? []).map((n: any) => ({ name: n.name, type: 'npc', description: n.description, disposition: n.disposition ?? null })),
+        newEntities: (scenario.npcs ?? []).map((n: any) => ({
+          name: n.name,
+          type: 'npc',
+          description: n.motivation ? `${n.description} [Motivation: ${n.motivation}]` : n.description,
+          disposition: n.disposition ?? null,
+        })),
         newItems: [] as any[],
         newEvents: (scenario.plotHooks ?? []).map((hook: string, i: number) => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
         newRelationships: [] as any[],
