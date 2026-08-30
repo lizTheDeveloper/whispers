@@ -24,6 +24,7 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
             <option value="">No scenario — improvise</option>
             <option value="collapsed-mine">The Collapsed Mine — dungeon crawl (beginner)</option>
             <option value="haunted-masquerade">The Haunted Masquerade — social intrigue (intermediate)</option>
+            <option value="clockwork-vault">The Clockwork Vault — heist (intermediate)</option>
           </select>
           <button id="create-btn">Create Game</button>
         </div>
