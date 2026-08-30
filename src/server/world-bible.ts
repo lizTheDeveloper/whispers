@@ -136,9 +136,11 @@ export class WorldBible {
         return label;
       }).join('; '));
     }
-    const items = this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL LIMIT 5').all(campaignId) as any[];
-    if (items.length > 0) {
-      parts.push('Available items: ' + items.map((i: any) => i.name).join(', '));
+    const unclaimedItems = locationId
+      ? this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND (location_id = ? OR location_id IS NULL) LIMIT 5').all(campaignId, locationId) as any[]
+      : this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL LIMIT 5').all(campaignId) as any[];
+    if (unclaimedItems.length > 0) {
+      parts.push('Items you could pick up: ' + unclaimedItems.map((i: any) => i.name).join(', '));
     }
     const rels = this.db.prepare(`SELECT r.type, r.description, e1.name as a_name, e2.name as b_name
       FROM relationships r
