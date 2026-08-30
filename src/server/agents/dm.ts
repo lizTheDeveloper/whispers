@@ -50,7 +50,13 @@ export class DmAgent {
     }
 
     if (sessionTurn >= 20 && sceneNum >= 4) {
-      sessionArc += ` (Turn ${sessionTurn} of session — converge toward resolution, but give the ending room to breathe.)`;
+      if (sceneNum >= 5 && roundCount >= 5) {
+        sessionArc += ` WRAP UP NOW (turn ${sessionTurn}, round ${roundCount}): narrate the final outcome — victory, defeat, or bittersweet resolution — and set isSceneEnd to true. The story must end.`;
+      } else if (sceneNum >= 5 && roundCount >= 3) {
+        sessionArc += ` (Turn ${sessionTurn}, round ${roundCount} — the climax should land THIS round. After one more decisive action, narrate the resolution and end the scene.)`;
+      } else {
+        sessionArc += ` (Turn ${sessionTurn} of session — converge toward resolution, but give the ending room to breathe.)`;
+      }
     }
 
     // Scale pacing thresholds: larger parties generate more content per round

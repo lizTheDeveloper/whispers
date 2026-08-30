@@ -77,6 +77,12 @@ export class GameLoop {
 
   private async runScene(campaign: any): Promise<void> {
     if (this.stopped) return;
+    if ((this.state.currentTurn ?? 0) >= 50) {
+      console.log(`[game-loop] Session hard limit (50 turns) — stopping`);
+      this.broadcastFn({ type: 'scene-end', summary: 'The session draws to a close, the story left at its natural resting point.', sceneNumber: this.state.currentScene });
+      this.stopped = true;
+      return;
+    }
 
     const worldSummary = this.worldBible.getSummary(this.campaignId);
     let narration;
@@ -117,9 +123,11 @@ export class GameLoop {
 
     const partySize = this.characters.size || 1;
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
-    const forceSceneEnd = roundCount >= 10;
+    const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
+    const hardCap = isFinale ? 6 : 10;
+    const forceSceneEnd = roundCount >= hardCap;
     if (forceSceneEnd) {
-      console.log(`[game-loop] Forcing scene end at round ${roundCount} (hard cap)`);
+      console.log(`[game-loop] Forcing scene end at round ${roundCount} (${isFinale ? 'finale' : 'hard'} cap)`);
     }
 
     const minRounds = (this.state.currentScene >= 5) ? 3 : 2;
