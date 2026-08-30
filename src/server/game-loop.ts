@@ -593,6 +593,9 @@ export class GameLoop {
       if (field === 'stress' && typeof value === 'number') {
         state.stress = Math.max(0, Math.min(value, 3));
       }
+      if (field === 'fatePoints' && typeof value === 'number') {
+        state.fatePoints = Math.max(0, Math.min(value, 5));
+      }
     } else if (action === 'add' && Array.isArray(state[field])) {
       (state[field] as unknown[]).push(value);
     } else if (action === 'remove' && Array.isArray(state[field])) {
