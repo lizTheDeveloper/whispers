@@ -158,7 +158,8 @@ export class GameLoop {
     const partySize = this.characters.size || 1;
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
     const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
-    const hardCap = isFinale ? 6 : 10;
+    const baseHardCap = Math.max(4, 8 - partySize);
+    const hardCap = isFinale ? Math.min(baseHardCap, 5) : baseHardCap;
     const forceSceneEnd = roundCount >= hardCap;
     if (forceSceneEnd) {
       console.log(`[game-loop] Forcing scene end at round ${roundCount} (${isFinale ? 'finale' : 'hard'} cap)`);
@@ -255,10 +256,24 @@ export class GameLoop {
       };
     }
 
-    const genericThoughts = ['something feels off', 'i need to be careful', 'i should be cautious', 'something is wrong'];
-    if (genericThoughts.some(g => decision.innerThought.toLowerCase().startsWith(g))) {
+    const genericPatterns = [
+      /^something (feels|is|seems|isn't|doesn't feel) (off|wrong|right)/i,
+      /^i (need|should|must|have) to be careful/i,
+      /^i (should|must|need to) (proceed|be) cautious/i,
+      /^i (sense|feel) (something|danger|that something)/i,
+      /^(this|something) (doesn't feel|isn't|seems) (right|wrong|off)/i,
+      /^i have a bad feeling/i,
+      /^i need to act now\.?$/i,
+      /^i must tread carefully/i,
+      /^(caution|careful|cautious|vigilant|wary)/i,
+    ];
+    if (genericPatterns.some(p => p.test(decision.innerThought))) {
       const actionSnippet = decision.chosenAction.replace(/^I\s+/i, '').split(/[.!]/)[0].trim().slice(0, 50);
-      decision.innerThought = `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}.`;
+      const memoryHook = memories.length > 0 ? memories[0].content.split(/[.!]/)[0].trim().slice(0, 40) : null;
+      const contextDetail = memoryHook
+        ? `Remembering that ${memoryHook.toLowerCase()}, I'll ${actionSnippet.toLowerCase()}`
+        : `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}`;
+      decision.innerThought = `${contextDetail}.`;
     }
 
     this.addTranscript('character', `${character.definition.name}: ${decision.chosenAction}`, characterId);
@@ -305,6 +320,7 @@ export class GameLoop {
         {
           id: characterId, name: character.definition.name, skills: character.definition.skills,
           stress: character.state.stress, consequences: character.state.consequences, fatePoints: character.state.fatePoints,
+          aspects: character.definition.aspects, highConcept: character.definition.highConcept, trouble: character.definition.trouble,
           partyMembers: Array.from(this.characters.entries())
             .filter(([id]) => id !== characterId)
             .map(([id, c]) => ({ id, name: c.definition.name })),
@@ -355,6 +371,22 @@ export class GameLoop {
       if (resolution.outcome !== correctOutcome) {
         console.log(`[game-loop] FATE outcome corrected: DM said ${resolution.outcome}, math says ${correctOutcome} (effort ${effort} vs diff ${resolution.difficulty}, shifts ${shifts})`);
         resolution.outcome = correctOutcome;
+      }
+    }
+
+    const fpSpentByDm = resolution.stateChanges.some(c => c.field === 'fatePoints' && c.action === 'set' && typeof c.value === 'number' && c.value < character.state.fatePoints);
+    if (!fpSpentByDm && character.state.fatePoints > 0) {
+      const actionLower = decision.chosenAction.toLowerCase();
+      const allAspects = [character.definition.highConcept, ...character.definition.aspects].filter(Boolean);
+      const aspectWords = allAspects.map(a => a.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+      const invoked = aspectWords.some(words => {
+        const matches = words.filter(w => actionLower.includes(w));
+        return matches.length >= 2;
+      });
+      if (invoked) {
+        const newFp = character.state.fatePoints - 1;
+        resolution.stateChanges.push({ characterId, field: 'fatePoints' as const, action: 'set' as const, value: newFp });
+        console.log(`[game-loop] Aspect invocation detected in "${decision.chosenAction.slice(0, 60)}" — ${character.definition.name} spends 1 FP (${character.state.fatePoints} → ${newFp})`);
       }
     }
 

@@ -76,9 +76,8 @@ export class DmAgent {
       }
     }
 
-    // Scale pacing thresholds: larger parties generate more content per round
     const developThreshold = partySize <= 1 ? 2 : 2;
-    const escalateThreshold = partySize <= 1 ? 5 : Math.max(3, 5 - partySize);
+    const escalateThreshold = partySize <= 1 ? 5 : Math.max(2, 4 - partySize);
 
     const pacingHint = roundCount === 0
       ? 'This is the opening of a new scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Hint at trouble or opportunity.'
@@ -106,7 +105,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; partyMembers?: Array<{ id: string; name: string }> }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; partyMembers?: Array<{ id: string; name: string }> }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
@@ -130,7 +129,12 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
 
     let charBlock = '';
     if (characterInfo) {
-      charBlock = `\nCharacter: ${characterInfo.name} (id: ${characterInfo.id})\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}`;
+      const aspectList = [
+        characterInfo.highConcept ? `High Concept: "${characterInfo.highConcept}"` : '',
+        characterInfo.trouble ? `Trouble: "${characterInfo.trouble}"` : '',
+        ...(characterInfo.aspects ?? []).map(a => `"${a}"`),
+      ].filter(Boolean).join(', ');
+      charBlock = `\nCharacter: ${characterInfo.name} (id: ${characterInfo.id})\nAspects: ${aspectList}\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}`;
       if (characterInfo.partyMembers && characterInfo.partyMembers.length > 0) {
         charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})`).join(', ')}`;
       }
