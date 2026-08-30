@@ -1,0 +1,27 @@
+{
+  "id": "clockwork-vault",
+  "name": "The Clockwork Vault",
+  "description": "A heist scenario: break into a mechanized vault before the automaton patrol returns. Planning, teamwork, and improvisation.",
+  "openingNarration": "The Artificer's Guild vault is legendary — three floors of clockwork traps, mechanical sentries, and a lock that changes its combination every hour on the hour. Inside sits the Orrery of Fates, a device that the Guild claims can predict the future. Your employer wants it. You have until the midnight bell — four hours from now. The Guild's annual gala is your cover. Guests in silk and brass fill the exhibition hall above the vault. A former Guild apprentice named Sparks sold you a partial blueprint of the first floor. The rest, you'll have to figure out as you go.",
+  "npcs": [
+    { "name": "Sparks", "description": "A nervous ex-apprentice with grease-stained fingers and a debt to your employer.", "disposition": "helpful", "motivation": "Wants the debt cleared and fears the Guild will discover the betrayal" },
+    { "name": "Guildmaster Vex", "description": "The vault's architect, a tall figure in a brass mask who designed every trap personally.", "disposition": "suspicious", "motivation": "Suspects someone will try for the Orrery tonight and is watching the gala closely" },
+    { "name": "Lady Ashworth", "description": "A wealthy patron attending the gala who has her own reasons for wanting the Orrery.", "disposition": "calculating", "motivation": "Will offer the party a better deal mid-heist — if they'll double-cross their employer" },
+    { "name": "Cogsworth", "description": "A brass automaton guard with a cracked voicebox that repeats the same warning every 90 seconds.", "disposition": "hostile", "motivation": "Follows patrol patterns exactly, but the cracked voicebox is a useful timer" }
+  ],
+  "locations": [
+    { "name": "The Exhibition Hall", "description": "Glittering gala above the vault, guests in masks and brass finery", "terrain": "interior" },
+    { "name": "The Maintenance Corridor", "description": "Service tunnels behind the walls, dusty and narrow, with exposed gears", "terrain": "underground" },
+    { "name": "Vault Floor One", "description": "Pressure plates, dart launchers, and a rotating combination lock", "terrain": "underground" },
+    { "name": "Vault Floor Two", "description": "Clockwork sentries patrol in predictable patterns, but the floor shifts", "terrain": "underground" },
+    { "name": "The Orrery Chamber", "description": "The deepest room — a domed ceiling shows the stars, and the Orrery spins in the center", "terrain": "underground" }
+  ],
+  "plotHooks": [
+    "Sparks' blueprint is incomplete — the second floor isn't on it",
+    "Guildmaster Vex is watching the gala guests more carefully than usual tonight",
+    "Lady Ashworth approaches the party with a counter-offer mid-heist",
+    "The Orrery does more than predict the future — it shows something the Guild doesn't want anyone to see",
+    "Cogsworth's patrol pattern has a 30-second gap if timed right"
+  ],
+  "difficulty": "intermediate"
+}

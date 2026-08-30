@@ -109,8 +109,19 @@ export class DmAgent {
   async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; partyMembers?: Array<{ id: string; name: string }> }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
+    const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
     const diceBlock = diceResult
-      ? `\nDice result: ${diceResult.description} (total: ${diceResult.total}). Use this roll to determine the outcome — do not invent your own. In FATE, add the relevant skill rank to the total and compare against the difficulty you set. Failures and success-with-cost make better stories than constant success.`
+      ? `\nDice result: ${diceResult.description} (total: ${diceResult.total}). FATE resolution steps:
+1. Pick the MOST relevant skill from the character's list${skillList ? ` (${skillList})` : ''}
+2. Set difficulty using the FATE ladder: 0=Mediocre (trivial), 1=Average (basic), 2=Fair (competent), 3=Good (hard), 4=Great (very hard), 5=Superb (near-impossible). Set difficulty BEFORE calculating — pick what makes narrative sense, not what guarantees a result.
+3. Calculate effort = dice total (${diceResult.total}) + skill rank
+4. Calculate shifts = effort - difficulty
+5. Map shifts to outcome:
+   - shifts >= 1: "success" (clear victory)
+   - shifts == 0: "tie" (succeed but at a minor cost — you get what you want BUT something goes wrong too)
+   - shifts == -1 or -2: "success-with-cost" (you can succeed BUT pay a heavy price — stress, a consequence, or a dangerous complication)
+   - shifts <= -3: "failure" (you don't get what you want, and something bad happens)
+IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A clean "success" should only happen when effort clearly exceeds difficulty. When in doubt between success and tie, choose tie.`
       : '';
 
     const consequenceGuide = (sceneNumber ?? 1) >= 4
@@ -129,7 +140,11 @@ export class DmAgent {
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `${charBlock}Action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve this action. Determine the appropriate skill, set a fair difficulty (0=Mediocre, 2=Fair, 4=Great), and narrate the outcome based on the dice. A wounded character (high stress, existing consequences) should struggle more. Apply meaningful consequences for failures — stress, complications, or narrative setbacks.${consequenceGuide}\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
+        { role: 'user', content: `${charBlock}Action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve this action using the FATE steps above. A wounded character (high stress, existing consequences) should face HIGHER difficulty (+1 per consequence). Apply meaningful state changes:
+- "tie": minor cost (1 stress, or reveal information to an enemy, or lose time)
+- "success-with-cost": serious cost (2 stress, or a new consequence like "Twisted Ankle" or "Shaken Confidence", or an NPC turns hostile)
+- "failure": bad outcome (stress to max, a severe consequence, enemy gains advantage, or the situation gets worse)
+Do NOT leave stateChanges empty on ties, costs, or failures — the mechanical cost IS the story.${consequenceGuide}\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
       ],
       schema: DmResolutionSchema,
       maxTokens: 1024,
@@ -170,6 +185,7 @@ Rules reference:
 ${ruleContext}
 
 Ask about their concept, backstory, skills. Be encouraging. Help if they're stuck.
+Guide them toward characters with INTERNAL TENSION — a scholar tempted by forbidden knowledge, a healer who once let someone die, a warrior who fears what they become in battle. The best characters have a clear strength AND a clear vulnerability. The "trouble" aspect should create genuine dilemmas, not minor inconveniences.
 
 CRITICAL: You MUST respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON. Every response must be valid JSON.
 

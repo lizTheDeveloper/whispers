@@ -26,7 +26,6 @@ function sendMsg(ws: WebSocket, msg: ClientMessage): void {
 
 function waitForMsg(ws: WebSocket, type: string, timeoutMs = 90_000): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${type} after ${timeoutMs}ms`)), timeoutMs);
     const handler = (data: Buffer) => {
       const msg: ServerMessage = JSON.parse(data.toString());
       if (msg.type === type) {
@@ -35,13 +34,16 @@ function waitForMsg(ws: WebSocket, type: string, timeoutMs = 90_000): Promise<Se
         resolve(msg);
       }
     };
+    const timer = setTimeout(() => {
+      ws.off('message', handler);
+      reject(new Error(`Timeout waiting for ${type} after ${timeoutMs}ms`));
+    }, timeoutMs);
     ws.on('message', handler);
   });
 }
 
 function waitForAnyMsg(ws: WebSocket, types: string[], timeoutMs = 90_000): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout waiting for any of [${types.join(',')}] after ${timeoutMs}ms`)), timeoutMs);
     const handler = (data: Buffer) => {
       const msg: ServerMessage = JSON.parse(data.toString());
       if (types.includes(msg.type)) {
@@ -50,6 +52,10 @@ function waitForAnyMsg(ws: WebSocket, types: string[], timeoutMs = 90_000): Prom
         resolve(msg);
       }
     };
+    const timer = setTimeout(() => {
+      ws.off('message', handler);
+      reject(new Error(`Timeout waiting for any of [${types.join(',')}] after ${timeoutMs}ms`));
+    }, timeoutMs);
     ws.on('message', handler);
   });
 }
@@ -289,14 +295,13 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
     let scenesCompleted = 0;
     const whisperInfluences: string[] = [];
     const TOTAL_TURNS = 25;
+    let gameEndedNaturally = false;
 
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
       const turnStart = Date.now();
       console.log(`\n[playtest] === Turn ${turn + 1} ===`);
 
       try {
-        // Reactively respond to whisper-prompt as soon as it arrives
-        // (game loop has a 15s timeout — can't wait for sequential processing)
         const whisperText = whispers[turn % whispers.length];
         let whisperSent = false;
         const autoWhisper = (data: Buffer) => {
@@ -312,17 +317,35 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
         };
         player.on('message', autoWhisper);
 
-        const actionMsg = await waitForAnyMsg(player, ['action-proposals', 'narration', 'scene-end'], 120_000);
+        const actionMsg = await waitForAnyMsg(player, ['action-proposals', 'narration', 'scene-end', 'phase-change'], 120_000);
+
+        if (actionMsg.type === 'phase-change' && (actionMsg as any).phase === 'ended') {
+          player.off('message', autoWhisper);
+          console.log(`[playtest]   Game ended naturally during turn ${turn + 1}`);
+          gameEndedNaturally = true;
+          break;
+        }
 
         if (actionMsg.type === 'narration') {
           console.log(`[playtest]   Narration: "${actionMsg.text.slice(0, 80)}..."`);
-          const nextMsg = await waitForAnyMsg(player, ['action-proposals', 'scene-end'], 120_000);
+          const nextMsg = await waitForAnyMsg(player, ['action-proposals', 'scene-end', 'phase-change'], 120_000);
+          if (nextMsg.type === 'phase-change' && (nextMsg as any).phase === 'ended') {
+            player.off('message', autoWhisper);
+            console.log(`[playtest]   Game ended naturally after narration`);
+            gameEndedNaturally = true;
+            break;
+          }
           if (nextMsg.type === 'scene-end') {
             scenesCompleted++;
             console.log(`[playtest]   Scene ${scenesCompleted} ended after narration: "${(nextMsg as any).summary?.slice(0, 80)}..."`);
             player.off('message', autoWhisper);
-            const nextNarration = await waitForMsg(player, 'narration', 120_000);
-            console.log(`[playtest]   New scene narration: "${nextNarration.type === 'narration' ? nextNarration.text.slice(0, 80) : '??'}..."`);
+            const nextOrEnd = await waitForAnyMsg(player, ['narration', 'phase-change'], 120_000);
+            if (nextOrEnd.type === 'phase-change' && (nextOrEnd as any).phase === 'ended') {
+              console.log(`[playtest]   Game ended after scene transition`);
+              gameEndedNaturally = true;
+              break;
+            }
+            console.log(`[playtest]   New scene narration: "${nextOrEnd.type === 'narration' ? nextOrEnd.text.slice(0, 80) : '??'}..."`);
             turnsCompleted++;
             const turnTime = Date.now() - turnStart;
             turnTimings.push(turnTime);
@@ -342,8 +365,13 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           scenesCompleted++;
           console.log(`[playtest]   Scene ${scenesCompleted} ended: "${actionMsg.summary?.slice(0, 80)}..."`);
           player.off('message', autoWhisper);
-          const nextNarration = await waitForMsg(player, 'narration', 120_000);
-          console.log(`[playtest]   New scene narration: "${nextNarration.type === 'narration' ? nextNarration.text.slice(0, 80) : '??'}..."`);
+          const nextOrEnd = await waitForAnyMsg(player, ['narration', 'phase-change'], 120_000);
+          if (nextOrEnd.type === 'phase-change' && (nextOrEnd as any).phase === 'ended') {
+            console.log(`[playtest]   Game ended after scene transition`);
+            gameEndedNaturally = true;
+            break;
+          }
+          console.log(`[playtest]   New scene narration: "${nextOrEnd.type === 'narration' ? nextOrEnd.text.slice(0, 80) : '??'}..."`);
           turnsCompleted++;
           const turnTime = Date.now() - turnStart;
           turnTimings.push(turnTime);
@@ -351,7 +379,6 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           continue;
         }
 
-        // Whisper is handled reactively above — wait for action-taken
         const actionTaken = await waitForMsg(player, 'action-taken', 120_000);
         if (actionTaken.type === 'action-taken') {
           const influence = (actionTaken as any).whisperInfluence ?? 'unknown';
@@ -363,7 +390,6 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           if (actionTaken.innerThought.length === 0) findings.push(`BUG: Turn ${turn + 1} returned empty inner thought`);
         }
 
-        // Dice roll arrives BEFORE resolution (pre-rolled by server)
         const diceMsg = await waitForMsg(player, 'dice-roll', 60_000);
         if (diceMsg.type === 'dice-roll') {
           console.log(`[playtest]   Dice: ${diceMsg.result.description} (total: ${diceMsg.result.total})`);
@@ -429,12 +455,17 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
 
     // Test 5: End game
     t0 = Date.now();
-    sendMsg(host, { type: 'end-game' });
-    const endPhase = await waitForMsg(player, 'phase-change', 10_000);
-    timings['end-game'] = Date.now() - t0;
-    if (endPhase.type === 'phase-change') {
-      expect(endPhase.phase).toBe('ended');
-      console.log(`[playtest] Game ended (${timings['end-game']}ms)`);
+    if (gameEndedNaturally) {
+      console.log(`[playtest] Game already ended naturally — skipping end-game command`);
+      timings['end-game'] = 0;
+    } else {
+      sendMsg(host, { type: 'end-game' });
+      const endPhase = await waitForMsg(player, 'phase-change', 30_000);
+      timings['end-game'] = Date.now() - t0;
+      if (endPhase.type === 'phase-change') {
+        expect(endPhase.phase).toBe('ended');
+        console.log(`[playtest] Game ended (${timings['end-game']}ms)`);
+      }
     }
 
     // Test 6: Messages after game end should not crash

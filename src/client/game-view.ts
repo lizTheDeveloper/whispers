@@ -113,6 +113,23 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     }
   });
 
+  ws.on('character-state-update', (msg) => {
+    if (msg.type !== 'character-state-update') return;
+    const s = msg.state as { stress: number; consequences: string[]; fatePoints: number; whisperTrust: number };
+    const parts = [`Stress: ${s.stress}/3`, `FP: ${s.fatePoints}`];
+    if (s.consequences.length > 0) parts.push(`Wounds: ${s.consequences.join(', ')}`);
+    const existing = root.querySelector('#char-status') as HTMLElement;
+    if (existing) {
+      existing.textContent = parts.join(' | ');
+    } else {
+      const statusDiv = document.createElement('div');
+      statusDiv.id = 'char-status';
+      statusDiv.className = 'narration-entry system';
+      statusDiv.textContent = parts.join(' | ');
+      whisperArea.insertAdjacentElement('beforebegin', statusDiv);
+    }
+  });
+
   ws.on('dm-question', (msg) => {
     if (msg.type !== 'dm-question' || !isHost) return;
     const answer = prompt(`DM asks: ${msg.question}`);
