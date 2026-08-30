@@ -381,9 +381,18 @@ export class GameLoop {
   }
 
   private async seedScenario(scenarioId: string): Promise<void> {
+    if (!/^[a-z0-9-]{1,64}$/.test(scenarioId)) {
+      console.warn(`[game-loop] Invalid scenario id: ${scenarioId}`);
+      return;
+    }
     try {
       const base = dirname(fileURLToPath(import.meta.url));
-      const scenarioPath = resolve(base, '../../data/scenarios', `${scenarioId}.json`);
+      const scenariosDir = resolve(base, '../../data/scenarios');
+      const scenarioPath = resolve(scenariosDir, `${scenarioId}.json`);
+      if (!scenarioPath.startsWith(scenariosDir + '/')) {
+        console.warn(`[game-loop] Scenario path traversal blocked: ${scenarioId}`);
+        return;
+      }
       const scenario = JSON.parse(readFileSync(scenarioPath, 'utf-8'));
 
       const diff = {
