@@ -442,6 +442,7 @@ export class GameLoop {
         c.state.stress = 1;
         if (!c.state.consequences.includes('Taken Out (recovering)')) {
           c.state.consequences.push('Taken Out (recovering)');
+          (c as any)._takenOutScene = this.state.currentScene;
         }
       }
     }
@@ -550,6 +551,40 @@ export class GameLoop {
 
     for (const charId of this.characters.keys()) {
       this.memoryStore.decayMemories(charId);
+    }
+
+    for (const [charId, char] of this.characters) {
+      const oldStress = char.state.stress;
+      char.state.stress = 0;
+
+      const recoverable: string[] = [];
+      const kept: string[] = [];
+      for (const c of char.state.consequences) {
+        if (c === 'Taken Out (recovering)') {
+          const scenesOut = (char as any)._takenOutScene ?? 0;
+          if (this.state.currentScene - scenesOut >= 1) {
+            recoverable.push(c);
+          } else {
+            kept.push(c);
+          }
+        } else if (char.state.consequences.length > 1) {
+          kept.push(c);
+        } else {
+          recoverable.push(c);
+        }
+      }
+      char.state.consequences = kept;
+
+      if (oldStress > 0 || recoverable.length > 0) {
+        const parts: string[] = [];
+        if (oldStress > 0) parts.push('stress clears');
+        if (recoverable.length > 0) parts.push(`recovers from: ${recoverable.join(', ')}`);
+        console.log(`[game-loop] Scene recovery: ${char.definition.name} — ${parts.join(', ')}`);
+        this.broadcastFn({ type: 'narration', text: `[${char.definition.name} takes a moment to recover — ${parts.join(', ')}]`, sceneNumber: this.state.currentScene });
+        this.broadcastFn({ type: 'character-state-update', characterId: charId, state: char.state });
+        this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(JSON.stringify(char.state), charId);
+      }
     }
 
     this.transcript = [
