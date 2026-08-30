@@ -300,11 +300,20 @@ export class GameLoop {
         .replace(/^I\s+/i, '')
         .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
         .split(/[.!]/)[0]?.trim() ?? 'act', 50);
-      const memoryHook = memories.length > 0
-        ? truncAtWord(memories[0]!.content.replace(/^I\s+/i, '').split(/[.!]/)[0]?.trim() ?? '', 60) || null
+      const rawMemory = memories.length > 0
+        ? truncAtWord(memories[0]!.content.split(/[.!]/)[0]?.trim() ?? '', 60) || null
         : null;
-      const contextDetail = memoryHook
-        ? `Last time I ${memoryHook.toLowerCase()} — now I need to ${actionSnippet.toLowerCase()}`
+      let memoryPhrase: string | null = null;
+      if (rawMemory) {
+        if (/^I\s/i.test(rawMemory)) {
+          const verb = rawMemory.replace(/^I\s+/i, '').toLowerCase();
+          memoryPhrase = `Last time I ${verb}`;
+        } else {
+          memoryPhrase = `I remember when ${rawMemory.toLowerCase()}`;
+        }
+      }
+      const contextDetail = memoryPhrase
+        ? `${memoryPhrase} — now I need to ${actionSnippet.toLowerCase()}`
         : `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}`;
       decision.innerThought = `${contextDetail}.`;
     }
