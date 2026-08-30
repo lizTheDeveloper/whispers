@@ -102,7 +102,10 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       remaining--;
       if (remaining <= 0) {
         if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+        whisperArea.style.display = 'none';
         whisperBtn.textContent = 'Whisper';
+        whisperInput.value = '';
+        appendLog('[You stayed silent.]', 'system');
         return;
       }
       whisperBtn.textContent = `Whisper (${remaining}s)`;
@@ -145,8 +148,30 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
 
   ws.on('dm-question', (msg) => {
     if (msg.type !== 'dm-question' || !isHost) return;
-    const answer = prompt(`DM asks: ${msg.question}`);
-    if (answer) ws.send({ type: 'dm-answer', text: answer });
+    actionArea.innerHTML = '';
+    const container = document.createElement('div');
+    container.className = 'dm-question-panel';
+    container.innerHTML = `
+      <h3>The DM asks:</h3>
+      <p class="dm-question-text">${msg.question}</p>
+      <div class="dm-question-input">
+        <input type="text" id="dm-answer-input" placeholder="Your answer..." />
+        <button id="dm-answer-btn">Answer</button>
+      </div>
+    `;
+    actionArea.appendChild(container);
+    const input = container.querySelector('#dm-answer-input') as HTMLInputElement;
+    const btn = container.querySelector('#dm-answer-btn') as HTMLButtonElement;
+    input.focus();
+    const submit = () => {
+      const text = input.value.trim();
+      if (!text) return;
+      ws.send({ type: 'dm-answer', text });
+      actionArea.innerHTML = '';
+      appendLog(`You answered: "${text}"`, 'system');
+    };
+    btn.addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   });
 
   let shownTutorial = false;

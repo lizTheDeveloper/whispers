@@ -505,6 +505,47 @@ button:disabled {
   background: rgba(0, 255, 136, 0.08);
 }
 
+/* ─── DM Question Panel ─── */
+
+.dm-question-panel {
+  background: linear-gradient(160deg, var(--surface) 0%, var(--void-deep) 100%);
+  padding: 1.25rem;
+  border-radius: var(--radius-lg);
+  margin: 1rem 0;
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  box-shadow: var(--shadow-card);
+  animation: proposals-in 0.4s ease-out;
+}
+.dm-question-panel h3 {
+  color: var(--signal);
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+}
+.dm-question-text {
+  color: var(--text);
+  margin-bottom: 1rem;
+  font-style: italic;
+}
+.dm-question-input {
+  display: flex;
+  gap: 0.65rem;
+}
+.dm-question-input input {
+  flex: 1;
+  border-color: rgba(0, 212, 255, 0.12);
+  background: rgba(6, 6, 11, 0.6);
+}
+.dm-question-input input:focus {
+  border-color: rgba(0, 212, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
+}
+.dm-question-input button {
+  background: linear-gradient(135deg, var(--signal) 0%, #0090b0 100%);
+  color: var(--void);
+  padding: 0.65rem 1.25rem;
+  white-space: nowrap;
+}
+
 /* ─── Scene Image ─── */
 
 .scene-image-container {
