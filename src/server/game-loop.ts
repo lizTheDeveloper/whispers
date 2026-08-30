@@ -460,7 +460,17 @@ export class GameLoop {
       .map(c => {
         const d = c.definition;
         const s = c.state;
-        return `${d.name}: ${d.highConcept} | Stress: ${s.stress} | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints}`;
+        const lastAction = this.transcript
+          .filter(m => m.role === 'character' && m.characterId === c.id)
+          .slice(-1)[0]?.content?.replace(`${d.name}: `, '') ?? '';
+        const recentMemories = this.memoryStore.recall(c.id, 2);
+        const mood = recentMemories.length > 0
+          ? recentMemories.map(m => m.content).join('; ')
+          : '';
+        let line = `${d.name}: ${d.highConcept} | Stress: ${s.stress} | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints} | Trust: ${s.whisperTrust.toFixed(2)}`;
+        if (lastAction) line += ` | Last: ${lastAction.slice(0, 60)}`;
+        if (mood) line += ` | Mindset: ${mood.slice(0, 80)}`;
+        return line;
       })
       .join('\n');
   }
