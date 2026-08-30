@@ -17,6 +17,12 @@ import type { ServerMessage } from '../shared/protocol.js';
 const BASE_COMPACTION_THRESHOLD = 35;
 const BASE_COMPACTION_KEEP_RECENT = 12;
 
+const TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief']);
+function getFirstName(fullName: string): string {
+  const parts = fullName.split(/\s+/);
+  return parts.find(p => !TITLES.has(p.toLowerCase())) ?? parts[0]!;
+}
+
 export class GameLoop {
   private dm: DmAgent;
   private characterAgent = new CharacterAgent();
@@ -396,7 +402,7 @@ export class GameLoop {
       resolution = {
         diceExpression: null, difficulty: null, skill: null,
         outcome: 'tie' as const,
-        narration: `${character.definition.name.split(' ')[0]} pushes through, but the cost is felt immediately.`,
+        narration: `${getFirstName(character.definition.name)} pushes through, but the cost is felt immediately.`,
         stateChanges: [{ characterId, field: 'stress' as const, action: 'set' as const, value: Math.min(character.state.stress + 1, 3) }],
       };
     }
@@ -406,12 +412,12 @@ export class GameLoop {
         .replace(/^I\s+/i, '')
         .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
         .replace(/\bmy\b/gi, 'the')
-        .replace(/\bmyself\b/gi, character.definition.name.split(' ')[0]!.toLowerCase())
-        .replace(/\bI('m|'ll|'ve|'d)?\b/g, character.definition.name.split(' ')[0]!)
+        .replace(/\bmyself\b/gi, getFirstName(character.definition.name).toLowerCase())
+        .replace(/\bI('m|'ll|'ve|'d)?\b/g, getFirstName(character.definition.name))
         .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
-      const firstName = character.definition.name.split(' ')[0]!;
+      const firstName = getFirstName(character.definition.name);
       const outcomeNarration = resolution.outcome === 'failure'
         ? `${firstName}'s effort falls short — the situation worsens despite the attempt.`
         : resolution.outcome === 'tie'
