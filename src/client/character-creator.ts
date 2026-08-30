@@ -27,13 +27,13 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
 
       <div class="tab-panel" id="panel-form">
         <div class="form-grid">
-          <label>Name <input type="text" id="char-name" placeholder="Sigmund the Bold" /></label>
-          <label>High Concept <input type="text" id="char-concept" placeholder="Reformed Thief with a Heart of Gold" /></label>
-          <label>Trouble <input type="text" id="char-trouble" placeholder="Can't Resist a Locked Door" /></label>
-          <label>Aspect 1 <input type="text" id="char-aspect1" placeholder="Quick Hands" /></label>
-          <label>Aspect 2 <input type="text" id="char-aspect2" placeholder="Loyal to a Fault" /></label>
-          <label>Aspect 3 <input type="text" id="char-aspect3" placeholder="Haunted by the Past" /></label>
-          <label>Personality <textarea id="char-personality" rows="3" placeholder="Cautious but impulsive when gold is involved."></textarea></label>
+          <label>Name <input type="text" id="char-name" value="Sigmund the Bold" /></label>
+          <label>High Concept <input type="text" id="char-concept" value="Reformed Thief with a Heart of Gold" /></label>
+          <label>Trouble <input type="text" id="char-trouble" value="Can't Resist a Locked Door" /></label>
+          <label>Aspect 1 <input type="text" id="char-aspect1" value="Quick Hands" /></label>
+          <label>Aspect 2 <input type="text" id="char-aspect2" value="Loyal to a Fault" /></label>
+          <label>Aspect 3 <input type="text" id="char-aspect3" value="Haunted by the Past" /></label>
+          <label>Personality <textarea id="char-personality" rows="3">Cautious but impulsive when gold is involved.</textarea></label>
           <label>Backstory <textarea id="char-backstory" rows="5" placeholder="Write your character's story..."></textarea></label>
         </div>
       </div>
@@ -217,7 +217,7 @@ Born in the slums of Veridian...
         personality: (root.querySelector('#char-personality') as HTMLTextAreaElement).value.trim(),
         backstory: (root.querySelector('#char-backstory') as HTMLTextAreaElement).value.trim(),
         skills: { Notice: 2, Fight: 1, Stealth: 1 },
-        stunts: [],
+        stunts: ['Quick Fingers: +2 to Stealth when picking locks or pockets'],
       };
       ws.send({ type: 'submit-character', definition });
       pendingCount = 1;
