@@ -279,6 +279,7 @@ export class GameLoop {
         decision.chosenAction,
         diceResult,
         this.state.currentScene,
+        { id: characterId, name: character.definition.name, skills: character.definition.skills, stress: character.state.stress, consequences: character.state.consequences, fatePoints: character.state.fatePoints },
       );
     } catch (e) {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
