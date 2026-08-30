@@ -127,10 +127,14 @@ export class WorldBible {
       if (loc) parts.push(`You are at: ${loc.name}`);
     }
     const npcs = locationId
-      ? this.db.prepare('SELECT name, type, disposition FROM entities WHERE campaign_id = ? AND alive = 1 AND location_id = ? LIMIT 8').all(campaignId, locationId) as any[]
-      : this.db.prepare('SELECT name, type, disposition FROM entities WHERE campaign_id = ? AND alive = 1 LIMIT 8').all(campaignId) as any[];
+      ? this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1 AND location_id = ? LIMIT 8').all(campaignId, locationId) as any[]
+      : this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1 LIMIT 8').all(campaignId) as any[];
     if (npcs.length > 0) {
-      parts.push('People nearby: ' + npcs.map((n: any) => `${n.name} (${n.disposition ?? n.type})`).join(', '));
+      parts.push('People nearby: ' + npcs.map((n: any) => {
+        let label = `${n.name} (${n.disposition ?? n.type})`;
+        if (n.description) label += ` — ${n.description.slice(0, 60)}`;
+        return label;
+      }).join('; '));
     }
     const items = this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL LIMIT 5').all(campaignId) as any[];
     if (items.length > 0) {

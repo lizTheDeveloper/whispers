@@ -19,11 +19,19 @@ export class CharacterAgent {
     const charPrompt = this.buildCharacterPrompt(ctx);
     const recentTranscript = ctx.transcript.slice(-10).map(m => `[${m.role}] ${m.content}`).join('\n');
     const worldBlock = ctx.worldContext ? `\n\nWhat you know about the world:\n${ctx.worldContext}` : '';
+    const namePrefix = `${ctx.definition.name}: `;
+    const ownActions = ctx.transcript
+      .filter(m => m.role === 'character' && m.content.startsWith(namePrefix))
+      .slice(-3)
+      .map(m => m.content.slice(namePrefix.length));
+    const ownActionsBlock = ownActions.length > 0
+      ? `\n\nYour recent actions (DO NOT repeat these): ${ownActions.join('; ')}`
+      : '';
 
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a goal — investigate a mystery, help an ally, confront a threat, or explore the unknown. Reference NPCs, items, or locations you know about. Make at least one action SOCIAL (talk to someone, persuade, deceive, intimidate). If you have companions, at least one action should INVOLVE them — coordinate an attack, ask for their expertise, protect them, or argue about strategy.\n\nAVOID repeating actions from recent events. If you recently smiled, try confronting instead. If you recently fought, try investigating. Vary your approach.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}${ownActionsBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a goal — investigate a mystery, help an ally, confront a threat, or explore the unknown. Reference NPCs, items, or locations you know about. Make at least one action SOCIAL (talk to someone, persuade, deceive, intimidate). If you have companions, at least one action should INVOLVE them — coordinate an attack, ask for their expertise, protect them, or argue about strategy.\n\nAVOID repeating actions from recent events. If you recently smiled, try confronting instead. If you recently fought, try investigating. Vary your approach.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
       ],
       schema: ActionProposalSchema,
       maxTokens: 768,
