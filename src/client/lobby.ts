@@ -19,6 +19,11 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
             <option value="fate-core">FATE Core (recommended)</option>
             <option value="dnd5e">D&amp;D 5e SRD (experimental)</option>
           </select>
+          <select id="scenario-id">
+            <option value="">No scenario — improvise</option>
+            <option value="collapsed-mine">The Collapsed Mine — dungeon crawl (beginner)</option>
+            <option value="haunted-masquerade">The Haunted Masquerade — social intrigue (intermediate)</option>
+          </select>
           <button id="create-btn">Create Game</button>
         </div>
 
@@ -37,7 +42,8 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
     const name = (root.querySelector('#game-name') as HTMLInputElement).value.trim();
     const dmPreset = (root.querySelector('#dm-preset') as HTMLSelectElement).value;
     const systemId = (root.querySelector('#system-id') as HTMLSelectElement).value;
-    ws.send({ type: 'create', name, dmPreset, scenarioId: null, systemId, houseRules: null });
+    const scenarioId = (root.querySelector('#scenario-id') as HTMLSelectElement).value || null;
+    ws.send({ type: 'create', name, dmPreset, scenarioId, systemId, houseRules: null });
   });
 
   const joinBtn = root.querySelector('#join-btn') as HTMLButtonElement;

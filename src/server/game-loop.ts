@@ -1,4 +1,7 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import { DmAgent } from './agents/dm.js';
 import { CharacterAgent } from './agents/character.js';
@@ -78,6 +81,11 @@ export class GameLoop {
 
     this.broadcastFn({ type: 'phase-change', phase: 'playing' });
     const campaign = this.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(this.campaignId) as any;
+
+    if (campaign.scenario_id && !checkpoint) {
+      await this.seedScenario(campaign.scenario_id);
+    }
+
     await this.runScene(campaign);
   }
 
@@ -370,6 +378,30 @@ export class GameLoop {
     this.sceneTurnCount = 0;
     this.state.currentScene++;
     clearCampaignImageCache(this.campaignId);
+  }
+
+  private async seedScenario(scenarioId: string): Promise<void> {
+    try {
+      const base = dirname(fileURLToPath(import.meta.url));
+      const scenarioPath = resolve(base, '../../data/scenarios', `${scenarioId}.json`);
+      const scenario = JSON.parse(readFileSync(scenarioPath, 'utf-8'));
+
+      const diff = {
+        newLocations: (scenario.locations ?? []).map((l: any) => ({ name: l.name, description: l.description, terrain: l.terrain ?? null })),
+        newEntities: (scenario.npcs ?? []).map((n: any) => ({ name: n.name, type: 'npc', description: n.description, disposition: n.disposition ?? null })),
+        newItems: [] as any[],
+        newEvents: (scenario.plotHooks ?? []).map((hook: string, i: number) => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
+        newRelationships: [] as any[],
+      };
+      this.worldBible.applyDiff(this.campaignId, diff);
+
+      if (scenario.openingNarration) {
+        this.transcript.push({ role: 'system' as const, content: `[Scenario] ${scenario.openingNarration}`, timestamp: new Date().toISOString() });
+      }
+      console.log(`[game-loop] Seeded scenario "${scenario.name}": ${diff.newLocations.length} locations, ${diff.newEntities.length} NPCs, ${diff.newEvents.length} plot hooks`);
+    } catch (e: any) {
+      console.warn(`[game-loop] Failed to load scenario ${scenarioId}: ${e.message}`);
+    }
   }
 
   handleWhisper(text: string): void {

@@ -1,0 +1,25 @@
+{
+  "id": "haunted-masquerade",
+  "name": "The Haunted Masquerade",
+  "description": "A social intrigue scenario at a noble's masked ball. Secrets, poison, and a ghost.",
+  "openingNarration": "The Duchess Vaelora's annual masquerade is the most coveted invitation in the city. Tonight, behind gilded masks and silk curtains, deals are struck, alliances forged, and reputations destroyed. You arrived an hour ago. The music is exquisite, the wine flows freely, and the chandelier casts everything in warm amber. But something is wrong. A serving girl whispered to you at the door: 'Someone here plans to kill the Duchess before midnight.' The clock reads quarter past nine. You have less than three hours.",
+  "npcs": [
+    { "name": "Duchess Vaelora", "description": "The host, elegant and sharp-tongued, wearing a silver owl mask.", "disposition": "confident", "motivation": "Maintain her power and discover who among her guests would betray her" },
+    { "name": "Lord Cassius", "description": "A rival noble with a fox mask, charming but calculating.", "disposition": "friendly", "motivation": "Wants the Duchess's trade contracts and would do almost anything to get them" },
+    { "name": "Mira the Servant", "description": "The serving girl who warned you, now avoiding eye contact.", "disposition": "frightened", "motivation": "Overheard the plot and fears for her life" },
+    { "name": "The Phantom", "description": "A figure in a blank white mask, seen at the edges of the ballroom.", "disposition": "unknown", "motivation": "Unknown — may be connected to the assassination plot or something older" }
+  ],
+  "locations": [
+    { "name": "The Grand Ballroom", "description": "Vast hall with marble floors, a crystal chandelier, and a string quartet", "terrain": "interior" },
+    { "name": "The Wine Cellar", "description": "Cool stone rooms beneath the manor, rows of dusty bottles", "terrain": "underground" },
+    { "name": "The Duchess's Study", "description": "Private room upstairs, locked — contains her correspondence", "terrain": "interior" },
+    { "name": "The Garden Terrace", "description": "Moonlit stone terrace overlooking a hedge maze", "terrain": "exterior" }
+  ],
+  "plotHooks": [
+    "Someone plans to assassinate the Duchess before midnight",
+    "Lord Cassius has been seen whispering with an unknown guest near the wine cellar",
+    "The Phantom in the white mask may be the ghost of the Duchess's late husband",
+    "Mira the servant knows more than she's told — but someone is watching her"
+  ],
+  "difficulty": "intermediate"
+}
