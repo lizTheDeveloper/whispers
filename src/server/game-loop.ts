@@ -175,7 +175,9 @@ export class GameLoop {
       console.log(`[game-loop] Forcing scene end at round ${roundCount} (${isFinale ? 'finale' : 'hard'} cap)`);
     }
 
-    const minRounds = (this.state.currentScene >= 5) ? 3 : 2;
+    const minRounds = this.state.currentScene <= 1 ? 4
+      : this.state.currentScene >= 5 ? 3
+      : 3;
     const allowSceneEnd = roundCount >= minRounds || forceSceneEnd;
     if ((narration.isSceneEnd && allowSceneEnd) || forceSceneEnd) {
       await this.endScene();
@@ -299,10 +301,10 @@ export class GameLoop {
         .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
         .split(/[.!]/)[0]?.trim() ?? 'act', 50);
       const memoryHook = memories.length > 0
-        ? truncAtWord(memories[0]!.content.split(/[.!]/)[0]?.trim() ?? '', 60) || null
+        ? truncAtWord(memories[0]!.content.replace(/^I\s+/i, '').split(/[.!]/)[0]?.trim() ?? '', 60) || null
         : null;
       const contextDetail = memoryHook
-        ? `${memoryHook.charAt(0).toUpperCase()}${memoryHook.slice(1)} — now I must ${actionSnippet.toLowerCase()}`
+        ? `Last time I ${memoryHook.toLowerCase()} — now I need to ${actionSnippet.toLowerCase()}`
         : `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}`;
       decision.innerThought = `${contextDetail}.`;
     }
