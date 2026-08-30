@@ -198,14 +198,18 @@ export class CharacterMemoryStore {
     try {
       const text = await callLlm({
         messages: [
-          { role: 'system', content: `You are ${observerName}. Write ONE sentence (first-person) about what you just witnessed ${actorName} do. Focus on how it affects you or what it reveals about ${actorName}'s character. Be specific. Output ONLY the sentence, no JSON.` },
-          { role: 'user', content: `${actorName} did: "${action}"\nResult: "${outcome}"` },
+          { role: 'system', content: `Write ONE sentence as ${observerName} (first-person "I") about what they just witnessed ${actorName} do. Focus on how it affects ${observerName} or what it reveals about ${actorName}'s character. Be specific. Output ONLY the plain sentence. No asterisks, no roleplay actions like *thinks*, no JSON, no quotes.` },
+          { role: 'user', content: `${actorName} did: "${action}"\nResult: "${outcome}"\n\nWrite one sentence as ${observerName}:` },
         ],
         temperature: 0.4,
         maxTokens: 128,
       });
-      content = text.trim().replace(/^["']|["']$/g, '');
-      if (!content || content.length < 5) return;
+      content = text.trim()
+        .replace(/^["']|["']$/g, '')
+        .replace(/^\*[^*]*\*\s*/g, '')
+        .replace(/\s*\*[^*]*\*$/g, '')
+        .trim();
+      if (!content || content.length < 10 || content.startsWith('*')) return;
     } catch {
       return;
     }
