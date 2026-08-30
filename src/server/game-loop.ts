@@ -306,17 +306,29 @@ export class GameLoop {
       );
     } catch (e) {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
+      const actionSummary = decision.chosenAction
+        .replace(/^I\s+/i, '')
+        .replace(/^(try|attempt|decide|choose|want) to\s+/i, '')
+        .split(/[.!]/)[0]
+        .trim()
+        .slice(0, 80);
       resolution = {
         diceExpression: null, difficulty: null, skill: null,
         outcome: 'tie' as const,
-        narration: `${character.definition.name} pushes through ${decision.chosenAction.toLowerCase()}, but not without cost.`,
+        narration: `${character.definition.name} attempts to ${actionSummary.toLowerCase()}, but not without cost.`,
         stateChanges: [{ characterId, field: 'stress' as const, action: 'set' as const, value: Math.min(character.state.stress + 1, 3) }],
       };
     }
 
     if (resolution.narration === 'The action unfolds...') {
-      const outcomeWord = resolution.outcome === 'failure' ? 'struggles with' : resolution.outcome === 'tie' ? 'barely manages' : 'pushes through';
-      resolution.narration = `${character.definition.name} ${outcomeWord} the attempt to ${decision.chosenAction.toLowerCase()}.`;
+      const fallbackAction = decision.chosenAction
+        .replace(/^I\s+/i, '')
+        .replace(/^(try|attempt|decide|choose|want) to\s+/i, '')
+        .split(/[.!]/)[0]
+        .trim()
+        .slice(0, 80);
+      const outcomeWord = resolution.outcome === 'failure' ? 'struggles to' : resolution.outcome === 'tie' ? 'barely manages to' : 'pushes through and';
+      resolution.narration = `${character.definition.name} ${outcomeWord} ${fallbackAction.toLowerCase()}.`;
     }
 
     if (diceResult && resolution.difficulty != null && resolution.skill && campaign.system_id === 'fate-core') {
