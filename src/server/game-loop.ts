@@ -558,8 +558,10 @@ export class GameLoop {
 
   private async endScene(): Promise<void> {
     let summary: string;
+    const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
+    const worldState = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     try {
-      summary = await this.dm.summarizeScene(this.transcript);
+      summary = await this.dm.summarizeScene(this.transcript, charNames, worldState);
     } catch (e) {
       console.error('[game-loop] Scene summary failed:', e);
       summary = 'The scene draws to a close.';
