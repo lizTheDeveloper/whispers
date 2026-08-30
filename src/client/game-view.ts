@@ -90,12 +90,30 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     actionArea.innerHTML = '';
     appendLog(`${msg.characterName}: ${msg.action}`, 'character');
     appendLog(`(${msg.innerThought})`, 'whisper');
+    if (msg.whisperInfluence && msg.whisperInfluence !== 'none') {
+      const label = msg.whisperInfluence === 'followed' ? 'heeded your whisper'
+        : msg.whisperInfluence === 'partially-followed' ? 'partially heeded your whisper'
+        : 'resisted your whisper';
+      appendLog(`[${msg.characterName} ${label}]`, 'system');
+    }
   });
 
   ws.on('dm-question', (msg) => {
     if (msg.type !== 'dm-question' || !isHost) return;
     const answer = prompt(`DM asks: ${msg.question}`);
     if (answer) ws.send({ type: 'dm-answer', text: answer });
+  });
+
+  ws.on('phase-change', (msg) => {
+    if (msg.type === 'phase-change' && msg.phase === 'ended') {
+      whisperArea.style.display = 'none';
+      actionArea.innerHTML = '';
+      appendLog('=== The adventure has concluded. Thank you for playing! ===', 'system');
+      if (isHost) {
+        const controls = root.querySelector('#dm-controls');
+        if (controls) controls.innerHTML = '';
+      }
+    }
   });
 
   function sendWhisper(): void {
