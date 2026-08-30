@@ -407,9 +407,9 @@ export class GameLoop {
       }
     }
 
-    if (campaign.system_id === 'fate-core' && character.state.fatePoints >= 3 && !fpSpentByDm) {
-      const alreadySpent = resolution.stateChanges.some(c => c.field === 'fatePoints' && c.action === 'set' && typeof c.value === 'number' && c.value < character.state.fatePoints);
-      if (!alreadySpent && (resolution.outcome === 'tie' || resolution.outcome === 'success-with-cost')) {
+    const fpAlreadySpentThisTurn = resolution.stateChanges.some(c => c.field === 'fatePoints' && c.action === 'set' && typeof c.value === 'number' && c.value < character.state.fatePoints);
+    if (campaign.system_id === 'fate-core' && character.state.fatePoints >= 3 && !fpSpentByDm && !fpAlreadySpentThisTurn) {
+      if (resolution.outcome === 'tie' || resolution.outcome === 'success-with-cost') {
         const currentFp = character.state.fatePoints;
         const newFp = currentFp - 1;
         resolution.stateChanges.push({ characterId, field: 'fatePoints' as const, action: 'set' as const, value: newFp });
