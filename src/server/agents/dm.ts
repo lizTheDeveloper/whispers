@@ -91,12 +91,15 @@ export class DmAgent {
       : `SCENE OVERRUN: ${roundCount} rounds. You MUST end this scene NOW. Narrate a dramatic climax or cliffhanger and set isSceneEnd to true. Do not continue — the story needs to move forward.`;
 
     const charBlock = pacing?.characterSummaries ? `\n\nParty status:\n${pacing.characterSummaries}` : '';
+    const partyHint = (pacing?.partySize ?? 1) > 1
+      ? ' With multiple characters, react to how their actions affect each other — a warrior\'s charge creates openings, a healer\'s work changes who can act, a scholar\'s discovery reshapes the situation for everyone.'
+      : '';
     const sceneLabel = pacing ? `Scene ${pacing.sceneNumber}, round ${roundCount + 1} (turn ${turnCount + 1})` : 'Scene';
 
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds.\n\nRespond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
+        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds.${partyHint}\n\nRespond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
       ],
       schema: DmNarrationSchema,
       maxTokens: 2048,
@@ -229,6 +232,7 @@ Storytelling principles:
 - VARY your imagery: do not repeat the same visual motifs (e.g. "skeletal hands," "black water") more than twice in a scene. Introduce new sensory details — sounds, smells, temperature, texture — to keep the world alive.
 - Build toward a dramatic question — each scene should move the story closer to answering: will the party succeed, and at what cost?
 - WHISPER AWARENESS: Characters hear a mysterious voice (the player's whispers). When the transcript shows a character heeded or resisted a whisper, weave that into the narrative. A character following dangerous whispers might attract dark attention; one resisting wise counsel might face harder consequences. The whisper influence is the game's central tension — make it matter in the story.
+- CREATE WHISPER MOMENTS: At least once per scene, present a situation where the "right" choice is ambiguous — a locked door that could be forced or bypassed, a suspicious ally, a tempting shortcut through danger. These fork-in-the-road moments give the player interesting whisper decisions. The player is the character's conscience, and the best stories emerge when conscience is tested.
 `;
 
     if (ctx.houseRules) prompt += `\nHouse rules: ${ctx.houseRules}\n`;
