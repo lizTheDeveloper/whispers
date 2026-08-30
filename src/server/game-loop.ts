@@ -496,6 +496,15 @@ export class GameLoop {
       if (stored.length > 0) console.log(`[memory] ${character.definition.name}: stored ${stored.length} memories (${stored.map(m => m.type).join(', ')})`);
     }).catch(e => console.error('[memory] extraction failed:', e));
 
+    for (const [observerId, observer] of this.characters) {
+      if (observerId === characterId) continue;
+      this.memoryStore.storeObservation(
+        observerId, this.campaignId, observer.definition.name,
+        character.definition.name, decision.chosenAction, resolution.narration,
+        this.state.currentScene, this.state.currentTurn,
+      ).catch(e => console.error(`[memory] observer extraction failed for ${observer.definition.name}:`, e));
+    }
+
     saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state);
 
     await this.maybeCompactTranscript();

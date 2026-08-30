@@ -184,6 +184,39 @@ export class CharacterMemoryStore {
     }));
   }
 
+  async storeObservation(
+    observerId: string,
+    campaignId: string,
+    observerName: string,
+    actorName: string,
+    action: string,
+    outcome: string,
+    sceneNumber: number,
+    turnNumber: number,
+  ): Promise<void> {
+    let content: string;
+    try {
+      const text = await callLlm({
+        messages: [
+          { role: 'system', content: `You are ${observerName}. Write ONE sentence (first-person) about what you just witnessed ${actorName} do. Focus on how it affects you or what it reveals about ${actorName}'s character. Be specific. Output ONLY the sentence, no JSON.` },
+          { role: 'user', content: `${actorName} did: "${action}"\nResult: "${outcome}"` },
+        ],
+        temperature: 0.4,
+        maxTokens: 128,
+      });
+      content = text.trim().replace(/^["']|["']$/g, '');
+      if (!content || content.length < 5) return;
+    } catch {
+      return;
+    }
+
+    this.db.prepare(
+      `INSERT INTO character_memories (id, character_id, campaign_id, scene_number, turn_number, type, content, emotional_valence, importance, decay_rate)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(randomBytes(16).toString('hex'), observerId, campaignId, sceneNumber, turnNumber, 'social', content, 0, 0.4, 0.04);
+    console.log(`[memory] ${observerName} observed ${actorName}: "${content.slice(0, 60)}"`);
+  }
+
   decayMemories(characterId: string): void {
     this.db.prepare(
       `UPDATE character_memories SET importance = MAX(0.01, importance - decay_rate) WHERE character_id = ? AND importance > 0.01`,

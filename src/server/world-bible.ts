@@ -198,15 +198,20 @@ export class WorldBible {
       }
       for (const evt of diff.newEvents) {
         if (evt.outcome) {
-          const keywords = evt.description.toLowerCase().split(/\W+/).filter(w => w.length > 3);
-          if (keywords.length > 0) {
+          const stopWords = new Set(['that', 'this', 'with', 'from', 'have', 'been', 'will', 'they', 'them', 'their', 'were', 'what', 'when', 'into', 'also', 'more', 'some']);
+          const keywords = evt.description.toLowerCase().split(/\W+/).filter(w => w.length > 3 && !stopWords.has(w));
+          const participants = evt.participants.map(p => p.toLowerCase());
+          if (keywords.length > 0 || participants.length > 0) {
             const unresolved = this.db.prepare(
-              'SELECT id, description FROM events WHERE campaign_id = ? AND outcome IS NULL'
-            ).all(campaignId) as Array<{ id: string; description: string }>;
+              'SELECT id, description, participants FROM events WHERE campaign_id = ? AND outcome IS NULL'
+            ).all(campaignId) as Array<{ id: string; description: string; participants: string }>;
             const best = unresolved.reduce<{ id: string; score: number } | null>((top, row) => {
               const desc = row.description.toLowerCase();
-              const score = keywords.filter(k => desc.includes(k)).length / keywords.length;
-              return score >= 0.5 && (!top || score > top.score) ? { id: row.id, score } : top;
+              const wordScore = keywords.length > 0 ? keywords.filter(k => desc.includes(k)).length / keywords.length : 0;
+              const rowParticipants = JSON.parse(row.participants || '[]').map((p: string) => p.toLowerCase());
+              const nameScore = participants.length > 0 ? participants.filter(p => rowParticipants.includes(p) || desc.includes(p)).length * 0.3 : 0;
+              const score = wordScore + nameScore;
+              return score >= 0.3 && (!top || score > top.score) ? { id: row.id, score } : top;
             }, null);
             if (best) {
               this.db.prepare('UPDATE events SET outcome = ? WHERE id = ?').run(evt.outcome, best.id);
