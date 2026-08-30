@@ -59,10 +59,10 @@ export class WorldBible {
       const entities = this.getEntitiesForLocation(campaignId, locationId);
       if (entities.length > 0) parts.push('Present: ' + entities.map(e => `${e.name} (${e.type}, ${e.disposition ?? 'unknown disposition'})`).join(', '));
     }
-    const locs = this.db.prepare('SELECT name, description FROM locations WHERE campaign_id = ?').all(campaignId) as any[];
+    const locs = this.db.prepare('SELECT name, description FROM locations WHERE campaign_id = ? ORDER BY rowid DESC LIMIT 12').all(campaignId) as any[];
     if (locs.length > 0) parts.push('Known locations: ' + locs.map((l: any) => `${l.name}${l.description ? ' — ' + l.description : ''}`).join('; '));
 
-    const npcs = this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1').all(campaignId) as any[];
+    const npcs = this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid DESC LIMIT 15').all(campaignId) as any[];
     if (npcs.length > 0) {
       parts.push('Known NPCs/creatures: ' + npcs.map((n: any) => `${n.name} (${n.type}${n.disposition ? ', ' + n.disposition : ''})`).join('; '));
     }
@@ -71,7 +71,7 @@ export class WorldBible {
       FROM relationships r
       JOIN entities e1 ON r.entity_a_id = e1.id
       JOIN entities e2 ON r.entity_b_id = e2.id
-      WHERE r.campaign_id = ?`).all(campaignId) as any[];
+      WHERE r.campaign_id = ? ORDER BY r.rowid DESC LIMIT 10`).all(campaignId) as any[];
     if (rels.length > 0) {
       parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}${r.description ? ' — ' + r.description : ''}`).join('; '));
     }
