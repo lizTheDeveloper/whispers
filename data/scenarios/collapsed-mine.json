@@ -17,5 +17,9 @@
     "One of the trapped miners found something before the collapse",
     "The forest path to the ventilation shaft is not as abandoned as it seems"
   ],
+  "items": [
+    { "name": "Miner's Lantern", "description": "Oil lamp with a cracked lens, still burns" },
+    { "name": "Tobias's Map", "description": "Rough sketch of the mine tunnels, drawn from memory" }
+  ],
   "difficulty": "beginner"
 }

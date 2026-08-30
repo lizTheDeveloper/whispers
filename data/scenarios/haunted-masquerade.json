@@ -21,5 +21,10 @@
     "The Phantom in the white mask may be the ghost of the Duchess's late husband",
     "Mira the servant knows more than she's told — but someone is watching her"
   ],
+  "items": [
+    { "name": "Ornate Mask", "description": "Your mask for the ball, conceals your identity" },
+    { "name": "Mira's Note", "description": "Scrap of paper: 'The wine. Watch the wine.'" },
+    { "name": "Duchess's Signet Ring", "description": "Spotted on the ballroom floor, recently dropped" }
+  ],
   "difficulty": "intermediate"
 }

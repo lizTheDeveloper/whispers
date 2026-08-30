@@ -351,15 +351,18 @@ export class GameLoop {
 
     const fpChanged = resolution.stateChanges.some(c => c.field === 'fatePoints');
     const lastCompelTurn = (character as any)._lastCompelTurn ?? -Infinity;
-    if (!fpChanged && (resolution.outcome === 'failure' || resolution.outcome === 'success-with-cost') && this.state.currentTurn - lastCompelTurn >= 3) {
-      const troubleWords = character.definition.trouble.toLowerCase().split(/\W+/).filter(w => w.length > 3);
-      const narrationLower = (resolution.narration + ' ' + decision.chosenAction).toLowerCase();
-      const matchCount = troubleWords.filter(w => narrationLower.includes(w)).length;
-      const troubleRelevant = matchCount >= 2 || (matchCount === 1 && troubleWords.some(w => w.length >= 5 && narrationLower.includes(w)));
-      if (troubleRelevant) {
+    if (!fpChanged && this.state.currentTurn - lastCompelTurn >= 3) {
+      let shouldCompel = false;
+      if (resolution.outcome === 'failure' && character.state.stress >= 1) {
+        shouldCompel = true;
+      } else if (resolution.outcome === 'success-with-cost') {
+        const stressChange = resolution.stateChanges.find(c => c.field === 'stress' && c.action === 'set' && typeof c.value === 'number' && c.value > character.state.stress);
+        if (stressChange) shouldCompel = true;
+      }
+      if (shouldCompel) {
         character.state.fatePoints = Math.min(character.state.fatePoints + 1, 5);
         (character as any)._lastCompelTurn = this.state.currentTurn;
-        console.log(`[game-loop] Compel triggered: "${character.definition.trouble}" matched in narration — ${character.definition.name} now at ${character.state.fatePoints} FP`);
+        console.log(`[game-loop] Compel triggered: "${character.definition.trouble}" on ${resolution.outcome} — ${character.definition.name} now at ${character.state.fatePoints} FP`);
         this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
         this.broadcastFn({ type: 'narration', text: `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point]`, sceneNumber: this.state.currentScene });
         affectedCharIds.add(characterId);
@@ -475,7 +478,7 @@ export class GameLoop {
           description: n.motivation ? `${n.description} [Motivation: ${n.motivation}]` : n.description,
           disposition: n.disposition ?? null,
         })),
-        newItems: [] as any[],
+        newItems: (scenario.items ?? []).map((item: any) => ({ name: item.name, description: item.description, properties: item.properties ?? {} })),
         newEvents: (scenario.plotHooks ?? []).map((hook: string, i: number) => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
         newRelationships: [] as any[],
       };

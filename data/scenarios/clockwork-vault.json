@@ -23,5 +23,10 @@
     "The Orrery does more than predict the future — it shows something the Guild doesn't want anyone to see",
     "Cogsworth's patrol pattern has a 30-second gap if timed right"
   ],
+  "items": [
+    { "name": "Sparks' Blueprint", "description": "Partial floor plan of vault level one, grease-smudged" },
+    { "name": "Gala Invitation", "description": "Forged invitation, good enough to fool the door guards" },
+    { "name": "Clockwork Lockpick", "description": "Modified tool that adapts to rotating tumblers" }
+  ],
   "difficulty": "intermediate"
 }
