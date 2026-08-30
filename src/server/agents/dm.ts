@@ -249,14 +249,25 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     const compactionHint = hasRecap
       ? '\nIMPORTANT: The transcript begins with a prior recap. Preserve ALL named characters, NPCs, locations, and plot threads from that recap. Add new developments from recent events. Do not lose earlier details.'
       : '';
-    const result = await callLlm({
-      messages: [
-        { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
-        { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint}${compactionHint}${worldHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
-      ],
-      schema: SceneSummarySchema,
-    });
-    return result.summary;
+    try {
+      const result = await callLlm({
+        messages: [
+          { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
+          { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint}${compactionHint}${worldHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
+        ],
+        schema: SceneSummarySchema,
+      });
+      return result.summary;
+    } catch {
+      const plainText = await callLlm({
+        messages: [
+          { role: 'system', content: 'Summarize this TTRPG scene in 3-5 sentences. Plain text only, no JSON.' },
+          { role: 'user', content: `${text}\n\nCover: what happened, who was involved, what changed.${charHint}` },
+        ],
+        maxTokens: 512,
+      });
+      return plainText.trim() || 'The scene draws to a close.';
+    }
   }
 
   private buildSystemPrompt(ctx: DmContext): string {
