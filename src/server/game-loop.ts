@@ -363,7 +363,7 @@ export class GameLoop {
         .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
-      const outcomeVerb = resolution.outcome === 'failure' ? 'tries to' : resolution.outcome === 'tie' ? 'barely manages to' : 'succeeds at';
+      const outcomeVerb = resolution.outcome === 'failure' ? 'tries to' : resolution.outcome === 'tie' ? 'barely manages to' : 'manages to';
       const costSuffix = resolution.outcome === 'success-with-cost' ? ', but not without cost' : resolution.outcome === 'failure' ? ', but the attempt goes badly wrong' : '';
       resolution.narration = `${character.definition.name} ${outcomeVerb} ${fallbackAction.toLowerCase()}${costSuffix}.`;
     }
