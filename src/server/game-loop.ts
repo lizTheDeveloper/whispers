@@ -508,7 +508,7 @@ export class GameLoop {
           : s.whisperTrust > 0.4
           ? 'uncertain about the voice'
           : 'deeply distrusts the voice — create situations where GOOD advice would help them, forcing the player to earn back trust';
-        let line = `${d.name}: ${d.highConcept} | Stress: ${s.stress} | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints} | Trust: ${s.whisperTrust.toFixed(2)} (${whisperAttitude})`;
+        let line = `${d.name}: ${d.highConcept} (trouble: "${d.trouble}") | Stress: ${s.stress}/3 | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints} | Trust: ${s.whisperTrust.toFixed(2)} (${whisperAttitude})`;
         if (lastAction) line += ` | Last: ${lastAction.slice(0, 60)}`;
         if (mood) line += ` | Mindset: ${mood.slice(0, 80)}`;
         return line;
