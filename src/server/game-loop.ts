@@ -159,6 +159,7 @@ export class GameLoop {
         sceneNarration,
         transcript: this.transcript,
         memories,
+        worldContext: worldSummary,
       });
     } catch (e) {
       console.error('[game-loop] action proposal failed:', e);
@@ -186,7 +187,7 @@ export class GameLoop {
     let decision;
     try {
       decision = await this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: worldSummary },
         whisper,
       );
     } catch (e) {
@@ -200,6 +201,14 @@ export class GameLoop {
     }
 
     this.addTranscript('character', `${character.definition.name}: ${decision.chosenAction}`, characterId);
+    if (whisper) {
+      const influenceNote = decision.whisperedInfluence === 'followed'
+        ? `${character.definition.name} heeded the whisper`
+        : decision.whisperedInfluence === 'partially-followed'
+        ? `${character.definition.name} partially heeded the whisper`
+        : `${character.definition.name} resisted the whisper`;
+      this.addTranscript('system', `[${influenceNote}, trust: ${character.state.whisperTrust.toFixed(2)}]`, characterId);
+    }
     this.broadcastFn({
       type: 'action-taken',
       characterId,

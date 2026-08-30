@@ -14,7 +14,8 @@ Multiplayer agentic TTRPG. AI agents play characters, humans whisper to influenc
 - All agent outputs validated with Zod before affecting state.
 - Dice rolled server-side only via @dice-roller/rpg-dice-roller.
 - Game state checkpointed after every turn for crash recovery.
-- Transcript compacts automatically at 50 messages — triggers fact extraction mid-scene, replaces old messages with a summary. No session token limit.
+- Transcript compacts automatically at 35 messages — triggers fact extraction mid-scene, replaces old messages with a summary. No session token limit.
+- Scene pacing: 3-act structure (I=setup, II=confrontation, III=resolution at scene 4+, finale at scene 5+). Server hard-caps scenes at 10 rounds. Minimum 2 rounds per scene (3 for finale).
 - LLM calls: POST to LLM_PROXY_URL/api/llm/think with X-Game: whispers header.
 
 ## Commands

@@ -127,19 +127,31 @@ export class CharacterMemoryStore {
     if (!sceneContext || all.length <= limit) return all.slice(0, limit);
 
     const contextWords = new Set(
-      sceneContext.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3),
+      sceneContext.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2),
     );
 
+    const maxTurn = Math.max(...all.map(m => m.turnNumber), 1);
     const scored = all.map(m => {
       const words = m.content.toLowerCase().split(/\s+/);
       const contextHits = words.filter(w => contextWords.has(w)).length;
-      const recencyBonus = m.importance > 0.5 ? 0.1 : 0;
+      const recencyScore = m.turnNumber / maxTurn * 0.15;
       const emotionalBonus = Math.abs(m.emotionalValence) > 0.5 ? 0.1 : 0;
-      return { memory: m, score: m.importance + contextHits * 0.15 + recencyBonus + emotionalBonus };
+      return { memory: m, score: m.importance + contextHits * 0.15 + recencyScore + emotionalBonus };
     });
 
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, limit).map(s => s.memory);
+
+    const selected: typeof all = [];
+    const sceneCounts = new Map<number, number>();
+    for (const s of scored) {
+      const sc = s.memory.sceneNumber;
+      const count = sceneCounts.get(sc) ?? 0;
+      if (count >= 3 && selected.length < limit) continue;
+      selected.push(s.memory);
+      sceneCounts.set(sc, count + 1);
+      if (selected.length >= limit) break;
+    }
+    return selected;
   }
 
   recallByType(characterId: string, type: MemoryType, limit = 5): CharacterMemory[] {

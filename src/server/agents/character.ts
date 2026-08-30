@@ -10,17 +10,19 @@ interface CharacterContext {
   sceneNarration: string;
   transcript: TranscriptMessage[];
   memories?: CharacterMemory[];
+  worldContext?: string;
 }
 
 export class CharacterAgent {
   async proposeActions(ctx: CharacterContext): Promise<ActionProposal> {
     const charPrompt = this.buildCharacterPrompt(ctx);
     const recentTranscript = ctx.transcript.slice(-10).map(m => `[${m.role}] ${m.content}`).join('\n');
+    const worldBlock = ctx.worldContext ? `\n\nWhat you know about the world:\n${ctx.worldContext}` : '';
 
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Reference your memories if relevant.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Reference NPCs, items, or locations you know about.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
       ],
       schema: ActionProposalSchema,
       maxTokens: 512,
