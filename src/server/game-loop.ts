@@ -585,6 +585,7 @@ export class GameLoop {
         let line = `${d.name}: ${d.highConcept} (trouble: "${d.trouble}") | Stress: ${s.stress}/3 | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints} | Trust: ${s.whisperTrust.toFixed(2)} (${whisperAttitude})`;
         if (lastAction) line += ` | Last: ${lastAction.slice(0, 60)}`;
         if (mood) line += ` | Mindset: ${mood.slice(0, 80)}`;
+        if (s.inventory && s.inventory.length > 0) line += ` | Carrying: ${s.inventory.join(', ')}`;
         return line;
       })
       .join('\n');
