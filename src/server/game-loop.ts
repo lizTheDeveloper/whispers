@@ -452,9 +452,8 @@ export class GameLoop {
       }
     }
 
-    const fpChanged = resolution.stateChanges.some(c => c.field === 'fatePoints');
     const lastCompelTurn = (character as any)._lastCompelTurn ?? -Infinity;
-    if (!fpChanged && this.state.currentTurn - lastCompelTurn >= 3) {
+    if (this.state.currentTurn - lastCompelTurn >= 3) {
       let shouldCompel = false;
       if (resolution.outcome === 'failure' && character.state.stress >= 1) {
         shouldCompel = true;
