@@ -17,6 +17,13 @@ import type { CampaignMaterial } from '../shared/types.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
 
+process.on('uncaughtException', (err) => {
+  console.error('[server] Uncaught exception (kept alive):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] Unhandled rejection (kept alive):', reason);
+});
+
 const app = express();
 app.use(express.json());
 
