@@ -198,20 +198,21 @@ export class CharacterMemoryStore {
     try {
       const text = await callLlm({
         messages: [
-          { role: 'system', content: `Write ONE sentence as ${observerName} (first-person "I") about what they just witnessed ${actorName} do. Focus on how it affects ${observerName} or what it reveals about ${actorName}'s character. Be specific. Output ONLY the plain sentence. No asterisks, no roleplay actions like *thinks*, no JSON, no quotes.` },
-          { role: 'user', content: `${actorName} did: "${action}"\nResult: "${outcome}"\n\nWrite one sentence as ${observerName}:` },
+          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Plain text only — no asterisks, no quotes, no JSON.` },
+          { role: 'user', content: `${actorName}: "${action}"\nOutcome: "${outcome}"` },
         ],
-        temperature: 0.4,
-        maxTokens: 128,
+        temperature: 0.3,
+        maxTokens: 100,
       });
       content = text.trim()
         .replace(/^["']|["']$/g, '')
-        .replace(/^\*[^*]*\*\s*/g, '')
-        .replace(/\s*\*[^*]*\*$/g, '')
+        .replace(/\*[^*]*\*/g, '')
         .trim();
-      if (!content || content.length < 10 || content.startsWith('*')) return;
+      if (!content || content.length < 10 || content.startsWith('*') || content.startsWith('{')) {
+        content = `I saw ${actorName} ${action.slice(0, 80).toLowerCase()}.`;
+      }
     } catch {
-      return;
+      content = `I saw ${actorName} ${action.slice(0, 80).toLowerCase()}.`;
     }
 
     this.db.prepare(

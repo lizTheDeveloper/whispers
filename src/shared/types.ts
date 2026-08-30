@@ -135,4 +135,5 @@ export interface RoomState {
   awaitingWhisper: boolean;
   awaitingDmAnswer: boolean;
   currentLocationId: string | null;
+  sceneTurnCount?: number;
 }
