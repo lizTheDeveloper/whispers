@@ -303,6 +303,11 @@ export class GameLoop {
     }
 
     if (diceResult && resolution.difficulty != null && resolution.skill && campaign.system_id === 'fate-core') {
+      if (resolution.difficulty > 8) {
+        console.log(`[game-loop] FATE difficulty capped: DM set ${resolution.difficulty}, max is 8 (Legendary)`);
+        resolution.difficulty = 8;
+      }
+      if (resolution.difficulty < 0) resolution.difficulty = 0;
       const skillKey = Object.keys(character.definition.skills).find(k => k.toLowerCase() === resolution.skill!.toLowerCase());
       const skillRank = skillKey ? (character.definition.skills[skillKey] ?? 0) : 0;
       const effort = diceResult.total + skillRank;
@@ -336,6 +341,18 @@ export class GameLoop {
         if (!c.state.consequences.includes('Taken Out (recovering)')) {
           c.state.consequences.push('Taken Out (recovering)');
         }
+      }
+    }
+
+    const fpChanged = resolution.stateChanges.some(c => c.field === 'fatePoints');
+    if (!fpChanged && (resolution.outcome === 'failure' || resolution.outcome === 'success-with-cost')) {
+      const troubleWords = character.definition.trouble.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+      const narrationLower = (resolution.narration + ' ' + decision.chosenAction).toLowerCase();
+      const troubleRelevant = troubleWords.some(w => narrationLower.includes(w));
+      if (troubleRelevant) {
+        character.state.fatePoints = Math.min(character.state.fatePoints + 1, 5);
+        this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
+        affectedCharIds.add(characterId);
       }
     }
 
