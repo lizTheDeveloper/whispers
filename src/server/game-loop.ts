@@ -357,7 +357,11 @@ export class GameLoop {
         shouldCompel = true;
       } else if (resolution.outcome === 'success-with-cost') {
         const stressChange = resolution.stateChanges.find(c => c.field === 'stress' && c.action === 'set' && typeof c.value === 'number' && c.value > character.state.stress);
-        if (stressChange) shouldCompel = true;
+        const consequenceChange = resolution.stateChanges.find(c => c.field === 'consequences' && (c.action === 'add' || c.action === 'set'));
+        if (stressChange || consequenceChange) shouldCompel = true;
+      } else if (resolution.outcome === 'failure') {
+        const consequenceChange = resolution.stateChanges.find(c => c.field === 'consequences' && (c.action === 'add' || c.action === 'set'));
+        if (consequenceChange) shouldCompel = true;
       }
       if (shouldCompel) {
         character.state.fatePoints = Math.min(character.state.fatePoints + 1, 5);
