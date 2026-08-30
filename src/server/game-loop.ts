@@ -95,6 +95,7 @@ export class GameLoop {
         sceneTurnCount: this.sceneTurnCount,
         characterSummaries: this.getCharacterSummaries(),
         partySize: this.characters.size || 1,
+        sessionTurnCount: this.state.currentTurn,
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
@@ -121,7 +122,9 @@ export class GameLoop {
       console.log(`[game-loop] Forcing scene end at round ${roundCount} (hard cap)`);
     }
 
-    if (narration.isSceneEnd || forceSceneEnd) {
+    const minRounds = (this.state.currentScene >= 5) ? 3 : 2;
+    const allowSceneEnd = roundCount >= minRounds || forceSceneEnd;
+    if ((narration.isSceneEnd && allowSceneEnd) || forceSceneEnd) {
       await this.endScene();
       if (!this.stopped) await this.runScene(campaign);
       return;
@@ -159,7 +162,7 @@ export class GameLoop {
       });
     } catch (e) {
       console.error('[game-loop] action proposal failed:', e);
-      proposals = { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }] };
+      proposals = { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }, { description: 'Press forward despite the uncertainty', reasoning: 'Fallback bold option' }] };
     }
 
     this.broadcastFn({

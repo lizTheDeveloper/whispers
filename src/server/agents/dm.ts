@@ -10,6 +10,7 @@ export interface ScenePacing {
   sceneTurnCount: number;
   characterSummaries: string;
   partySize: number;
+  sessionTurnCount?: number;
 }
 
 interface DmContext {
@@ -34,12 +35,23 @@ export class DmAgent {
     const roundCount = Math.floor(turnCount / partySize);
     const sceneNum = pacing?.sceneNumber ?? 1;
 
+    const sessionTurn = pacing?.sessionTurnCount ?? 0;
+
     // Session-level three-act structure (Act III at scene 4+ so a ~25-turn session reaches resolution)
-    const sessionArc = sceneNum <= 1
-      ? 'ACT I (Setup): Establish the world, introduce the central mystery or threat. Plant clues and introduce key NPCs. The dramatic question should be clear by scene end.'
-      : sceneNum <= 3
-      ? 'ACT II (Confrontation): Escalate complications. Alliances are tested, secrets are revealed, the threat becomes personal. Make the characters pay a cost for progress.'
-      : 'ACT III (Resolution): Drive toward the climax. The dramatic question MUST be answered this act. Converge all threads toward a final confrontation or revelation. After the climax, give a brief denouement showing consequences.';
+    let sessionArc: string;
+    if (sceneNum <= 1) {
+      sessionArc = 'ACT I (Setup): Establish the world, introduce the central mystery or threat. Plant clues and introduce key NPCs. The dramatic question should be clear by scene end.';
+    } else if (sceneNum <= 3) {
+      sessionArc = 'ACT II (Confrontation): Escalate complications. Alliances are tested, secrets are revealed, the threat becomes personal. Make the characters pay a cost for progress.';
+    } else if (sceneNum <= 4) {
+      sessionArc = 'ACT III (Resolution): Drive toward the climax. The dramatic question MUST be answered this act. Converge all threads toward a final confrontation or revelation. Stop introducing new complications — use what exists.';
+    } else {
+      sessionArc = `SESSION FINALE (scene ${sceneNum}): This is the LAST scene. Let it play out over multiple turns — do NOT try to narrate several rounds in one response. Each narration is ONE moment: describe what happens, let the character act, then you narrate again. No new locations or mysteries. Use established NPCs, items, and threads. Build toward a decisive confrontation, then end with a denouement. Do NOT set isSceneEnd on the opening narration.`;
+    }
+
+    if (sessionTurn >= 20 && sceneNum >= 4) {
+      sessionArc += ` (Turn ${sessionTurn} of session — converge toward resolution, but give the ending room to breathe.)`;
+    }
 
     // Scale pacing thresholds: larger parties generate more content per round
     const developThreshold = partySize <= 1 ? 2 : 2;
