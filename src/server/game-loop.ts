@@ -377,6 +377,7 @@ export class GameLoop {
           id: characterId, name: character.definition.name, skills: character.definition.skills,
           stress: character.state.stress, consequences: character.state.consequences, fatePoints: character.state.fatePoints,
           aspects: character.definition.aspects, highConcept: character.definition.highConcept, trouble: character.definition.trouble,
+          inventory: character.state.inventory,
           partyMembers: Array.from(this.characters.entries())
             .filter(([id]) => id !== characterId)
             .map(([id, c]) => ({ id, name: c.definition.name })),

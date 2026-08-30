@@ -117,7 +117,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; partyMembers?: Array<{ id: string; name: string }> }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string }> }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
@@ -146,7 +146,10 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
         characterInfo.trouble ? `Trouble: "${characterInfo.trouble}"` : '',
         ...(characterInfo.aspects ?? []).map(a => `"${a}"`),
       ].filter(Boolean).join(', ');
-      charBlock = `\nACTING CHARACTER (narrate THEIR action, not another party member's): ${characterInfo.name} (id: ${characterInfo.id})\nAspects: ${aspectList}\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}`;
+      const inventoryLine = characterInfo.inventory && characterInfo.inventory.length > 0
+        ? `\nInventory: ${characterInfo.inventory.join(', ')}`
+        : '';
+      charBlock = `\nACTING CHARACTER (narrate THEIR action, not another party member's): ${characterInfo.name} (id: ${characterInfo.id})\nAspects: ${aspectList}\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}${inventoryLine}`;
       if (characterInfo.partyMembers && characterInfo.partyMembers.length > 0) {
         charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})`).join(', ')}`;
       }
@@ -164,6 +167,7 @@ Do NOT leave stateChanges empty on ties, costs, or failures — the mechanical c
 NARRATION RULES: Write the result in THIRD PERSON using the ACTING CHARACTER's name (NOT another party member's name). NEVER echo the action text — not even paraphrased with "manages to" or "tries to" prepended. Instead, describe the CONSEQUENCES and WORLD REACTION: what changes in the environment, how NPCs respond, what the character sees/hears/feels. BAD: "Kael manages to swing his sword at the ghost." GOOD: "Kael's blade arcs through the spectral figure — it shrieks, recoiling into the shadows, but a chill crawls up Kael's sword arm where the ghost's essence grazed him." Start with the character's name, then show what HAPPENS, not what they ATTEMPTED. 2-3 vivid sentences.
 NPC DIALOGUE: If the action involves talking to, questioning, persuading, or confronting an NPC, the narration MUST include the NPC's spoken response in quotation marks. NPCs who respond with actual words create real drama — "I'll tell you nothing, sellsword" hits harder than "the merchant refuses."
 COOPERATIVE ACTIONS: If the action references a party member by name (coordinating, protecting, assisting), lower the difficulty by 1 and narrate how the teamwork helps. If the action HARMS or abandons a party member, add stress to BOTH characters — betrayal costs everyone.
+INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If they USE an item destructively (a potion consumed, a key that breaks), add {"field":"inventory","action":"remove","value":"<item name>"} to stateChanges. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"}.
 FATE POINT ECONOMY: If this action touches the character's trouble aspect or a consequence, COMPEL it — add {"field":"fatePoints","action":"set","value":${(characterInfo?.fatePoints ?? 3) + 1}} and narrate the complication. If the character spent effort invoking an aspect (referenced it in their action), spend a fate point: {"field":"fatePoints","action":"set","value":${Math.max(0, (characterInfo?.fatePoints ?? 3) - 1)}}.${consequenceGuide}\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
       ],
       schema: DmResolutionSchema,
@@ -273,7 +277,7 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     }
   }
 
-  private buildSystemPrompt(ctx: DmContext): string {
+  private buildSystemPrompt(ctx: DmContext): { systemPrompt: string; criticalReminder: string } {
     let prompt: string;
     let criticalSection = '';
     if (ctx.dmCustomPrompt) {
@@ -318,7 +322,7 @@ Storytelling principles:
 
     if (criticalSection) prompt += criticalSection;
     prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
-    return prompt;
+    return { systemPrompt: prompt, criticalReminder: criticalSection.trim() };
   }
 
   private lookupRules(systemId: string, query: string): string {
