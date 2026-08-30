@@ -268,8 +268,8 @@ export class GameLoop {
       /^(caution|careful|cautious|vigilant|wary)/i,
     ];
     if (genericPatterns.some(p => p.test(decision.innerThought))) {
-      const actionSnippet = decision.chosenAction.replace(/^I\s+/i, '').split(/[.!]/)[0].trim().slice(0, 50);
-      const memoryHook = memories.length > 0 ? memories[0].content.split(/[.!]/)[0].trim().slice(0, 40) : null;
+      const actionSnippet = (decision.chosenAction.replace(/^I\s+/i, '').split(/[.!]/)[0] ?? '').trim().slice(0, 50);
+      const memoryHook = memories.length > 0 ? (memories[0]!.content.split(/[.!]/)[0] ?? '').trim().slice(0, 40) : null;
       const contextDetail = memoryHook
         ? `Remembering that ${memoryHook.toLowerCase()}, I'll ${actionSnippet.toLowerCase()}`
         : `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}`;
@@ -328,10 +328,10 @@ export class GameLoop {
       );
     } catch (e) {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
-      const actionSummary = decision.chosenAction
+      const actionSummary = (decision.chosenAction
         .replace(/^I\s+/i, '')
         .replace(/^(try|attempt|decide|choose|want) to\s+/i, '')
-        .split(/[.!]/)[0]
+        .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
       resolution = {
@@ -343,10 +343,10 @@ export class GameLoop {
     }
 
     if (resolution.narration === 'The action unfolds...') {
-      const fallbackAction = decision.chosenAction
+      const fallbackAction = (decision.chosenAction
         .replace(/^I\s+/i, '')
         .replace(/^(try|attempt|decide|choose|want) to\s+/i, '')
-        .split(/[.!]/)[0]
+        .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
       const outcomeWord = resolution.outcome === 'failure' ? 'struggles to' : resolution.outcome === 'tie' ? 'barely manages to' : 'pushes through and';
