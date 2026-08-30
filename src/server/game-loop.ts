@@ -350,12 +350,16 @@ export class GameLoop {
     if (resolution.narration === 'The action unfolds...') {
       const fallbackAction = (decision.chosenAction
         .replace(/^I\s+/i, '')
-        .replace(/^(try|attempt|decide|choose|want) to\s+/i, '')
+        .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
+        .replace(/\bmy\b/gi, 'the')
+        .replace(/\bmyself\b/gi, character.definition.name.split(' ')[0]!.toLowerCase())
+        .replace(/\bI('m|'ll|'ve|'d)?\b/g, character.definition.name.split(' ')[0]!)
         .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
-      const outcomeWord = resolution.outcome === 'failure' ? 'struggles to' : resolution.outcome === 'tie' ? 'barely manages to' : 'pushes through and';
-      resolution.narration = `${character.definition.name} ${outcomeWord} ${fallbackAction.toLowerCase()}.`;
+      const outcomeVerb = resolution.outcome === 'failure' ? 'tries to' : resolution.outcome === 'tie' ? 'barely manages to' : 'succeeds at';
+      const costSuffix = resolution.outcome === 'success-with-cost' ? ', but not without cost' : resolution.outcome === 'failure' ? ', but the attempt goes badly wrong' : '';
+      resolution.narration = `${character.definition.name} ${outcomeVerb} ${fallbackAction.toLowerCase()}${costSuffix}.`;
     }
 
     if (diceResult && resolution.difficulty != null && resolution.skill && campaign.system_id === 'fate-core') {

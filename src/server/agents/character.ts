@@ -69,10 +69,19 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       ? `\nYou are carrying: ${ctx.state.inventory.join(', ')}. Consider whether any item helps here — a lantern in darkness, a map at a crossroads, a key at a locked door.`
       : '';
 
+    const namePrefix = `${ctx.definition.name}: `;
+    const recentActions = ctx.transcript
+      .filter(m => m.role === 'character' && m.content.startsWith(namePrefix))
+      .slice(-3)
+      .map(m => m.content.slice(namePrefix.length));
+    const varietyBlock = recentActions.length > 0
+      ? `\n\nYour last ${recentActions.length} actions (DO NOT repeat these themes — if you fought, try talking; if you protected, try investigating; if you stayed put, try moving): ${recentActions.join(' | ')}`
+      : '';
+
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nYou must now choose your action.${whisperText}${itemReminder}\n\nIMPORTANT: Your innerThought must be SPECIFIC — name people, places, items, or events. Never write vague thoughts like "Something feels off" or "I need to be careful." Instead: "Cassius was near the wine cellar when the poison was placed — I should confront him" or "My bruised ankle means I can't outrun the Phantom, so I'll use the narrow passage as a chokepoint." Reference your memories, your state, and the current situation.\n\nRespond as JSON: { "chosenAction": "what you do (under 30 words)", "innerThought": "your internal reasoning referencing specific details (2 sentences)", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": <number> }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}\n\nRecent events:\n${recentTranscript}\n\nYou must now choose your action.${whisperText}${itemReminder}${varietyBlock}\n\nIMPORTANT: Your innerThought must be SPECIFIC — name people, places, items, or events. Never write vague thoughts like "Something feels off" or "I need to be careful." Instead: "Cassius was near the wine cellar when the poison was placed — I should confront him" or "My bruised ankle means I can't outrun the Phantom, so I'll use the narrow passage as a chokepoint." Reference your memories, your state, and the current situation.\n\nRespond as JSON: { "chosenAction": "what you do (under 30 words)", "innerThought": "your internal reasoning referencing specific details (2 sentences)", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": <number> }` },
       ],
       schema: ActionDecisionSchema,
       maxTokens: 512,
