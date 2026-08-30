@@ -307,11 +307,14 @@ export class GameLoop {
       const fixPronouns = (s: string) => s.replace(/\bi\b/g, 'I').replace(/\bi'/g, "I'");
       let memoryPhrase: string | null = null;
       if (rawMemory) {
+        const memIdx = Math.floor(character.state.stress + character.state.fatePoints + (this.state.currentTurn ?? 0)) % 4;
         if (/^I\s/i.test(rawMemory)) {
           const verb = fixPronouns(rawMemory.replace(/^I\s+/i, '').toLowerCase());
-          memoryPhrase = `Last time I ${verb}`;
+          const starters = [`The memory of when I ${verb} steadies me`, `I recall ${verb}`, `Having ${verb} before, I know what to do`, `Drawing on when I ${verb}`];
+          memoryPhrase = starters[memIdx]!;
         } else {
-          memoryPhrase = `I remember when ${fixPronouns(rawMemory.toLowerCase())}`;
+          const starters = [`I recall ${fixPronouns(rawMemory.toLowerCase())}`, `The thought of ${fixPronouns(rawMemory.toLowerCase())} lingers`, `Remembering ${fixPronouns(rawMemory.toLowerCase())}`, `${fixPronouns(rawMemory)} echoes in my mind`];
+          memoryPhrase = starters[memIdx]!;
         }
       }
       const contextDetail = memoryPhrase
