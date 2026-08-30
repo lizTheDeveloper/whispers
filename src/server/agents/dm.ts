@@ -275,10 +275,16 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
 
   private buildSystemPrompt(ctx: DmContext): string {
     let prompt: string;
+    let criticalSection = '';
     if (ctx.dmCustomPrompt) {
       prompt = ctx.dmCustomPrompt + '\n';
     } else {
-      const presetText = loadPresetText(ctx.preset);
+      let presetText = loadPresetText(ctx.preset) ?? '';
+      const criticalIdx = presetText.indexOf('CRITICAL:');
+      if (criticalIdx >= 0) {
+        criticalSection = '\n' + presetText.slice(criticalIdx);
+        presetText = presetText.slice(0, criticalIdx).trimEnd();
+      }
       prompt = presetText ? presetText + '\n' : `You are a TTRPG Dungeon Master with the "${ctx.preset}" personality.\n`;
     }
 
@@ -310,6 +316,7 @@ Storytelling principles:
       prompt += `\nCampaign reference materials:\n${campaignMaterials}\n`;
     }
 
+    if (criticalSection) prompt += criticalSection;
     prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
     return prompt;
   }
