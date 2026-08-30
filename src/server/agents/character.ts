@@ -96,6 +96,9 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       ctx.state.stress >= 2
         ? `You are badly stressed (${ctx.state.stress}/3). You are rattled, exhausted, or hurt. Favor cautious, defensive, or desperate actions over bold ones.`
         : '',
+      ctx.state.inventory && ctx.state.inventory.length > 0
+        ? `Inventory: ${ctx.state.inventory.join(', ')} — USE these items in your actions when relevant. A lantern lights dark places, a map reveals paths, a lockpick opens doors.`
+        : '',
       memoryBlock,
       ctx.partyMembers && ctx.partyMembers.length > 0
         ? `\nYour companions: ${ctx.partyMembers.map(p => `${p.name} (${p.highConcept}, trouble: "${p.trouble}")`).join('; ')}. You can cooperate with them, argue, protect them, or ask for their help. Reference them by name in your actions.`
