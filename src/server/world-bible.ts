@@ -71,11 +71,16 @@ export class WorldBible {
       }).join('; '));
     }
 
-    const rels = this.db.prepare(`SELECT r.type, r.description, e1.name as a_name, e2.name as b_name
+    const rels = this.db.prepare(`SELECT r.type, r.description,
+        COALESCE(e1.name, json_extract(c1.definition, '$.name')) as a_name,
+        COALESCE(e2.name, json_extract(c2.definition, '$.name')) as b_name
       FROM relationships r
-      JOIN entities e1 ON r.entity_a_id = e1.id
-      JOIN entities e2 ON r.entity_b_id = e2.id
-      WHERE r.campaign_id = ? ORDER BY r.rowid DESC LIMIT 10`).all(campaignId) as any[];
+      LEFT JOIN entities e1 ON r.entity_a_id = e1.id
+      LEFT JOIN entities e2 ON r.entity_b_id = e2.id
+      LEFT JOIN characters c1 ON r.entity_a_id = c1.id
+      LEFT JOIN characters c2 ON r.entity_b_id = c2.id
+      WHERE r.campaign_id = ? AND (a_name IS NOT NULL AND b_name IS NOT NULL)
+      ORDER BY r.rowid DESC LIMIT 10`).all(campaignId) as any[];
     if (rels.length > 0) {
       parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}${r.description ? ' — ' + r.description : ''}`).join('; '));
     }
@@ -142,11 +147,16 @@ export class WorldBible {
     if (unclaimedItems.length > 0) {
       parts.push('Items you could pick up: ' + unclaimedItems.map((i: any) => i.name).join(', '));
     }
-    const rels = this.db.prepare(`SELECT r.type, r.description, e1.name as a_name, e2.name as b_name
+    const rels = this.db.prepare(`SELECT r.type, r.description,
+        COALESCE(e1.name, json_extract(c1.definition, '$.name')) as a_name,
+        COALESCE(e2.name, json_extract(c2.definition, '$.name')) as b_name
       FROM relationships r
-      JOIN entities e1 ON r.entity_a_id = e1.id
-      JOIN entities e2 ON r.entity_b_id = e2.id
-      WHERE r.campaign_id = ? ORDER BY r.rowid DESC LIMIT 5`).all(campaignId) as any[];
+      LEFT JOIN entities e1 ON r.entity_a_id = e1.id
+      LEFT JOIN entities e2 ON r.entity_b_id = e2.id
+      LEFT JOIN characters c1 ON r.entity_a_id = c1.id
+      LEFT JOIN characters c2 ON r.entity_b_id = c2.id
+      WHERE r.campaign_id = ? AND (a_name IS NOT NULL AND b_name IS NOT NULL)
+      ORDER BY r.rowid DESC LIMIT 5`).all(campaignId) as any[];
     if (rels.length > 0) {
       parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}`).join(', '));
     }
@@ -222,10 +232,16 @@ export class WorldBible {
         this.addEvent({ id: genId(), campaignId, sceneNumber: evt.sceneNumber, description: evt.description, participants: evt.participants, outcome: evt.outcome });
       }
       for (const rel of (diff.newRelationships ?? [])) {
-        const entityA = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, rel.entityAName) as any;
-        const entityB = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, rel.entityBName) as any;
-        if (entityA && entityB) {
-          this.addRelationship({ campaignId, entityAId: entityA.id, entityBId: entityB.id, type: rel.type, description: rel.description });
+        const findId = (name: string) => {
+          const entity = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) as any;
+          if (entity) return entity.id;
+          const char = this.db.prepare("SELECT id FROM characters WHERE campaign_id = ? AND json_extract(definition, '$.name') = ? COLLATE NOCASE").get(campaignId, name) as any;
+          return char?.id ?? null;
+        };
+        const idA = findId(rel.entityAName);
+        const idB = findId(rel.entityBName);
+        if (idA && idB) {
+          this.addRelationship({ campaignId, entityAId: idA, entityBId: idB, type: rel.type, description: rel.description });
         }
       }
     });
