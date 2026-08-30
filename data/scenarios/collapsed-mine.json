@@ -1,25 +1,35 @@
 {
   "id": "collapsed-mine",
   "name": "The Collapsed Mine",
-  "description": "A classic dungeon crawl through an abandoned mine. Good for learning the basics.",
+  "description": "A dungeon crawl through an abandoned mine with a dark secret beneath. Good for learning the basics.",
   "openingNarration": "The village of Thornhaven has a problem. Three days ago, a tremor shook the old silver mine on the hill above town. The entrance collapsed, trapping five miners inside. The village elder has offered a reward to anyone brave enough to find another way in and bring the miners home alive. You stand at the base of the hill, studying the overgrown paths that wind up through the forest. Somewhere up there, there's supposed to be a ventilation shaft — if it hasn't collapsed too.",
   "npcs": [
-    { "name": "Elder Maren", "description": "The village elder, a weathered woman in her sixties with kind eyes and a firm handshake.", "disposition": "grateful", "motivation": "Save the trapped miners at any cost" },
-    { "name": "Tobias", "description": "A young miner who escaped the collapse. Shaken, with a bandaged arm.", "disposition": "nervous", "motivation": "Wants to help but is terrified of going back underground" }
+    { "name": "Elder Maren", "description": "The village elder, a weathered woman in her sixties with kind eyes and a firm handshake.", "disposition": "grateful", "motivation": "Save the trapped miners at any cost — but she knows more about what's in the deep tunnels than she's saying" },
+    { "name": "Tobias", "description": "A young miner who escaped the collapse. Shaken, with a bandaged arm.", "disposition": "nervous", "motivation": "Wants to help but is terrified of going back underground — he saw something in the dark before the tremor" },
+    { "name": "Foreman Greaves", "description": "The mine foreman, found unconscious near the blocked entrance. Burns on his hands that don't match any mining accident.", "disposition": "evasive", "motivation": "Was conducting unauthorized excavation in the deep tunnels and triggered the collapse — he's hiding his guilt" },
+    { "name": "The Pale Woman", "description": "A figure glimpsed in the deep tunnels, her skin luminous in the dark. Miners have whispered about her for decades.", "disposition": "enigmatic", "motivation": "Guardian of something beneath the mine — not hostile, but not safe either" }
   ],
   "locations": [
     { "name": "Thornhaven", "description": "A small mining village at the base of a forested hill", "terrain": "settlement" },
     { "name": "The Old Mine Entrance", "description": "Blocked by rubble. Dust still drifts from the cracks.", "terrain": "underground" },
-    { "name": "The Ventilation Shaft", "description": "A narrow shaft hidden in the forest, partially overgrown", "terrain": "underground" }
+    { "name": "The Ventilation Shaft", "description": "A narrow shaft hidden in the forest, partially overgrown, with rusted ladder rungs", "terrain": "underground" },
+    { "name": "The Upper Tunnels", "description": "Silver-veined corridors with abandoned cart tracks. Water drips from the ceiling.", "terrain": "underground" },
+    { "name": "The Collapse Zone", "description": "A wall of broken timber and rock where the main tunnel caved in. Voices can be heard faintly from the other side.", "terrain": "underground" },
+    { "name": "The Deep Excavation", "description": "A freshly dug tunnel below the mine proper, descending into older stone that predates the mine by centuries", "terrain": "underground" },
+    { "name": "The Crystal Chamber", "description": "A natural cavern filled with pale crystal formations that hum faintly. The source of the tremor.", "terrain": "underground" }
   ],
   "plotHooks": [
     "The collapse wasn't natural — something in the deep tunnels caused it",
-    "One of the trapped miners found something before the collapse",
-    "The forest path to the ventilation shaft is not as abandoned as it seems"
+    "One of the trapped miners found something before the collapse — a carved stone door",
+    "The forest path to the ventilation shaft is not as abandoned as it seems — fresh footprints lead away from it",
+    "Foreman Greaves was digging where he shouldn't have been, and Elder Maren knew about it",
+    "The crystals in the deep chamber react to sound — shouting near them triggered the original tremor"
   ],
   "items": [
     { "name": "Miner's Lantern", "description": "Oil lamp with a cracked lens, still burns" },
-    { "name": "Tobias's Map", "description": "Rough sketch of the mine tunnels, drawn from memory" }
+    { "name": "Tobias's Map", "description": "Rough sketch of the mine tunnels, drawn from memory — shows a question mark where the deep excavation begins" },
+    { "name": "Crystal Shard", "description": "A finger-length crystal fragment that vibrates when held near the cavern walls" },
+    { "name": "Greaves's Journal", "description": "A small notebook with measurements and sketches of carved symbols found in the deep excavation" }
   ],
   "difficulty": "beginner"
 }
