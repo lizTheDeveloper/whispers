@@ -25,6 +25,8 @@ function tryRepairJson(text: string): string | null {
 
   // Strip trailing incomplete key or value
   fragment = fragment.replace(/,\s*"[^"]*"?\s*:?\s*"?[^"]*$/, '');
+  // Strip trailing incomplete object in an array (e.g. ,{"foo":"bar","ba )
+  fragment = fragment.replace(/,\s*\{[^}]*$/, '');
   fragment = fragment.replace(/,\s*$/, '');
 
   // Count open braces/brackets and close them
@@ -115,6 +117,12 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       // Strip Qwen3 thinking tags (closed or unclosed at end of output)
       text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
       if (text.startsWith('<think>')) text = '';
+
+      if (schema && !text) {
+        lastBadResponse = '(empty response after stripping thinking tags)';
+        if (attempt < maxAttempts - 1) continue;
+        throw new Error('LLM returned empty response after stripping thinking tags');
+      }
 
       // Strip roleplay markers that may wrap valid JSON
       if (schema && text.startsWith('*')) {
