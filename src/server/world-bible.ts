@@ -131,6 +131,11 @@ export class WorldBible {
     return parts.join('\n') || '';
   }
 
+  updateEntityLocation(campaignId: string, entityName: string, locationId: string): void {
+    this.db.prepare('UPDATE entities SET location_id = ? WHERE campaign_id = ? AND name = ? COLLATE NOCASE')
+      .run(locationId, campaignId, entityName);
+  }
+
   applyDiff(campaignId: string, diff: WorldBibleDiff): void {
     const tx = this.db.transaction(() => {
       for (const loc of diff.newLocations) {

@@ -29,6 +29,7 @@ export class GameLoop {
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private stopped = false;
   private sceneTurnCount = 0;
+  private currentLocationId: string | null = null;
 
   constructor(
     private db: Database.Database,
@@ -107,7 +108,7 @@ export class GameLoop {
       return;
     }
 
-    const worldSummary = this.worldBible.getSummary(this.campaignId);
+    const worldSummary = this.worldBible.getSummary(this.campaignId, this.currentLocationId ?? undefined);
     let narration;
     try {
       narration = await this.dm.narrate({
@@ -135,6 +136,14 @@ export class GameLoop {
     this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene });
 
     if (narration.currentLocationName) {
+      const loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
+      if (loc) {
+        this.currentLocationId = loc.id;
+        for (const npcName of narration.activeNpcs) {
+          this.worldBible.updateEntityLocation(this.campaignId, npcName, loc.id);
+        }
+      }
+
       generateSceneImage(this.campaignId, narration.currentLocationName, narration.narration)
         .then(result => {
           if (result.imageUrl) {
@@ -183,7 +192,7 @@ export class GameLoop {
     this.sceneTurnCount++;
     this.state.activeCharacterId = characterId;
 
-    const worldSummary = this.worldBible.getSummary(this.campaignId);
+    const worldSummary = this.worldBible.getSummary(this.campaignId, this.currentLocationId ?? undefined);
     const charWorldContext = this.worldBible.getCompactSummary(this.campaignId);
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
