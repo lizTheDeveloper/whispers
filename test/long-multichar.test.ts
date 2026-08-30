@@ -497,6 +497,7 @@ describeIfLive('Long Multi-Character Stress Test (30 turns)', () => {
     const worldBibleLogs = allServerLogs.filter(l => l.includes('[world-bible]') || l.includes('world bible'));
     const observerMemoryLogs = allServerLogs.filter(l => l.includes('storeObservation') || l.includes('observer') || l.includes('cross-character'));
     const takenOutLogs = allServerLogs.filter(l => l.includes('taken out') || l.includes('Taken out'));
+    const recoveryBoostLogs = allServerLogs.filter(l => l.includes('Low-trust recovery boost'));
 
     // ---- Summary ----
     console.log('\n========================================');
@@ -534,22 +535,17 @@ describeIfLive('Long Multi-Character Stress Test (30 turns)', () => {
         }
       }
 
-      // Crossover check: did trust trajectories ever cross?
+      // Crossover check: track most recent trust for each character
       let crossoverTurn = -1;
-      const garrickTurnTrust = new Map<number, number>();
-      const elaraTurnTrust = new Map<number, number>();
-      for (const entry of turnLog) {
-        if (entry.char === 'garrick') garrickTurnTrust.set(entry.turn, entry.trust);
-        else elaraTurnTrust.set(entry.turn, entry.trust);
-      }
+      let latestG = gTrust[0], latestE = eTrust[0];
       let prevGarrickHigher: boolean | null = null;
-      for (let t = 1; t <= TOTAL_TURNS; t++) {
-        const gT = garrickTurnTrust.get(t);
-        const eT = elaraTurnTrust.get(t);
-        if (gT !== undefined && eT !== undefined) {
-          const garrickHigher = gT > eT;
+      for (const entry of turnLog) {
+        if (entry.char === 'garrick') latestG = entry.trust;
+        else latestE = entry.trust;
+        if (latestG !== undefined && latestE !== undefined) {
+          const garrickHigher = latestG > latestE;
           if (prevGarrickHigher !== null && garrickHigher !== prevGarrickHigher) {
-            crossoverTurn = t;
+            crossoverTurn = entry.turn;
           }
           prevGarrickHigher = garrickHigher;
         }
@@ -620,6 +616,11 @@ describeIfLive('Long Multi-Character Stress Test (30 turns)', () => {
     if (compactionLogs.length === 0 && turnsCompleted >= 15) {
       findings.push('ISSUE: No compaction events with 2 chars in 15+ turns — should hit 35-msg threshold');
     }
+
+    // Trust recovery boost
+    console.log('\n--- TRUST RECOVERY BOOST ---');
+    console.log(`Low-trust recovery boosts: ${recoveryBoostLogs.length}`);
+    recoveryBoostLogs.forEach(l => console.log(`  ${l.slice(0, 150)}`));
 
     // Recovery + taken out
     console.log('\n--- STRESS / RECOVERY ---');
