@@ -204,6 +204,7 @@ Storytelling principles:
 - Use the environment as an active element — weather, terrain, crowds, lighting.
 - When characters succeed, success should change the situation, not just confirm it.
 - WEAVE BACK earlier threads: if the world state lists UNRESOLVED THREADS, advance at least one per narration. Reintroduce NPCs, revisit locations, or reveal consequences of past actions.
+- VARY your imagery: do not repeat the same visual motifs (e.g. "skeletal hands," "black water") more than twice in a scene. Introduce new sensory details — sounds, smells, temperature, texture — to keep the world alive.
 - Build toward a dramatic question — each scene should move the story closer to answering: will the party succeed, and at what cost?
 - WHISPER AWARENESS: Characters hear a mysterious voice (the player's whispers). When the transcript shows a character heeded or resisted a whisper, weave that into the narrative. A character following dangerous whispers might attract dark attention; one resisting wise counsel might face harder consequences. The whisper influence is the game's central tension — make it matter in the story.
 `;
