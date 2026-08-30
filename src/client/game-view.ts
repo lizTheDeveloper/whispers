@@ -77,16 +77,31 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     trustDisplay.textContent = `Trust: ${(msg.whisperTrust * 100).toFixed(0)}%`;
   });
 
+  let whisperTimer: ReturnType<typeof setInterval> | null = null;
   ws.on('whisper-prompt', (msg) => {
     if (msg.type !== 'whisper-prompt') return;
     whisperArea.style.display = 'flex';
     whisperInput.focus();
     whisperInput.placeholder = `Whisper to ${msg.characterName}...`;
+    let remaining = 15;
+    whisperBtn.textContent = `Whisper (${remaining}s)`;
+    if (whisperTimer) clearInterval(whisperTimer);
+    whisperTimer = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+        whisperBtn.textContent = 'Whisper';
+        return;
+      }
+      whisperBtn.textContent = `Whisper (${remaining}s)`;
+    }, 1000);
   });
 
   ws.on('action-taken', (msg) => {
     if (msg.type !== 'action-taken') return;
     whisperArea.style.display = 'none';
+    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+    whisperBtn.textContent = 'Whisper';
     actionArea.innerHTML = '';
     appendLog(`${msg.characterName}: ${msg.action}`, 'character');
     appendLog(`(${msg.innerThought})`, 'whisper');
@@ -123,6 +138,8 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     appendLog(`You whisper: "${text}"`, 'whisper');
     whisperInput.value = '';
     whisperArea.style.display = 'none';
+    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+    whisperBtn.textContent = 'Whisper';
   }
 
   whisperBtn.addEventListener('click', sendWhisper);
