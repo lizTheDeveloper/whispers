@@ -14,8 +14,8 @@ import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import type { Character, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
-const COMPACTION_THRESHOLD = 35;
-const COMPACTION_KEEP_RECENT = 12;
+const BASE_COMPACTION_THRESHOLD = 35;
+const BASE_COMPACTION_KEEP_RECENT = 12;
 
 export class GameLoop {
   private dm: DmAgent;
@@ -101,8 +101,10 @@ export class GameLoop {
 
   private async runScene(campaign: any): Promise<void> {
     if (this.stopped) return;
-    if ((this.state.currentTurn ?? 0) >= 50) {
-      console.log(`[game-loop] Session hard limit (50 turns) — ending session`);
+    const partySize = this.characters.size || 1;
+    const sessionHardLimit = 50 + (partySize - 1) * 10;
+    if ((this.state.currentTurn ?? 0) >= sessionHardLimit) {
+      console.log(`[game-loop] Session hard limit (${sessionHardLimit} turns, party ${partySize}) — ending session`);
       await this.endScene();
       this.broadcastFn({ type: 'phase-change', phase: 'ended' });
       this.stopped = true;
@@ -169,16 +171,17 @@ export class GameLoop {
     const partySize = this.characters.size || 1;
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
     const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
-    const baseHardCap = Math.max(4, 8 - partySize);
+    const baseHardCap = partySize >= 3 ? Math.max(3, 6 - partySize) : Math.max(4, 8 - partySize);
     const hardCap = isFinale ? Math.min(baseHardCap, 5) : baseHardCap;
     const forceSceneEnd = roundCount >= hardCap;
     if (forceSceneEnd) {
       console.log(`[game-loop] Forcing scene end at round ${roundCount} (${isFinale ? 'finale' : 'hard'} cap)`);
     }
 
-    const minRounds = this.state.currentScene <= 1 ? 4
-      : this.state.currentScene >= 5 ? 3
-      : 3;
+    const minRounds = this.state.currentScene <= 1
+      ? (partySize >= 3 ? 3 : 4)
+      : this.state.currentScene >= 5 ? (partySize >= 3 ? 2 : 3)
+      : (partySize >= 3 ? 2 : 3);
     const allowSceneEnd = roundCount >= minRounds || forceSceneEnd;
     if ((narration.isSceneEnd && allowSceneEnd) || forceSceneEnd) {
       await this.endScene();
@@ -513,15 +516,12 @@ export class GameLoop {
     const lastCompelTurn = (character as any)._lastCompelTurn ?? -Infinity;
     if (this.state.currentTurn - lastCompelTurn >= 3) {
       let shouldCompel = false;
-      if (resolution.outcome === 'failure' && character.state.stress >= 1) {
+      if (resolution.outcome === 'failure') {
         shouldCompel = true;
       } else if (resolution.outcome === 'success-with-cost') {
-        const stressChange = resolution.stateChanges.find(c => c.field === 'stress' && c.action === 'set' && typeof c.value === 'number' && c.value > character.state.stress);
-        const consequenceChange = resolution.stateChanges.find(c => c.field === 'consequences' && (c.action === 'add' || c.action === 'set'));
-        if (stressChange || consequenceChange) shouldCompel = true;
-      } else if (resolution.outcome === 'failure') {
-        const consequenceChange = resolution.stateChanges.find(c => c.field === 'consequences' && (c.action === 'add' || c.action === 'set'));
-        if (consequenceChange) shouldCompel = true;
+        shouldCompel = true;
+      } else if (resolution.outcome === 'tie' && character.state.fatePoints <= 1) {
+        shouldCompel = true;
       }
       if (shouldCompel) {
         character.state.fatePoints = Math.min(character.state.fatePoints + 1, 5);
@@ -570,10 +570,13 @@ export class GameLoop {
   }
 
   private async maybeCompactTranscript(): Promise<void> {
-    if (this.transcript.length < COMPACTION_THRESHOLD) return;
+    const partySize = this.characters.size || 1;
+    const compactionThreshold = BASE_COMPACTION_THRESHOLD + (partySize - 1) * 12;
+    const compactionKeepRecent = BASE_COMPACTION_KEEP_RECENT + (partySize - 1) * 4;
+    if (this.transcript.length < compactionThreshold) return;
 
-    console.log(`[game-loop] Transcript compaction triggered at ${this.transcript.length} messages (threshold: ${COMPACTION_THRESHOLD})`);
-    const extractCount = this.transcript.length - COMPACTION_KEEP_RECENT;
+    console.log(`[game-loop] Transcript compaction triggered at ${this.transcript.length} messages (threshold: ${compactionThreshold}, party: ${partySize})`);
+    const extractCount = this.transcript.length - compactionKeepRecent;
     const toExtract = this.transcript.slice(0, extractCount);
     const toKeep = this.transcript.slice(extractCount);
 
