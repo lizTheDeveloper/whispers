@@ -326,6 +326,19 @@ export class GameLoop {
       }
     }
 
+    for (const cid of affectedCharIds) {
+      const c = this.characters.get(cid);
+      if (c && c.state.stress >= 3 && c.state.consequences.length >= 2) {
+        const takenOutMsg = `${c.definition.name} is TAKEN OUT — overwhelmed by stress and injuries, they collapse or are forced to retreat. The opposition decides what happens next.`;
+        this.addTranscript('system', takenOutMsg);
+        this.broadcastFn({ type: 'narration', text: takenOutMsg, sceneNumber: this.state.currentScene });
+        c.state.stress = 1;
+        if (!c.state.consequences.includes('Taken Out (recovering)')) {
+          c.state.consequences.push('Taken Out (recovering)');
+        }
+      }
+    }
+
     this.addTranscript('dm', resolution.narration);
     this.broadcastFn({ type: 'resolution', text: resolution.narration });
 
@@ -474,6 +487,9 @@ export class GameLoop {
     const state = char.state as unknown as Record<string, unknown>;
     if (action === 'set') {
       state[field] = value;
+      if (field === 'stress' && typeof value === 'number') {
+        state.stress = Math.max(0, Math.min(value, 3));
+      }
     } else if (action === 'add' && Array.isArray(state[field])) {
       (state[field] as unknown[]).push(value);
     } else if (action === 'remove' && Array.isArray(state[field])) {
