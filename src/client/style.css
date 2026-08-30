@@ -382,6 +382,26 @@ button:disabled {
   border-left: 3px solid rgba(122, 122, 158, 0.15);
   background: rgba(122, 122, 158, 0.04);
 }
+.narration-entry.compel {
+  color: #ffd700;
+  font-weight: 600;
+  background: rgba(255, 215, 0, 0.06);
+  border-left: 3px solid rgba(255, 215, 0, 0.4);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.9rem;
+}
+.narration-entry.taken-out {
+  color: var(--gene-pink);
+  font-weight: 700;
+  background: rgba(255, 61, 127, 0.1);
+  border-left: 3px solid var(--gene-pink);
+  text-transform: none;
+  animation: taken-out-flash 0.6s ease-out;
+}
+@keyframes taken-out-flash {
+  0% { background: rgba(255, 61, 127, 0.3); }
+  100% { background: rgba(255, 61, 127, 0.1); }
+}
 
 /* ─── Whisper Input ─── */
 

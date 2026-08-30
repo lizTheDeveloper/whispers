@@ -37,7 +37,10 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   const locationBar = root.querySelector('#location-bar') as HTMLElement;
   ws.on('narration', (msg) => {
     if (msg.type !== 'narration') return;
-    appendLog(msg.text, 'dm');
+    const cls = msg.text.startsWith('[Compel:') ? 'compel'
+      : msg.text.includes('TAKEN OUT') ? 'taken-out'
+      : 'dm';
+    appendLog(msg.text, cls);
     if (msg.locationName) {
       locationBar.textContent = msg.locationName;
       locationBar.style.display = 'block';
