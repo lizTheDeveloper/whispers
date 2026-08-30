@@ -378,10 +378,12 @@ export class GameLoop {
     if (!fpSpentByDm && character.state.fatePoints > 0) {
       const actionLower = decision.chosenAction.toLowerCase();
       const allAspects = [character.definition.highConcept, ...character.definition.aspects].filter(Boolean);
-      const aspectWords = allAspects.map(a => a.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-      const invoked = aspectWords.some(words => {
+      const invoked = allAspects.some(aspect => {
+        const words = aspect.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+        if (words.length === 0) return false;
         const matches = words.filter(w => actionLower.includes(w));
-        return matches.length >= 2;
+        const threshold = words.length <= 2 ? 1 : 2;
+        return matches.length >= threshold;
       });
       if (invoked) {
         const newFp = character.state.fatePoints - 1;
