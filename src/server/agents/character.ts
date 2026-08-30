@@ -72,13 +72,18 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       ? this.formatMemories(ctx.memories)
       : '';
 
+    const sortedSkills = Object.entries(d.skills).sort((a, b) => b[1] - a[1]);
+    const topSkills = sortedSkills.slice(0, 3).map(([k, v]) => `${k} (+${v})`).join(', ');
+    const skillLine = sortedSkills.map(([k, v]) => `${k}: +${v}`).join(', ');
+
     return [
       `You ARE ${d.name}. Stay completely in character.`,
       `High concept: ${d.highConcept}`,
       `Trouble: ${d.trouble}`,
       `Personality: ${d.personality}`,
       `Aspects: ${d.aspects.join(', ')}`,
-      `Skills: ${Object.entries(d.skills).map(([k, v]) => `${k}: +${v}`).join(', ')}`,
+      `Skills: ${skillLine}`,
+      `Your strengths are ${topSkills} — lean into these when proposing actions. A character with high Lore uses knowledge, not swords. A character with high Fight charges in. Play to YOUR strengths.`,
       `Current state: ${ctx.state.stress} stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
       `Consequences: ${ctx.state.consequences.length > 0 ? ctx.state.consequences.join(', ') : 'none'}`,
       memoryBlock,
