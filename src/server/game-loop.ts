@@ -404,7 +404,8 @@ export class GameLoop {
       console.error('Mid-scene fact extraction failed:', e);
     }
 
-    const summary = await this.dm.summarizeScene(toExtract);
+    const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
+    const summary = await this.dm.summarizeScene(toExtract, charNames);
 
     this.transcript = [
       { role: 'system' as const, content: `[Session recap] ${summary}`, timestamp: new Date().toISOString() },

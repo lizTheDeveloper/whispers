@@ -221,12 +221,15 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     });
   }
 
-  async summarizeScene(transcript: TranscriptMessage[]): Promise<string> {
+  async summarizeScene(transcript: TranscriptMessage[], characterNames?: string[]): Promise<string> {
     const text = transcript.map(m => `[${m.role}] ${m.content}`).join('\n');
+    const charHint = characterNames && characterNames.length > 0
+      ? ` For each character (${characterNames.join(', ')}), note their last action and current situation.`
+      : '';
     const result = await callLlm({
       messages: [
         { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
-        { role: 'user', content: `${text}\n\nSummarize in 2-3 sentences. Focus on what happened, who was involved, and what changed.\n\nRespond as JSON: {"summary": "your summary here"}` },
+        { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint} Include any NPC reactions, items found, or locations visited.\n\nRespond as JSON: {"summary": "your summary here"}` },
       ],
       schema: SceneSummarySchema,
     });
