@@ -214,7 +214,10 @@ export class GameLoop {
 
     const partyMembers = Array.from(this.characters.entries())
       .filter(([id]) => id !== characterId)
-      .map(([, c]) => ({ name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble }));
+      .map(([id, c]) => {
+        const lastAction = this.transcript.filter(m => m.role === 'character' && m.characterId === id).slice(-1)[0]?.content;
+        return { name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble, stress: c.state.stress, lastAction: lastAction || undefined };
+      });
 
     let proposals;
     try {
