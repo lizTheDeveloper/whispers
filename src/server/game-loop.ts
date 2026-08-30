@@ -168,7 +168,6 @@ export class GameLoop {
         .catch(() => {});
     }
 
-    const partySize = this.characters.size || 1;
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
     const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
     const baseHardCap = partySize >= 3 ? Math.max(3, 6 - partySize) : Math.max(4, 8 - partySize);
