@@ -170,7 +170,7 @@ export class GameLoop {
 
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
     const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
-    const baseHardCap = partySize >= 3 ? Math.max(3, 6 - partySize) : Math.max(4, 8 - partySize);
+    const baseHardCap = partySize >= 3 ? Math.max(3, 6 - partySize) : partySize === 2 ? 5 : Math.max(4, 8 - partySize);
     const hardCap = isFinale ? Math.min(baseHardCap, 5) : baseHardCap;
     const forceSceneEnd = roundCount >= hardCap;
     if (forceSceneEnd) {
@@ -178,9 +178,9 @@ export class GameLoop {
     }
 
     const minRounds = this.state.currentScene <= 1
-      ? (partySize >= 3 ? 3 : 4)
-      : this.state.currentScene >= 5 ? (partySize >= 3 ? 2 : 3)
-      : (partySize >= 3 ? 2 : 3);
+      ? (partySize >= 3 ? 2 : partySize === 2 ? 3 : 4)
+      : this.state.currentScene >= 5 ? 2
+      : (partySize >= 3 ? 2 : partySize === 2 ? 2 : 3);
     const allowSceneEnd = roundCount >= minRounds || forceSceneEnd;
     if ((narration.isSceneEnd && allowSceneEnd) || forceSceneEnd) {
       await this.endScene();
@@ -441,6 +441,19 @@ export class GameLoop {
         console.log(`[game-loop] FATE outcome corrected: DM said ${resolution.outcome}, math says ${correctOutcome} (effort ${effort} vs diff ${resolution.difficulty}, shifts ${shifts})`);
         resolution.outcome = correctOutcome;
       }
+
+      if (campaign.dm_preset === 'professor') {
+        const ladderNames = ['Mediocre', 'Average', 'Fair', 'Good', 'Great', 'Superb', 'Fantastic', 'Epic', 'Legendary'];
+        const diffName = ladderNames[resolution.difficulty] ?? `+${resolution.difficulty}`;
+        const effortName = ladderNames[Math.max(0, Math.min(effort, 8))] ?? `+${effort}`;
+        const dSign = diceResult.total >= 0 ? '+' : '';
+        const aside = shifts >= 1
+          ? `(${resolution.skill} +${skillRank} with dice ${dSign}${diceResult.total} = ${effortName} (+${effort}) vs ${diffName} (+${resolution.difficulty}) — ${shifts} shift${shifts !== 1 ? 's' : ''} of success!)`
+          : shifts === 0
+          ? `(${resolution.skill} +${skillRank} ties the ${diffName} (+${resolution.difficulty}) difficulty — a tie means you succeed, but at a minor cost.)`
+          : `(${resolution.skill} +${skillRank} with dice ${dSign}${diceResult.total} = +${effort} vs ${diffName} (+${resolution.difficulty}) — ${Math.abs(shifts)} shift${Math.abs(shifts) !== 1 ? 's' : ''} short.${character.state.fatePoints > 0 ? ' An aspect invoke for +2 could have changed this!' : ''})`;
+        resolution.narration = resolution.narration.trimEnd().replace(/\.?$/, '. ') + aside;
+      }
     }
 
     const fpSpentByDm = resolution.stateChanges.some(c => c.field === 'fatePoints' && c.action === 'set' && typeof c.value === 'number' && c.value < character.state.fatePoints);
@@ -527,7 +540,7 @@ export class GameLoop {
         (character as any)._lastCompelTurn = this.state.currentTurn;
         console.log(`[game-loop] Compel triggered: "${character.definition.trouble}" on ${resolution.outcome} — ${character.definition.name} now at ${character.state.fatePoints} FP`);
         this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
-        this.broadcastFn({ type: 'narration', text: `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point]`, sceneNumber: this.state.currentScene });
+        resolution.narration += `\n\n*${character.definition.name}'s trouble — "${character.definition.trouble}" — catches up with them. Fate point earned.*`;
         affectedCharIds.add(characterId);
       }
     }
