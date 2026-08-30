@@ -60,7 +60,9 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     const container = root.querySelector('#scene-image') as HTMLElement;
     const img = root.querySelector('#scene-img') as HTMLImageElement;
     const label = root.querySelector('#scene-label') as HTMLElement;
-    img.src = msg.imageUrl;
+    if (msg.imageUrl.startsWith('https://') || msg.imageUrl.startsWith('data:image/')) {
+      img.src = msg.imageUrl;
+    }
     img.alt = msg.locationName;
     label.textContent = msg.locationName;
     container.style.display = 'block';
@@ -151,27 +153,36 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     actionArea.innerHTML = '';
     const container = document.createElement('div');
     container.className = 'dm-question-panel';
-    container.innerHTML = `
-      <h3>The DM asks:</h3>
-      <p class="dm-question-text">${msg.question}</p>
-      <div class="dm-question-input">
-        <input type="text" id="dm-answer-input" placeholder="Your answer..." />
-        <button id="dm-answer-btn">Answer</button>
-      </div>
-    `;
+    const heading = document.createElement('h3');
+    heading.textContent = 'The DM asks:';
+    const questionP = document.createElement('p');
+    questionP.className = 'dm-question-text';
+    questionP.textContent = msg.question;
+    const inputDiv = document.createElement('div');
+    inputDiv.className = 'dm-question-input';
+    const inputEl = document.createElement('input');
+    inputEl.type = 'text';
+    inputEl.id = 'dm-answer-input';
+    inputEl.placeholder = 'Your answer...';
+    const btnEl = document.createElement('button');
+    btnEl.id = 'dm-answer-btn';
+    btnEl.textContent = 'Answer';
+    inputDiv.appendChild(inputEl);
+    inputDiv.appendChild(btnEl);
+    container.appendChild(heading);
+    container.appendChild(questionP);
+    container.appendChild(inputDiv);
     actionArea.appendChild(container);
-    const input = container.querySelector('#dm-answer-input') as HTMLInputElement;
-    const btn = container.querySelector('#dm-answer-btn') as HTMLButtonElement;
-    input.focus();
+    inputEl.focus();
     const submit = () => {
-      const text = input.value.trim();
+      const text = inputEl.value.trim();
       if (!text) return;
       ws.send({ type: 'dm-answer', text });
       actionArea.innerHTML = '';
       appendLog(`You answered: "${text}"`, 'system');
     };
-    btn.addEventListener('click', submit);
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    btnEl.addEventListener('click', submit);
+    inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   });
 
   let shownTutorial = false;
