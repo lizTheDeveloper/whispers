@@ -114,7 +114,14 @@ export class GameLoop {
         .catch(() => {});
     }
 
-    if (narration.isSceneEnd) {
+    const partySize = this.characters.size || 1;
+    const roundCount = Math.floor(this.sceneTurnCount / partySize);
+    const forceSceneEnd = roundCount >= 10;
+    if (forceSceneEnd) {
+      console.log(`[game-loop] Forcing scene end at round ${roundCount} (hard cap)`);
+    }
+
+    if (narration.isSceneEnd || forceSceneEnd) {
       await this.endScene();
       if (!this.stopped) await this.runScene(campaign);
       return;
