@@ -279,7 +279,13 @@ export class GameLoop {
         decision.chosenAction,
         diceResult,
         this.state.currentScene,
-        { id: characterId, name: character.definition.name, skills: character.definition.skills, stress: character.state.stress, consequences: character.state.consequences, fatePoints: character.state.fatePoints },
+        {
+          id: characterId, name: character.definition.name, skills: character.definition.skills,
+          stress: character.state.stress, consequences: character.state.consequences, fatePoints: character.state.fatePoints,
+          partyMembers: Array.from(this.characters.entries())
+            .filter(([id]) => id !== characterId)
+            .map(([id, c]) => ({ id, name: c.definition.name })),
+        },
       );
     } catch (e) {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
@@ -296,18 +302,26 @@ export class GameLoop {
       resolution.narration = `${character.definition.name} ${outcomeWord} the attempt to ${decision.chosenAction.toLowerCase()}.`;
     }
 
+    const affectedCharIds = new Set<string>();
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
         this.applyStateChange(change.characterId, change.field, change.action, change.value);
+        affectedCharIds.add(change.characterId);
       }
     }
 
     this.addTranscript('dm', resolution.narration);
     this.broadcastFn({ type: 'resolution', text: resolution.narration });
-    this.broadcastFn({ type: 'character-state-update', characterId, state: character.state });
 
-    this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(JSON.stringify(character.state), characterId);
+    affectedCharIds.add(characterId);
+    for (const cid of affectedCharIds) {
+      const c = this.characters.get(cid);
+      if (c) {
+        this.broadcastFn({ type: 'character-state-update', characterId: cid, state: c.state });
+        this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(JSON.stringify(c.state), cid);
+      }
+    }
 
     this.memoryStore.extractAndStore(
       characterId, this.campaignId, character.definition.name,

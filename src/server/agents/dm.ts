@@ -106,7 +106,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; partyMembers?: Array<{ id: string; name: string }> }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const diceBlock = diceResult
@@ -117,9 +117,14 @@ export class DmAgent {
       ? ' In Act III, failures should feel final and successes should resolve plot threads decisively.'
       : '';
 
-    const charBlock = characterInfo
-      ? `\nCharacter: ${characterInfo.name} (id: ${characterInfo.id})\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}\n`
-      : '';
+    let charBlock = '';
+    if (characterInfo) {
+      charBlock = `\nCharacter: ${characterInfo.name} (id: ${characterInfo.id})\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}`;
+      if (characterInfo.partyMembers && characterInfo.partyMembers.length > 0) {
+        charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})`).join(', ')}`;
+      }
+      charBlock += '\n';
+    }
 
     return callLlm({
       messages: [
