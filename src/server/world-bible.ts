@@ -64,7 +64,11 @@ export class WorldBible {
 
     const npcs = this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid DESC LIMIT 15').all(campaignId) as any[];
     if (npcs.length > 0) {
-      parts.push('Known NPCs/creatures: ' + npcs.map((n: any) => `${n.name} (${n.type}${n.disposition ? ', ' + n.disposition : ''})`).join('; '));
+      parts.push('Known NPCs/creatures: ' + npcs.map((n: any) => {
+        let label = `${n.name} (${n.type}${n.disposition ? ', ' + n.disposition : ''})`;
+        if (n.description) label += ` — ${n.description}`;
+        return label;
+      }).join('; '));
     }
 
     const rels = this.db.prepare(`SELECT r.type, r.description, e1.name as a_name, e2.name as b_name
