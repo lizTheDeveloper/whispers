@@ -1,9 +1,23 @@
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { callLlm } from './llm-client.js';
 import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema } from './schemas.js';
 import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, TranscriptMessage, DiceResult } from '../../shared/types.js';
+
+const presetCache = new Map<string, string>();
+function loadPresetText(presetName: string): string | null {
+  if (presetCache.has(presetName)) return presetCache.get(presetName)!;
+  const base = dirname(fileURLToPath(import.meta.url));
+  const p = resolve(base, '../../data/dm-presets', `${presetName}.txt`);
+  if (!existsSync(p)) return null;
+  const text = readFileSync(p, 'utf-8').trim();
+  presetCache.set(presetName, text);
+  return text;
+}
 
 export interface ScenePacing {
   sceneNumber: number;
@@ -192,7 +206,8 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     if (ctx.dmCustomPrompt) {
       prompt = ctx.dmCustomPrompt + '\n';
     } else {
-      prompt = `You are a TTRPG Dungeon Master with the "${ctx.preset}" personality.\n`;
+      const presetText = loadPresetText(ctx.preset);
+      prompt = presetText ? presetText + '\n' : `You are a TTRPG Dungeon Master with the "${ctx.preset}" personality.\n`;
     }
 
     prompt += `
