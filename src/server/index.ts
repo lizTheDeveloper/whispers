@@ -328,7 +328,7 @@ wss.on('connection', (ws) => {
         db, campaign.id,
         (m) => broadcast(jc, m),
         (m) => { const host = players.find(p => p.isHost); if (host) send(host.ws, m); },
-        { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false },
+        { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
       );
       gameLoops.set(jc, gameLoop);
       gameLoop.start().catch(e => console.error('Game loop error:', e));

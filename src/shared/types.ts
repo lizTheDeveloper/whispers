@@ -134,4 +134,5 @@ export interface RoomState {
   activeCharacterId: string | null;
   awaitingWhisper: boolean;
   awaitingDmAnswer: boolean;
+  currentLocationId: string | null;
 }

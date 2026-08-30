@@ -19,7 +19,7 @@ describe('checkpoint system', () => {
 
   it('saves and loads a checkpoint', async () => {
     const { saveCheckpoint, loadCheckpoint } = await import('../src/server/checkpoint.js');
-    const state = { campaignId: 'c1', joinCode: 'ABC123', phase: 'playing' as const, currentScene: 1, currentTurn: 3, initiativeOrder: ['ch1'], activeCharacterId: 'ch1', awaitingWhisper: false, awaitingDmAnswer: false };
+    const state = { campaignId: 'c1', joinCode: 'ABC123', phase: 'playing' as const, currentScene: 1, currentTurn: 3, initiativeOrder: ['ch1'], activeCharacterId: 'ch1', awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null };
     saveCheckpoint(db, 'c1', 1, 3, state);
     const loaded = loadCheckpoint(db, 'c1');
     expect(loaded).not.toBeNull();
@@ -28,7 +28,7 @@ describe('checkpoint system', () => {
 
   it('loads the most recent checkpoint', async () => {
     const { saveCheckpoint, loadCheckpoint } = await import('../src/server/checkpoint.js');
-    const base = { campaignId: 'c1', joinCode: 'ABC123', phase: 'playing' as const, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false };
+    const base = { campaignId: 'c1', joinCode: 'ABC123', phase: 'playing' as const, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null };
     saveCheckpoint(db, 'c1', 1, 1, { ...base, currentScene: 1, currentTurn: 1 });
     saveCheckpoint(db, 'c1', 1, 5, { ...base, currentScene: 1, currentTurn: 5 });
     const loaded = loadCheckpoint(db, 'c1');
