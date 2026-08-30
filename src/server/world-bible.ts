@@ -60,10 +60,36 @@ export class WorldBible {
       const withArticle = this.db.prepare(
         "SELECT * FROM locations WHERE campaign_id = ? AND (name = ? COLLATE NOCASE OR REPLACE(LOWER(name), 'the ', '') = LOWER(?))"
       ).get(campaignId, name, stripped) as any;
-      if (!withArticle) return null;
-      return { id: withArticle.id, campaignId: withArticle.campaign_id, name: withArticle.name, description: withArticle.description, terrain: withArticle.terrain, connections: JSON.parse(withArticle.connections ?? '[]'), coords: withArticle.coords ? JSON.parse(withArticle.coords) : null };
+      if (withArticle) {
+        return this.rowToLocation(withArticle);
+      }
+      return this.fuzzyMatchLocation(campaignId, name);
     }
+    return this.rowToLocation(row);
+  }
+
+  private rowToLocation(row: any): Location {
     return { id: row.id, campaignId: row.campaign_id, name: row.name, description: row.description, terrain: row.terrain, connections: JSON.parse(row.connections ?? '[]'), coords: row.coords ? JSON.parse(row.coords) : null };
+  }
+
+  private fuzzyMatchLocation(campaignId: string, name: string): Location | null {
+    const allLocs = this.db.prepare('SELECT * FROM locations WHERE campaign_id = ?').all(campaignId) as any[];
+    if (allLocs.length === 0) return null;
+    const stopWords = new Set(['the', 'a', 'an', 'of', 'in', 'at', 'to', 'and', 'or']);
+    const queryWords = name.toLowerCase().split(/[\s'-]+/).filter(w => w.length > 2 && !stopWords.has(w));
+    if (queryWords.length === 0) return null;
+    let bestMatch: any = null;
+    let bestScore = 0;
+    for (const loc of allLocs) {
+      const locWords = (loc.name as string).toLowerCase().split(/[\s'-]+/).filter(w => w.length > 2 && !stopWords.has(w));
+      const shared = queryWords.filter(w => locWords.some(lw => lw.includes(w) || w.includes(lw))).length;
+      if (shared > bestScore) { bestScore = shared; bestMatch = loc; }
+    }
+    if (bestScore >= 1 && bestMatch) {
+      console.log(`[world-bible] Fuzzy-matched "${name}" → "${bestMatch.name}" (${bestScore} shared words)`);
+      return this.rowToLocation(bestMatch);
+    }
+    return null;
   }
 
   getEntitiesForLocation(campaignId: string, locationId: string): Entity[] {
