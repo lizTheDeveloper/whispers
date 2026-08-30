@@ -305,9 +305,9 @@ export class GameLoop {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
       resolution = {
         diceExpression: null, difficulty: null, skill: null,
-        outcome: 'success' as const,
-        narration: `${character.definition.name} attempts to ${decision.chosenAction.toLowerCase()}...`,
-        stateChanges: [],
+        outcome: 'tie' as const,
+        narration: `${character.definition.name} pushes through ${decision.chosenAction.toLowerCase()}, but not without cost.`,
+        stateChanges: [{ characterId, field: 'stress' as const, action: 'set' as const, value: Math.min(character.state.stress + 1, 3) }],
       };
     }
 
