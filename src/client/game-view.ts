@@ -149,7 +149,12 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     if (answer) ws.send({ type: 'dm-answer', text: answer });
   });
 
+  let shownTutorial = false;
   ws.on('phase-change', (msg) => {
+    if (msg.type === 'phase-change' && msg.phase === 'playing' && !shownTutorial) {
+      shownTutorial = true;
+      appendLog('You are the voice inside your character\'s head. When prompted, whisper a thought to guide them — but they may not listen. Trust is earned through good advice.', 'system');
+    }
     if (msg.type === 'phase-change' && msg.phase === 'ended') {
       whisperArea.style.display = 'none';
       actionArea.innerHTML = '';

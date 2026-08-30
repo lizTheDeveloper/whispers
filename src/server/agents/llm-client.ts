@@ -48,6 +48,21 @@ function tryRepairJson(text: string): string | null {
   try { JSON.parse(fragment); return fragment; } catch { return null; }
 }
 
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+async function fetchWithRetry(url: string, init: RequestInit & { signal: AbortSignal }, maxRetries = 3): Promise<Response> {
+  for (let i = 0; i <= maxRetries; i++) {
+    const response = await fetch(url, init);
+    if (response.ok || !RETRYABLE_STATUS.has(response.status) || i === maxRetries) {
+      return response;
+    }
+    const backoffMs = Math.min(1000 * Math.pow(2, i), 8000);
+    console.log(`[llm-client] ${response.status} on attempt ${i + 1}/${maxRetries + 1}, retrying in ${backoffMs}ms`);
+    await new Promise(r => setTimeout(r, backoffMs));
+  }
+  throw new Error('unreachable');
+}
+
 export async function callLlm<S extends z.ZodType | undefined = undefined>(
   opts: CallLlmOpts<S>
 ): Promise<CallLlmResult<S>> {
@@ -81,7 +96,7 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
 
       const retryTemp = attempt > 0 ? Math.max(0.2, (temperature ?? 0.7) - attempt * 0.15) : (temperature ?? 0.7);
 
-      const response = await fetch(`${LLM_PROXY_URL}/api/llm/think`, {
+      const response = await fetchWithRetry(`${LLM_PROXY_URL}/api/llm/think`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
