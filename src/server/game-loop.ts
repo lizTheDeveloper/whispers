@@ -11,8 +11,8 @@ import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import type { Character, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
-const COMPACTION_THRESHOLD = 50;
-const COMPACTION_KEEP_RECENT = 15;
+const COMPACTION_THRESHOLD = 35;
+const COMPACTION_KEEP_RECENT = 12;
 
 export class GameLoop {
   private dm: DmAgent;

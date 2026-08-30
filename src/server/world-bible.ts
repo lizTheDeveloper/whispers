@@ -76,15 +76,24 @@ export class WorldBible {
       parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}${r.description ? ' — ' + r.description : ''}`).join('; '));
     }
 
-    const events = this.db.prepare('SELECT description, outcome FROM events WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 12').all(campaignId) as any[];
+    const currentScene = this.db.prepare('SELECT MAX(scene_number) as s FROM events WHERE campaign_id = ?').get(campaignId) as any;
+    const maxScene = currentScene?.s ?? 0;
+
+    const events = this.db.prepare('SELECT description, outcome, scene_number FROM events WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 12').all(campaignId) as any[];
     const resolved = events.filter((e: any) => e.outcome);
-    const unresolved = events.filter((e: any) => !e.outcome);
+    const unresolved = events.filter((e: any) => !e.outcome && maxScene - e.scene_number < 3);
+    const stale = events.filter((e: any) => !e.outcome && maxScene - e.scene_number >= 3);
+
+    if (stale.length > 0) {
+      this.db.prepare('UPDATE events SET outcome = ? WHERE campaign_id = ? AND outcome IS NULL AND scene_number <= ?')
+        .run('(faded from narrative focus)', campaignId, maxScene - 3);
+    }
 
     if (unresolved.length > 0) {
       parts.push('UNRESOLVED THREADS (advance these): ' + unresolved.map((e: any) => e.description).join('; '));
     }
     if (resolved.length > 0) {
-      parts.push('Story so far: ' + resolved.map((e: any) => `${e.description} → ${e.outcome}`).join('. '));
+      parts.push('Story so far: ' + resolved.slice(0, 8).map((e: any) => `${e.description} → ${e.outcome}`).join('. '));
     }
 
     const unusedItems = this.db.prepare('SELECT name, description FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL').all(campaignId) as any[];
