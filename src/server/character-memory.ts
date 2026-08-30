@@ -85,6 +85,8 @@ export class CharacterMemoryStore {
     );
 
     for (const mem of memories) {
+      const basDecay = mem.importance > 0.8 ? 0.02 : 0.05;
+      const decayRate = (mem.type === 'social' || mem.type === 'discovery') ? basDecay * 0.5 : basDecay;
       const record: CharacterMemory = {
         id: randomBytes(16).toString('hex'),
         characterId,
@@ -95,7 +97,7 @@ export class CharacterMemoryStore {
         content: mem.content,
         emotionalValence: mem.emotionalValence,
         importance: mem.importance,
-        decayRate: mem.importance > 0.8 ? 0.02 : 0.05,
+        decayRate,
         createdAt: new Date().toISOString(),
       };
       insert.run(record.id, characterId, campaignId, sceneNumber, turnNumber, record.type, record.content, record.emotionalValence, record.importance, record.decayRate);
@@ -130,13 +132,21 @@ export class CharacterMemoryStore {
       sceneContext.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2),
     );
 
+    const capitalizedNames = new Set(
+      sceneContext.match(/\b[A-Z][a-z]{2,}\b/g)?.map(w => w.toLowerCase()) ?? [],
+    );
+
     const maxTurn = Math.max(...all.map(m => m.turnNumber), 1);
     const scored = all.map(m => {
       const words = m.content.toLowerCase().split(/\s+/);
       const contextHits = words.filter(w => contextWords.has(w)).length;
+      const nameHits = capitalizedNames.size > 0
+        ? words.filter(w => capitalizedNames.has(w)).length
+        : 0;
       const recencyScore = m.turnNumber / maxTurn * 0.15;
       const emotionalBonus = Math.abs(m.emotionalValence) > 0.5 ? 0.1 : 0;
-      return { memory: m, score: m.importance + contextHits * 0.15 + recencyScore + emotionalBonus };
+      const socialBonus = (m.type === 'social' || m.type === 'discovery') ? 0.05 : 0;
+      return { memory: m, score: m.importance + contextHits * 0.15 + nameHits * 0.25 + recencyScore + emotionalBonus + socialBonus };
     });
 
     scored.sort((a, b) => b.score - a.score);
