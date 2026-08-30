@@ -391,18 +391,18 @@ export class GameLoop {
 
     const fpSpentByDm = resolution.stateChanges.some(c => c.field === 'fatePoints' && c.action === 'set' && typeof c.value === 'number' && c.value < character.state.fatePoints);
     if (!fpSpentByDm && character.state.fatePoints > 0) {
-      const actionLower = decision.chosenAction.toLowerCase();
+      const searchText = `${decision.chosenAction} ${decision.innerThought}`.toLowerCase();
       const allAspects = [character.definition.highConcept, ...character.definition.aspects].filter(Boolean);
 
       const intentPhrases = /\b(drawing on|invoking|calling upon|channeling|relying on|using)\s+(my|the|their)\b/i;
-      const hasInvokeIntent = intentPhrases.test(decision.chosenAction);
+      const hasInvokeIntent = intentPhrases.test(decision.chosenAction) || intentPhrases.test(decision.innerThought);
 
+      const stopWords = new Set(['never', 'that', 'tell', 'have', 'been', 'from', 'with', 'into', 'over', 'even', 'just', 'only', 'also', 'very', 'when', 'then', 'than', 'them', 'they', 'this', 'what', 'will', 'more', 'some', 'know', 'take', 'come', 'make']);
       const invoked = allAspects.some(aspect => {
-        const words = aspect.toLowerCase().split(/[\s-]+/).filter(w => w.length > 3);
+        const words = aspect.toLowerCase().split(/[\s-]+/).filter(w => w.length > 3 && !stopWords.has(w));
         if (words.length === 0) return false;
-        const matches = words.filter(w => actionLower.includes(w));
-        const threshold = hasInvokeIntent ? 1 : (words.length <= 2 ? 1 : 2);
-        return matches.length >= threshold;
+        const matches = words.filter(w => searchText.includes(w));
+        return matches.length >= 1;
       });
       if (invoked || hasInvokeIntent) {
         const newFp = character.state.fatePoints - 1;
@@ -413,7 +413,7 @@ export class GameLoop {
     }
 
     const fpAlreadySpentThisTurn = resolution.stateChanges.some(c => c.field === 'fatePoints' && c.action === 'set' && typeof c.value === 'number' && c.value < character.state.fatePoints);
-    if (campaign.system_id === 'fate-core' && character.state.fatePoints >= 3 && !fpSpentByDm && !fpAlreadySpentThisTurn) {
+    if (campaign.system_id === 'fate-core' && character.state.fatePoints >= 2 && !fpSpentByDm && !fpAlreadySpentThisTurn) {
       if (resolution.outcome === 'tie' || resolution.outcome === 'success-with-cost') {
         const currentFp = character.state.fatePoints;
         const newFp = currentFp - 1;
