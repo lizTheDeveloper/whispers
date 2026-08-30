@@ -290,7 +290,9 @@ export class GameLoop {
       const truncAtWord = (s: string, max: number) => {
         if (s.length <= max) return s;
         const cut = s.lastIndexOf(' ', max);
-        return cut > max * 0.4 ? s.slice(0, cut) : s.slice(0, max);
+        let result = cut > max * 0.4 ? s.slice(0, cut) : s.slice(0, max);
+        result = result.replace(/\s+(a|an|the|and|or|but|in|on|at|to|of|for|with|my|their|its|this|that)\s*$/i, '');
+        return result;
       };
       const actionSnippet = truncAtWord(decision.chosenAction
         .replace(/^I\s+/i, '')
@@ -300,7 +302,7 @@ export class GameLoop {
         ? truncAtWord(memories[0]!.content.replace(/^I\s+/i, '').split(/[.!]/)[0]?.trim() ?? '', 50) || null
         : null;
       const contextDetail = memoryHook
-        ? `Last time, ${memoryHook.toLowerCase()} — now I need to ${actionSnippet.toLowerCase()}`
+        ? `I remember ${memoryHook.toLowerCase()}. Now I must ${actionSnippet.toLowerCase()}`
         : `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}`;
       decision.innerThought = `${contextDetail}.`;
     }
@@ -544,7 +546,8 @@ export class GameLoop {
     }
 
     const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
-    const summary = await this.dm.summarizeScene(toExtract, charNames);
+    const worldState = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    const summary = await this.dm.summarizeScene(toExtract, charNames, worldState);
 
     this.transcript = [
       { role: 'system' as const, content: `[Session recap] ${summary}`, timestamp: new Date().toISOString() },
