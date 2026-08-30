@@ -28,6 +28,8 @@ export interface ScenePacing {
   characterSummaries: string;
   partySize: number;
   sessionTurnCount?: number;
+  locationTurnCount?: number;
+  currentLocationName?: string;
 }
 
 interface DmContext {
@@ -89,6 +91,13 @@ export class DmAgent {
       ? `The scene has run for ${roundCount} rounds. Actively look for a climactic moment to end the scene. If a dramatic beat just landed, tension peaked, the party reached a new location, combat concluded, or a key revelation dropped — set isSceneEnd to true. Transition to keep the narrative moving.`
       : `SCENE OVERRUN: ${roundCount} rounds. You MUST end this scene NOW. Narrate a dramatic climax or cliffhanger and set isSceneEnd to true. Do not continue — the story needs to move forward.`;
 
+    const locTurns = pacing?.locationTurnCount ?? 0;
+    const locationHint = locTurns >= 4
+      ? `\nLOCATION WARNING: The party has been at "${pacing?.currentLocationName ?? 'this location'}" for ${locTurns} turns. You MUST move them to a DIFFERENT location from the "Known locations" list. Create a reason to leave — a sound from another room, a discovered passage, an NPC leading them away, or danger forcing retreat.`
+      : locTurns >= 3
+      ? `\n(The party has been at "${pacing?.currentLocationName ?? 'this location'}" for ${locTurns} turns. Consider moving them to keep the story dynamic.)`
+      : '';
+
     const charBlock = pacing?.characterSummaries ? `\n\nParty status:\n${pacing.characterSummaries}` : '';
     const partyHint = (pacing?.partySize ?? 1) > 1
       ? ' With multiple characters, react to how their actions affect each other — a warrior\'s charge creates openings, a healer\'s work changes who can act, a scholar\'s discovery reshapes the situation for everyone.'
@@ -98,7 +107,7 @@ export class DmAgent {
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds.${partyHint}\n\ncurrentLocationName MUST be an EXACT name from the "Known locations" list above (copy-paste it). If the party moves to a new area, pick the most fitting known location. Only invent a new name if NO known location fits.\n\nRespond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
+        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}${locationHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds.${partyHint}\n\ncurrentLocationName MUST be an EXACT name from the "Known locations" list above (copy-paste it). If the party moves to a new area, pick the most fitting known location. Only invent a new name if NO known location fits.\n\nRespond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
       ],
       schema: DmNarrationSchema,
       maxTokens: 2048,

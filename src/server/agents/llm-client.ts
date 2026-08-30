@@ -79,8 +79,9 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       if (attempt > 0 && lastBadResponse) {
         const isRoleplay = lastBadResponse.startsWith('*') || (!lastBadResponse.includes('{') && lastBadResponse.length < 100);
         if (isRoleplay) {
+          const jsonPrefix = 'CRITICAL: You are a JSON API. Output ONLY a raw JSON object. No asterisks, no roleplay actions, no prose, no markdown. Start your response with { and end with }.\n\n';
           promptMessages = [
-            { role: 'system', content: 'You are a JSON API endpoint. You output ONLY valid JSON objects. No roleplay, no asterisks, no prose, no markdown. Raw JSON only.' },
+            { role: 'system', content: jsonPrefix + messages[0]!.content },
             ...messages.slice(1),
           ];
         } else {
@@ -114,6 +115,15 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       // Strip Qwen3 thinking tags (closed or unclosed at end of output)
       text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
       if (text.startsWith('<think>')) text = '';
+
+      // Strip roleplay markers that may wrap valid JSON
+      if (schema && text.startsWith('*')) {
+        text = text.replace(/^\*[^*]*\*\s*/g, '').replace(/\s*\*[^*]*\*$/g, '').trim();
+      }
+      // Strip markdown code fences
+      if (schema) {
+        text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+      }
 
       if (!schema) return text as CallLlmResult<S>;
 

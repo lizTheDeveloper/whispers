@@ -29,6 +29,8 @@ export class GameLoop {
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private stopped = false;
   private sceneTurnCount = 0;
+  private locationTurnCount = 0;
+  private lastLocationName = '';
 
   constructor(
     private db: Database.Database,
@@ -125,6 +127,8 @@ export class GameLoop {
         characterSummaries: this.getCharacterSummaries(),
         partySize: this.characters.size || 1,
         sessionTurnCount: this.state.currentTurn,
+        locationTurnCount: this.locationTurnCount,
+        currentLocationName: this.lastLocationName || undefined,
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
@@ -135,11 +139,17 @@ export class GameLoop {
     this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
 
     if (narration.currentLocationName) {
+      if (narration.currentLocationName === this.lastLocationName) {
+        this.locationTurnCount++;
+      } else {
+        this.locationTurnCount = 1;
+        this.lastLocationName = narration.currentLocationName;
+      }
       const loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
       if (loc) {
         this.state.currentLocationId = loc.id;
         if (narration.activeNpcs.length > 0) {
-          console.log(`[game-loop] Location: "${loc.name}" — NPCs present: ${narration.activeNpcs.join(', ')}`);
+          console.log(`[game-loop] Location: "${loc.name}" (${this.locationTurnCount} turns) — NPCs present: ${narration.activeNpcs.join(', ')}`);
         }
         for (const npcName of narration.activeNpcs) {
           this.worldBible.updateEntityLocation(this.campaignId, npcName, loc.id);
@@ -609,6 +619,8 @@ export class GameLoop {
       { role: 'system' as const, content: `[Previous scene] ${summary}`, timestamp: new Date().toISOString() },
     ];
     this.sceneTurnCount = 0;
+    this.locationTurnCount = 0;
+    this.lastLocationName = '';
     this.state.currentScene++;
     clearCampaignImageCache(this.campaignId);
   }
