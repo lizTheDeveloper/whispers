@@ -223,7 +223,13 @@ export class CharacterMemoryStore {
   }
 
   private fallbackObservation(actorName: string, action: string): string {
-    const cleaned = action.replace(/^I\s+/i, '').slice(0, 80);
+    const firstName = actorName.split(' ')[0]!;
+    const cleaned = action
+      .replace(/^I\s+/i, '')
+      .replace(/\bmy\b/gi, `${firstName}'s`)
+      .replace(/\bmyself\b/gi, firstName.toLowerCase())
+      .replace(/\bI('m|'ll|'ve|'d)?\b/g, firstName)
+      .slice(0, 80);
     return `I watched ${actorName} ${cleaned}.`;
   }
 

@@ -495,7 +495,7 @@ describeIfLive('Long Multi-Character Stress Test (30 turns)', () => {
     const recoveryLogs = allServerLogs.filter(l => l.includes('Scene recovery'));
     const skillMasteryLogs = allServerLogs.filter(l => l.includes('skill mastery'));
     const worldBibleLogs = allServerLogs.filter(l => l.includes('[world-bible]') || l.includes('world bible'));
-    const observerMemoryLogs = allServerLogs.filter(l => l.includes('storeObservation') || l.includes('observer') || l.includes('cross-character'));
+    const observerMemoryLogs = allServerLogs.filter(l => l.includes('storeObservation') || l.includes('observed') || l.includes('cross-character'));
     const takenOutLogs = allServerLogs.filter(l => l.includes('taken out') || l.includes('Taken out'));
     const recoveryBoostLogs = allServerLogs.filter(l => l.includes('Low-trust recovery boost'));
 
