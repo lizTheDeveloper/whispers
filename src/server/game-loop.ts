@@ -388,17 +388,40 @@ export class GameLoop {
     if (!fpSpentByDm && character.state.fatePoints > 0) {
       const actionLower = decision.chosenAction.toLowerCase();
       const allAspects = [character.definition.highConcept, ...character.definition.aspects].filter(Boolean);
+
+      const intentPhrases = /\b(drawing on|invoking|calling upon|channeling|relying on|using)\s+(my|the|their)\b/i;
+      const hasInvokeIntent = intentPhrases.test(decision.chosenAction);
+
       const invoked = allAspects.some(aspect => {
-        const words = aspect.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+        const words = aspect.toLowerCase().split(/[\s-]+/).filter(w => w.length > 3);
         if (words.length === 0) return false;
         const matches = words.filter(w => actionLower.includes(w));
-        const threshold = words.length <= 2 ? 1 : 2;
+        const threshold = hasInvokeIntent ? 1 : (words.length <= 2 ? 1 : 2);
         return matches.length >= threshold;
       });
-      if (invoked) {
+      if (invoked || hasInvokeIntent) {
         const newFp = character.state.fatePoints - 1;
         resolution.stateChanges.push({ characterId, field: 'fatePoints' as const, action: 'set' as const, value: newFp });
-        console.log(`[game-loop] Aspect invocation detected in "${decision.chosenAction.slice(0, 60)}" — ${character.definition.name} spends 1 FP (${character.state.fatePoints} → ${newFp})`);
+        const reason = invoked ? 'aspect keyword match' : 'invoke-intent phrase';
+        console.log(`[game-loop] Aspect invocation (${reason}) in "${decision.chosenAction.slice(0, 60)}" — ${character.definition.name} spends 1 FP (${character.state.fatePoints} → ${newFp})`);
+      }
+    }
+
+    if (campaign.system_id === 'fate-core' && character.state.fatePoints >= 3 && !fpSpentByDm) {
+      const alreadySpent = resolution.stateChanges.some(c => c.field === 'fatePoints' && c.action === 'set' && typeof c.value === 'number' && c.value < character.state.fatePoints);
+      if (!alreadySpent && (resolution.outcome === 'tie' || resolution.outcome === 'success-with-cost')) {
+        const currentFp = character.state.fatePoints;
+        const newFp = currentFp - 1;
+        resolution.stateChanges.push({ characterId, field: 'fatePoints' as const, action: 'set' as const, value: newFp });
+        const upgradedOutcome = resolution.outcome === 'tie' ? 'success' : 'success';
+        const bestAspect = character.definition.highConcept;
+        console.log(`[game-loop] Auto-invoke: ${character.definition.name} spends 1 FP (${currentFp} → ${newFp}) on "${bestAspect}" — ${resolution.outcome} → ${upgradedOutcome}`);
+        resolution.outcome = upgradedOutcome;
+        resolution.narration = resolution.narration.replace(
+          /barely manages to|tries to/,
+          'draws on inner strength and'
+        );
+        this.addTranscript('system', `[${character.definition.name} invokes "${bestAspect}" for +2 — outcome upgraded to ${upgradedOutcome}! (${newFp} FP remaining)]`);
       }
     }
 
