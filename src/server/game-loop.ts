@@ -196,7 +196,7 @@ export class GameLoop {
     this.state.activeCharacterId = characterId;
 
     const worldSummary = this.worldBible.getSummary(this.campaignId, this.currentLocationId ?? undefined);
-    const charWorldContext = this.worldBible.getCompactSummary(this.campaignId);
+    const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.currentLocationId ?? undefined);
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
     const memories = this.memoryStore.recall(characterId, 8, sceneNarration);

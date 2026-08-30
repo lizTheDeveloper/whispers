@@ -116,9 +116,15 @@ export class WorldBible {
     return parts.join('\n\n') || 'No world knowledge yet.';
   }
 
-  getCompactSummary(campaignId: string): string {
+  getCompactSummary(campaignId: string, locationId?: string): string {
     const parts: string[] = [];
-    const npcs = this.db.prepare('SELECT name, type, disposition FROM entities WHERE campaign_id = ? AND alive = 1 LIMIT 8').all(campaignId) as any[];
+    if (locationId) {
+      const loc = this.db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId) as any;
+      if (loc) parts.push(`You are at: ${loc.name}`);
+    }
+    const npcs = locationId
+      ? this.db.prepare('SELECT name, type, disposition FROM entities WHERE campaign_id = ? AND alive = 1 AND location_id = ? LIMIT 8').all(campaignId, locationId) as any[]
+      : this.db.prepare('SELECT name, type, disposition FROM entities WHERE campaign_id = ? AND alive = 1 LIMIT 8').all(campaignId) as any[];
     if (npcs.length > 0) {
       parts.push('People nearby: ' + npcs.map((n: any) => `${n.name} (${n.disposition ?? n.type})`).join(', '));
     }
