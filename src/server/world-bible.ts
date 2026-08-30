@@ -145,6 +145,23 @@ export class WorldBible {
         this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: item.properties ?? {}, holderId: item.holderId ?? null, locationId: item.locationId ?? null });
       }
       for (const evt of diff.newEvents) {
+        if (evt.outcome) {
+          const keywords = evt.description.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+          if (keywords.length > 0) {
+            const unresolved = this.db.prepare(
+              'SELECT id, description FROM events WHERE campaign_id = ? AND outcome IS NULL'
+            ).all(campaignId) as Array<{ id: string; description: string }>;
+            const best = unresolved.reduce<{ id: string; score: number } | null>((top, row) => {
+              const desc = row.description.toLowerCase();
+              const score = keywords.filter(k => desc.includes(k)).length / keywords.length;
+              return score >= 0.5 && (!top || score > top.score) ? { id: row.id, score } : top;
+            }, null);
+            if (best) {
+              this.db.prepare('UPDATE events SET outcome = ? WHERE id = ?').run(evt.outcome, best.id);
+              continue;
+            }
+          }
+        }
         this.addEvent({ id: genId(), campaignId, sceneNumber: evt.sceneNumber, description: evt.description, participants: evt.participants, outcome: evt.outcome });
       }
       for (const rel of (diff.newRelationships ?? [])) {
