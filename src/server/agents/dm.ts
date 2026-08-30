@@ -10,9 +10,12 @@ import type { CharacterDefinition, TranscriptMessage, DiceResult } from '../../s
 
 const presetCache = new Map<string, string>();
 function loadPresetText(presetName: string): string | null {
+  if (!/^[a-z0-9-]{1,64}$/.test(presetName)) return null;
   if (presetCache.has(presetName)) return presetCache.get(presetName)!;
   const base = dirname(fileURLToPath(import.meta.url));
-  const p = resolve(base, '../../data/dm-presets', `${presetName}.txt`);
+  const presetsDir = resolve(base, '../../data/dm-presets');
+  const p = resolve(presetsDir, `${presetName}.txt`);
+  if (!p.startsWith(presetsDir + '/')) return null;
   if (!existsSync(p)) return null;
   const text = readFileSync(p, 'utf-8').trim();
   presetCache.set(presetName, text);
