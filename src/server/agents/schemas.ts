@@ -51,7 +51,7 @@ export const ActionDecisionSchema = z.object({
   chosenAction: z.string(),
   innerThought: z.string().min(1).default('Something feels off...'),
   whisperedInfluence: z.enum(['followed', 'partially-followed', 'ignored']).default('ignored'),
-  trustDelta: z.number().min(-0.15).max(0.15).default(0),
+  trustDelta: z.number().min(-1).max(1).default(0),
 });
 export type ActionDecision = z.infer<typeof ActionDecisionSchema>;
 
