@@ -548,6 +548,13 @@ export class GameLoop {
       const idx = arr.indexOf(value);
       if (idx >= 0) arr.splice(idx, 1);
     }
+    if (field === 'inventory' && typeof value === 'string') {
+      if (action === 'remove') {
+        this.worldBible.updateItemHolder(this.campaignId, value, null);
+      } else {
+        this.worldBible.updateItemHolder(this.campaignId, value, characterId);
+      }
+    }
   }
 
   private getSystemDefaultDice(systemId: string): string {

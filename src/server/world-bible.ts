@@ -96,6 +96,18 @@ export class WorldBible {
       parts.push('Story so far: ' + resolved.slice(0, 8).map((e: any) => `${e.description} → ${e.outcome}`).join('. '));
     }
 
+    const heldItems = this.db.prepare(
+      `SELECT i.name, e.name as holder_name
+       FROM items i
+       LEFT JOIN entities e ON i.holder_id = e.id
+       WHERE i.campaign_id = ? AND i.holder_id IS NOT NULL`
+    ).all(campaignId) as any[];
+    if (heldItems.length > 0) {
+      parts.push('Carried items: ' + heldItems.map((i: any) =>
+        i.holder_name ? `${i.name} (held by ${i.holder_name})` : `${i.name} (held by a party member)`
+      ).join(', '));
+    }
+
     const unusedItems = this.db.prepare('SELECT name, description FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL').all(campaignId) as any[];
     if (unusedItems.length > 0) {
       parts.push('Unclaimed items: ' + unusedItems.map((i: any) => i.name).join(', '));
@@ -129,6 +141,11 @@ export class WorldBible {
       parts.push('Open threads: ' + unresolved.map((e: any) => e.description).join('; '));
     }
     return parts.join('\n') || '';
+  }
+
+  updateItemHolder(campaignId: string, itemName: string, holderId: string | null): void {
+    this.db.prepare('UPDATE items SET holder_id = ? WHERE campaign_id = ? AND name = ? COLLATE NOCASE')
+      .run(holderId, campaignId, itemName);
   }
 
   updateEntityLocation(campaignId: string, entityName: string, locationId: string): void {
