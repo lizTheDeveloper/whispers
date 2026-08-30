@@ -303,13 +303,14 @@ export class GameLoop {
       const rawMemory = memories.length > 0
         ? truncAtWord(memories[0]!.content.split(/[.!]/)[0]?.trim() ?? '', 60) || null
         : null;
+      const fixPronouns = (s: string) => s.replace(/\bi\b/g, 'I').replace(/\bi'/g, "I'");
       let memoryPhrase: string | null = null;
       if (rawMemory) {
         if (/^I\s/i.test(rawMemory)) {
-          const verb = rawMemory.replace(/^I\s+/i, '').toLowerCase();
+          const verb = fixPronouns(rawMemory.replace(/^I\s+/i, '').toLowerCase());
           memoryPhrase = `Last time I ${verb}`;
         } else {
-          memoryPhrase = `I remember when ${rawMemory.toLowerCase()}`;
+          memoryPhrase = `I remember when ${fixPronouns(rawMemory.toLowerCase())}`;
         }
       }
       const contextDetail = memoryPhrase
@@ -441,10 +442,16 @@ export class GameLoop {
         const matches = words.filter(w => searchText.includes(w));
         return matches.length >= 1;
       });
-      if (invoked || hasInvokeIntent) {
+      const peakSkillRank = Math.max(...Object.values(character.definition.skills), 0);
+      const usedSkillIsTop = resolution.skill && peakSkillRank >= 3 &&
+        Object.entries(character.definition.skills).some(([k, v]) =>
+          k.toLowerCase() === resolution.skill!.toLowerCase() && v >= peakSkillRank);
+      const skillMasteryInvoke = usedSkillIsTop && (resolution.difficulty ?? 0) >= 3;
+
+      if (invoked || hasInvokeIntent || skillMasteryInvoke) {
         const newFp = character.state.fatePoints - 1;
         resolution.stateChanges.push({ characterId, field: 'fatePoints' as const, action: 'set' as const, value: newFp });
-        const reason = invoked ? 'aspect keyword match' : 'invoke-intent phrase';
+        const reason = invoked ? 'aspect keyword match' : hasInvokeIntent ? 'invoke-intent phrase' : `skill mastery (${resolution.skill} +${peakSkillRank} vs diff ${resolution.difficulty})`;
         console.log(`[game-loop] Aspect invocation (${reason}) in "${decision.chosenAction.slice(0, 60)}" — ${character.definition.name} spends 1 FP (${character.state.fatePoints} → ${newFp})`);
       }
     }
