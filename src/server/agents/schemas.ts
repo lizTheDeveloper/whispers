@@ -25,8 +25,8 @@ export const DmResolutionSchema = z.object({
   diceExpression: z.string().nullable().default(null),
   difficulty: z.number().nullable().default(null),
   skill: z.string().nullable().default(null),
-  outcome: z.enum(['success', 'failure', 'tie', 'success-with-cost']).default('success'),
-  narration: z.string().min(1).default('The action unfolds...'),
+  outcome: z.enum(['success', 'failure', 'tie', 'success-with-cost']).default('tie'),
+  narration: z.string().min(1).default('__FALLBACK__'),
   stateChanges: z.array(StateChangeItem).default([]).transform(items =>
     items.filter((item): item is Exclude<typeof item, string> => typeof item !== 'string')
   ),

@@ -134,7 +134,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
         characterInfo.trouble ? `Trouble: "${characterInfo.trouble}"` : '',
         ...(characterInfo.aspects ?? []).map(a => `"${a}"`),
       ].filter(Boolean).join(', ');
-      charBlock = `\nCharacter: ${characterInfo.name} (id: ${characterInfo.id})\nAspects: ${aspectList}\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}`;
+      charBlock = `\nACTING CHARACTER (narrate THEIR action, not another party member's): ${characterInfo.name} (id: ${characterInfo.id})\nAspects: ${aspectList}\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}`;
       if (characterInfo.partyMembers && characterInfo.partyMembers.length > 0) {
         charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})`).join(', ')}`;
       }

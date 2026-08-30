@@ -347,7 +347,7 @@ export class GameLoop {
       };
     }
 
-    if (resolution.narration === 'The action unfolds...') {
+    if (resolution.narration === '__FALLBACK__') {
       const fallbackAction = (decision.chosenAction
         .replace(/^I\s+/i, '')
         .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
