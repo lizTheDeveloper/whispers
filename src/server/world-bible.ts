@@ -81,12 +81,12 @@ export class WorldBible {
 
     const events = this.db.prepare('SELECT description, outcome, scene_number FROM events WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 12').all(campaignId) as any[];
     const resolved = events.filter((e: any) => e.outcome);
-    const unresolved = events.filter((e: any) => !e.outcome && maxScene - e.scene_number < 3);
-    const stale = events.filter((e: any) => !e.outcome && maxScene - e.scene_number >= 3);
+    const unresolved = events.filter((e: any) => !e.outcome && maxScene - e.scene_number < 5);
+    const stale = events.filter((e: any) => !e.outcome && maxScene - e.scene_number >= 5);
 
     if (stale.length > 0) {
       this.db.prepare('UPDATE events SET outcome = ? WHERE campaign_id = ? AND outcome IS NULL AND scene_number <= ?')
-        .run('(faded from narrative focus)', campaignId, maxScene - 3);
+        .run('(faded from narrative focus)', campaignId, maxScene - 5);
     }
 
     if (unresolved.length > 0) {
@@ -116,7 +116,7 @@ export class WorldBible {
     }
     const currentScene = this.db.prepare('SELECT MAX(scene_number) as s FROM events WHERE campaign_id = ?').get(campaignId) as any;
     const maxScene = currentScene?.s ?? 0;
-    const unresolved = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL AND scene_number > ? LIMIT 3').all(campaignId, maxScene - 3) as any[];
+    const unresolved = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL AND scene_number > ? LIMIT 3').all(campaignId, maxScene - 5) as any[];
     if (unresolved.length > 0) {
       parts.push('Open threads: ' + unresolved.map((e: any) => e.description).join('; '));
     }
