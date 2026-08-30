@@ -200,6 +200,7 @@ export class GameLoop {
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
     const memories = this.memoryStore.recall(characterId, 8, sceneNarration);
+    if (memories.length > 0) console.log(`[memory] ${character.definition.name}: recalled ${memories.length} memories for context`);
 
     const partyMembers = Array.from(this.characters.entries())
       .filter(([id]) => id !== characterId)
@@ -463,7 +464,9 @@ export class GameLoop {
       characterId, this.campaignId, character.definition.name,
       decision.chosenAction, resolution.narration, whisper,
       this.state.currentScene, this.state.currentTurn,
-    ).catch(e => console.error('[memory] extraction failed:', e));
+    ).then(stored => {
+      if (stored.length > 0) console.log(`[memory] ${character.definition.name}: stored ${stored.length} memories (${stored.map(m => m.type).join(', ')})`);
+    }).catch(e => console.error('[memory] extraction failed:', e));
 
     saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state);
 
