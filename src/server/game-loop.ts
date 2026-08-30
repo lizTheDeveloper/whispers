@@ -269,12 +269,17 @@ export class GameLoop {
       /^(caution|careful|cautious|vigilant|wary)/i,
     ];
     if (genericPatterns.some(p => p.test(decision.innerThought))) {
-      const actionSnippet = decision.chosenAction
+      const truncAtWord = (s: string, max: number) => {
+        if (s.length <= max) return s;
+        const cut = s.lastIndexOf(' ', max);
+        return cut > max * 0.4 ? s.slice(0, cut) : s.slice(0, max);
+      };
+      const actionSnippet = truncAtWord(decision.chosenAction
         .replace(/^I\s+/i, '')
         .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
-        .split(/[.!]/)[0]?.trim().slice(0, 50) ?? 'act';
+        .split(/[.!]/)[0]?.trim() ?? 'act', 50);
       const memoryHook = memories.length > 0
-        ? memories[0]!.content.replace(/^I\s+/i, '').split(/[.!]/)[0]?.trim().slice(0, 50)
+        ? truncAtWord(memories[0]!.content.replace(/^I\s+/i, '').split(/[.!]/)[0]?.trim() ?? '', 50) || null
         : null;
       const contextDetail = memoryHook
         ? `Last time, ${memoryHook.toLowerCase()} — now I need to ${actionSnippet.toLowerCase()}`
