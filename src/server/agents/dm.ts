@@ -230,7 +230,7 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     const result = await callLlm({
       messages: [
         { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
-        { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint} Include any NPC reactions, items found, or locations visited.\n\nRespond as JSON: {"summary": "your summary here"}` },
+        { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
       ],
       schema: SceneSummarySchema,
     });
