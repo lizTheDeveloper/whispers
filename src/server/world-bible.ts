@@ -104,6 +104,25 @@ export class WorldBible {
     return parts.join('\n\n') || 'No world knowledge yet.';
   }
 
+  getCompactSummary(campaignId: string): string {
+    const parts: string[] = [];
+    const npcs = this.db.prepare('SELECT name, type, disposition FROM entities WHERE campaign_id = ? AND alive = 1 LIMIT 8').all(campaignId) as any[];
+    if (npcs.length > 0) {
+      parts.push('People nearby: ' + npcs.map((n: any) => `${n.name} (${n.disposition ?? n.type})`).join(', '));
+    }
+    const items = this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL LIMIT 5').all(campaignId) as any[];
+    if (items.length > 0) {
+      parts.push('Available items: ' + items.map((i: any) => i.name).join(', '));
+    }
+    const currentScene = this.db.prepare('SELECT MAX(scene_number) as s FROM events WHERE campaign_id = ?').get(campaignId) as any;
+    const maxScene = currentScene?.s ?? 0;
+    const unresolved = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL AND scene_number > ? LIMIT 3').all(campaignId, maxScene - 3) as any[];
+    if (unresolved.length > 0) {
+      parts.push('Open threads: ' + unresolved.map((e: any) => e.description).join('; '));
+    }
+    return parts.join('\n') || '';
+  }
+
   applyDiff(campaignId: string, diff: WorldBibleDiff): void {
     const tx = this.db.transaction(() => {
       for (const loc of diff.newLocations) {

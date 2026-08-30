@@ -155,6 +155,7 @@ export class GameLoop {
     this.state.activeCharacterId = characterId;
 
     const worldSummary = this.worldBible.getSummary(this.campaignId);
+    const charWorldContext = this.worldBible.getCompactSummary(this.campaignId);
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
     const memories = this.memoryStore.recall(characterId, 8, sceneNarration);
@@ -167,7 +168,7 @@ export class GameLoop {
         sceneNarration,
         transcript: this.transcript,
         memories,
-        worldContext: worldSummary,
+        worldContext: charWorldContext,
       });
     } catch (e) {
       console.error('[game-loop] action proposal failed:', e);
@@ -195,7 +196,7 @@ export class GameLoop {
     let decision;
     try {
       decision = await this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: worldSummary },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: charWorldContext },
         whisper,
       );
     } catch (e) {
