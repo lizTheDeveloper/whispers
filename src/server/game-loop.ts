@@ -379,7 +379,7 @@ export class GameLoop {
       resolution = {
         diceExpression: null, difficulty: null, skill: null,
         outcome: 'tie' as const,
-        narration: `${character.definition.name} attempts to ${actionSummary.toLowerCase()}, but not without cost.`,
+        narration: `${character.definition.name.split(' ')[0]} pushes through, but the cost is felt immediately.`,
         stateChanges: [{ characterId, field: 'stress' as const, action: 'set' as const, value: Math.min(character.state.stress + 1, 3) }],
       };
     }
@@ -394,9 +394,15 @@ export class GameLoop {
         .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
-      const outcomeVerb = resolution.outcome === 'failure' ? 'tries to' : resolution.outcome === 'tie' ? 'barely manages to' : 'manages to';
-      const costSuffix = resolution.outcome === 'success-with-cost' ? ', but not without cost' : resolution.outcome === 'failure' ? ', but the attempt goes badly wrong' : '';
-      resolution.narration = `${character.definition.name} ${outcomeVerb} ${fallbackAction.toLowerCase()}${costSuffix}.`;
+      const firstName = character.definition.name.split(' ')[0]!;
+      const outcomeNarration = resolution.outcome === 'failure'
+        ? `${firstName}'s effort falls short — the situation worsens despite the attempt.`
+        : resolution.outcome === 'tie'
+        ? `${firstName} pushes through, but the cost is felt immediately.`
+        : resolution.outcome === 'success-with-cost'
+        ? `${firstName} succeeds, but not without a price.`
+        : `${firstName} acts decisively, and the moment shifts in their favor.`;
+      resolution.narration = outcomeNarration;
     }
 
     if (diceResult && resolution.difficulty != null && resolution.skill && campaign.system_id === 'fate-core') {
@@ -558,7 +564,14 @@ export class GameLoop {
 
     const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
     const worldState = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
-    const summary = await this.dm.summarizeScene(toExtract, charNames, worldState);
+    let summary: string;
+    try {
+      summary = await this.dm.summarizeScene(toExtract, charNames, worldState);
+    } catch (e) {
+      console.error('[game-loop] Compaction summary failed, using last DM narration as recap:', e);
+      const lastDm = toExtract.filter(m => m.role === 'dm').slice(-1)[0]?.content;
+      summary = lastDm ?? 'The adventure continues...';
+    }
 
     this.transcript = [
       { role: 'system' as const, content: `[Session recap] ${summary}`, timestamp: new Date().toISOString() },
