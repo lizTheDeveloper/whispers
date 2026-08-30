@@ -41,7 +41,7 @@ export class CharacterAgent {
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}${ownActionsBlock}${companionBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a goal — investigate a mystery, help an ally, confront a threat, or explore the unknown. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action should INVOLVE them — coordinate an attack, ask for their expertise, protect them, or argue about strategy.\n\nAVOID repeating actions from recent events. If you recently smiled, try confronting instead. If you recently fought, try investigating. Vary your approach.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}${ownActionsBlock}${companionBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action should INVOLVE them — coordinate an attack, ask for their expertise, protect them, or argue about strategy.\n\nAVOID repeating actions from recent events. If you recently smiled, try confronting instead. If you recently fought, try investigating. Vary your approach.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
       ],
       schema: ActionProposalSchema,
       maxTokens: 768,
@@ -160,6 +160,6 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       return `- [${m.type}] ${m.content} ${mood}`.trim();
     });
 
-    return `\nYour memories from this adventure (these MUST shape your actions — reference them in your reasoning, avoid repeating past mistakes, build on what worked, and react to people you remember):\n${lines.join('\n')}`;
+    return `\nYour memories from this adventure (these MUST shape your actions — form GOALS from discoveries: if you found a clue, pursue it; if you witnessed something alarming, investigate it; if you made a promise, keep it. Avoid repeating past mistakes, build on what worked, and react to people you remember by name):\n${lines.join('\n')}`;
   }
 }
