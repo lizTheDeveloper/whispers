@@ -67,7 +67,7 @@ export class GameLoop {
     if (checkpoint && checkpoint.currentTurn > 0) {
       this.state = { ...this.state, ...checkpoint, phase: 'playing' };
       this.state.initiativeOrder = Array.from(this.characters.keys());
-      this.sceneTurnCount = 0;
+      this.sceneTurnCount = checkpoint.sceneTurnCount ?? 0;
 
       const lastScene = this.db.prepare('SELECT summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 1').get(this.campaignId) as any;
       if (lastScene?.summary) {
@@ -340,11 +340,19 @@ export class GameLoop {
 
     let effectiveDelta = decision.trustDelta;
     if (whisper && effectiveDelta === 0) {
-      effectiveDelta = decision.whisperedInfluence === 'ignored' ? -0.05 : 0.03;
+      if (decision.whisperedInfluence === 'ignored') {
+        effectiveDelta = -0.05;
+      } else {
+        effectiveDelta = character.state.whisperTrust < 0.50 ? 0.06 : 0.03;
+      }
     }
-    // Trust drops fast (up to -0.15) but recovers slowly (capped at +0.05)
-    if (effectiveDelta > 0.05) effectiveDelta = 0.05;
-    character.state.whisperTrust = Math.max(0, Math.min(0.95, character.state.whisperTrust + effectiveDelta));
+    const currentTrust = character.state.whisperTrust;
+    const recoveryCap = currentTrust < 0.50 && effectiveDelta > 0 ? 0.08 : 0.05;
+    if (effectiveDelta > recoveryCap) effectiveDelta = recoveryCap;
+    character.state.whisperTrust = Math.max(0, Math.min(0.95, currentTrust + effectiveDelta));
+    if (recoveryCap === 0.08 && effectiveDelta > 0) {
+      console.log(`[game-loop] Low-trust recovery boost: ${character.definition.name} trust ${currentTrust.toFixed(2)} → ${character.state.whisperTrust.toFixed(2)} (+${effectiveDelta.toFixed(2)}, cap raised to 0.08)`);
+    }
 
     const diceResult = rollDice(this.getSystemDefaultDice(campaign.system_id));
     this.addTranscript('dice', diceResult.description);
@@ -550,6 +558,7 @@ export class GameLoop {
       ).catch(e => console.error(`[memory] observer extraction failed for ${observer.definition.name}:`, e));
     }
 
+    this.state.sceneTurnCount = this.sceneTurnCount;
     saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state);
 
     await this.maybeCompactTranscript();
