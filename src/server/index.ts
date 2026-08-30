@@ -18,10 +18,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
 
 process.on('uncaughtException', (err) => {
-  console.error('[server] Uncaught exception (kept alive):', err.message);
+  console.error('[server] Uncaught exception — game state may be inconsistent:', err.stack ?? err.message);
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[server] Unhandled rejection (kept alive):', reason);
+  console.error('[server] Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
 });
 
 const app = express();
