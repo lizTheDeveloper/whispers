@@ -335,8 +335,11 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'whisper' && currentJoinCode) {
+      const raw = msg.text;
+      if (typeof raw !== 'string' || raw.trim().length === 0) return;
+      const whisperText = raw.trim().slice(0, 200);
       const loop = gameLoops.get(currentJoinCode);
-      loop?.handleWhisper(msg.text);
+      loop?.handleWhisper(whisperText);
     }
 
     if (msg.type === 'end-game' && currentJoinCode && currentPlayer?.isHost) {
