@@ -517,7 +517,11 @@ export class GameLoop {
     if (!char) return;
     const state = char.state as unknown as Record<string, unknown>;
     if (action === 'set') {
-      state[field] = value;
+      if (Array.isArray(state[field]) && !Array.isArray(value)) {
+        (state[field] as unknown[]).push(value);
+      } else {
+        state[field] = value;
+      }
       if (field === 'stress' && typeof value === 'number') {
         state.stress = Math.max(0, Math.min(value, 3));
       }
