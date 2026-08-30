@@ -5,6 +5,7 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
     <div class="lobby">
       <h1>Whispers</h1>
       <p class="subtitle">Agentic TTRPG — You are the voice in their head</p>
+      <div id="ws-status" class="ws-status ws-connected">Connected</div>
 
       <div class="lobby-panels">
         <div class="panel">
@@ -60,4 +61,14 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
   ws.on('error', (msg) => {
     if (msg.type === 'error') alert(msg.message);
   });
+
+  const statusEl = root.querySelector('#ws-status') as HTMLElement;
+  const updateStatus = (connected: boolean) => {
+    statusEl.textContent = connected ? 'Connected' : 'Reconnecting…';
+    statusEl.className = `ws-status ${connected ? 'ws-connected' : 'ws-disconnected'}`;
+    createBtn.disabled = !connected;
+    joinBtn.disabled = !connected;
+  };
+  ws.onStatus(updateStatus);
+  updateStatus(ws.connected);
 }

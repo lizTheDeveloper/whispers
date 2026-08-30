@@ -1,30 +1,53 @@
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 
 type MessageHandler = (msg: ServerMessage) => void;
+type StatusHandler = (connected: boolean) => void;
 
 export class WsClient {
   private ws: WebSocket | null = null;
   private handlers = new Map<string, Set<MessageHandler>>();
   private globalHandlers = new Set<MessageHandler>();
+  private statusHandlers = new Set<StatusHandler>();
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelay = 1000;
+  private maxReconnectDelay = 10000;
+  private intentionallyClosed = false;
+
+  get connected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
 
   connect(): Promise<void> {
+    this.intentionallyClosed = false;
     return new Promise((resolve, reject) => {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const base = location.pathname.replace(/\/+$/, '');
       this.ws = new WebSocket(`${proto}//${location.host}${base}/ws`);
-      this.ws.onopen = () => resolve();
+      this.ws.onopen = () => {
+        this.reconnectDelay = 1000;
+        this.notifyStatus(true);
+        resolve();
+      };
       this.ws.onerror = () => reject(new Error('WebSocket connection failed'));
       this.ws.onmessage = (evt) => {
         const msg: ServerMessage = JSON.parse(evt.data as string);
         this.handlers.get(msg.type)?.forEach(h => h(msg));
         this.globalHandlers.forEach(h => h(msg));
       };
-      this.ws.onclose = () => { this.ws = null; };
+      this.ws.onclose = () => {
+        this.ws = null;
+        this.notifyStatus(false);
+        if (!this.intentionallyClosed) this.scheduleReconnect();
+      };
     });
   }
 
   send(msg: ClientMessage): void {
-    this.ws?.send(JSON.stringify(msg));
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[ws] send() called while disconnected, message dropped:', msg.type);
+      return;
+    }
+    this.ws.send(JSON.stringify(msg));
   }
 
   on(type: string, handler: MessageHandler): void {
@@ -36,7 +59,31 @@ export class WsClient {
     this.globalHandlers.add(handler);
   }
 
+  onStatus(handler: StatusHandler): void {
+    this.statusHandlers.add(handler);
+  }
+
   off(type: string, handler: MessageHandler): void {
     this.handlers.get(type)?.delete(handler);
+  }
+
+  close(): void {
+    this.intentionallyClosed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.ws?.close();
+  }
+
+  private notifyStatus(connected: boolean): void {
+    this.statusHandlers.forEach(h => h(connected));
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    console.log(`[ws] reconnecting in ${this.reconnectDelay}ms...`);
+    this.reconnectTimer = setTimeout(() => {
+      this.connect().catch(() => {
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+      });
+    }, this.reconnectDelay);
   }
 }

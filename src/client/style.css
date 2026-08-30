@@ -76,6 +76,28 @@ h1, h2, h3 {
   letter-spacing: 0.02em;
 }
 
+.ws-status {
+  text-align: center;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  width: fit-content;
+  margin: -1.5rem auto 1.5rem;
+}
+.ws-connected {
+  color: var(--biolume);
+  background: var(--biolume-dim);
+}
+.ws-disconnected {
+  color: var(--ember);
+  background: var(--ember-glow);
+  animation: pulse-status 1.5s ease-in-out infinite;
+}
+@keyframes pulse-status {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .lobby-panels {
   display: grid;
   grid-template-columns: 1fr 1fr;
