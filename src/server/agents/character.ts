@@ -25,7 +25,7 @@ export class CharacterAgent {
         { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Reference NPCs, items, or locations you know about.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
       ],
       schema: ActionProposalSchema,
-      maxTokens: 512,
+      maxTokens: 768,
     });
   }
 

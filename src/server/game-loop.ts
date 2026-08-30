@@ -6,7 +6,7 @@ import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
 import { CharacterMemoryStore } from './character-memory.js';
 import { rollDice } from './dice.js';
-import { saveCheckpoint } from './checkpoint.js';
+import { saveCheckpoint, loadCheckpoint } from './checkpoint.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import type { Character, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
@@ -57,12 +57,26 @@ export class GameLoop {
 
   async start(): Promise<void> {
     this.loadCharacters();
-    this.state.phase = 'playing';
-    this.state.currentScene = 1;
-    this.state.currentTurn = 0;
-    this.state.initiativeOrder = Array.from(this.characters.keys());
-    this.broadcastFn({ type: 'phase-change', phase: 'playing' });
 
+    const checkpoint = loadCheckpoint(this.db, this.campaignId);
+    if (checkpoint && checkpoint.currentTurn > 0) {
+      this.state = { ...this.state, ...checkpoint, phase: 'playing' };
+      this.state.initiativeOrder = Array.from(this.characters.keys());
+      this.sceneTurnCount = 0;
+
+      const lastScene = this.db.prepare('SELECT summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 1').get(this.campaignId) as any;
+      if (lastScene?.summary) {
+        this.transcript = [{ role: 'system' as const, content: `[Resumed] ${lastScene.summary}`, timestamp: new Date().toISOString() }];
+      }
+      console.log(`[game-loop] Resuming from checkpoint: scene ${this.state.currentScene}, turn ${this.state.currentTurn}`);
+    } else {
+      this.state.phase = 'playing';
+      this.state.currentScene = 1;
+      this.state.currentTurn = 0;
+      this.state.initiativeOrder = Array.from(this.characters.keys());
+    }
+
+    this.broadcastFn({ type: 'phase-change', phase: 'playing' });
     const campaign = this.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(this.campaignId) as any;
     await this.runScene(campaign);
   }
