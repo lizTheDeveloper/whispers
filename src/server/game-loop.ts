@@ -139,6 +139,9 @@ export class GameLoop {
       const loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
       if (loc) {
         this.currentLocationId = loc.id;
+        if (narration.activeNpcs.length > 0) {
+          console.log(`[game-loop] Location: "${loc.name}" — NPCs present: ${narration.activeNpcs.join(', ')}`);
+        }
         for (const npcName of narration.activeNpcs) {
           this.worldBible.updateEntityLocation(this.campaignId, npcName, loc.id);
         }
