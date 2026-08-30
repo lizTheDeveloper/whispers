@@ -45,10 +45,11 @@ export class CharacterAgent {
       whisperText = `\n${voiceQuality}: "${whisper}"\nTrust level: ${trust.toFixed(2)} (0=ignore, 1=obey). ${guidance}
 
 trustDelta rules (ALWAYS set a non-zero value when a whisper is present):
-- Advice that helps you survive, discover, or connect: trustDelta = +0.05 to +0.10
+- Advice that helps you survive AND is safe: trustDelta = +0.05 to +0.10
 - Advice you partially follow or find reasonable: trustDelta = +0.03 to +0.05
-- Advice that would harm you, betray allies, or is clearly reckless: trustDelta = -0.08 to -0.15
+- Advice that isolates you from allies, urges you into known danger, encourages obsession, or tempts you to abandon caution: trustDelta = -0.05 to -0.15 (even if the advice APPEALS to you — wanting to do something doesn't make it safe)
 - Advice you ignore because it's irrelevant (not harmful): trustDelta = -0.02 to -0.05
+CRITICAL: Evaluate RISK, not just appeal. "Study the dark artifact" appeals to a scholar but IS reckless. "Go alone" appeals to a loner but IS dangerous. If the advice would make a cautious friend worried for your safety, it deserves negative trustDelta regardless of how much you WANT to do it.
 NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
     } else {
       whisperText = '\n(No whisper this turn — act on your own judgment.)';
