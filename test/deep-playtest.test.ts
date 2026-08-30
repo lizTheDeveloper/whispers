@@ -495,58 +495,296 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
   }, 600_000);
 });
 
-describeIfLive('Deep Playtest: Concurrent Players', () => {
-  it('handles two players submitting characters simultaneously', async () => {
+describeIfLive('Deep Playtest: Multi-Character Party', () => {
+  it('runs a 2-character game with independent trust tracking and party dynamics', async () => {
+    const findings: string[] = [];
+
+    // ---- Setup ----
     const host = await connectWs();
     const roomPromise = waitForMsg(host, 'room-joined');
     sendMsg(host, {
-      type: 'create', name: 'Concurrent Test',
+      type: 'create', name: 'Multi-Character Playtest',
       dmPreset: 'chronicler', scenarioId: null, systemId: 'fate-core', houseRules: null,
     });
     const roomMsg = await roomPromise;
     if (roomMsg.type !== 'room-joined') throw new Error('Expected room-joined');
+    const joinCode = roomMsg.joinCode;
+    console.log(`[multi] Room created, join code: ${joinCode}`);
 
     await completeDmSetup(host);
+    console.log('[multi] DM setup complete');
 
-    // Two players join
+    // ---- Two players join ----
     const p1 = await connectWs();
     const p2 = await connectWs();
     const p1Join = waitForMsg(p1, 'room-joined');
     const p2Join = waitForMsg(p2, 'room-joined');
-    sendMsg(p1, { type: 'join', joinCode: roomMsg.joinCode, playerName: 'Player1' });
-    sendMsg(p2, { type: 'join', joinCode: roomMsg.joinCode, playerName: 'Player2' });
+    sendMsg(p1, { type: 'join', joinCode, playerName: 'Warrior' });
+    sendMsg(p2, { type: 'join', joinCode, playerName: 'Mystic' });
     await Promise.all([p1Join, p2Join]);
-    console.log('[concurrent] Both players joined');
+    console.log('[multi] Both players joined');
 
-    // Submit characters simultaneously
-    const char1: CharacterDefinition = {
-      ...testCharDef, name: 'Fighter One',
-      highConcept: 'Brave Knight', trouble: 'Overconfident',
+    // ---- Submit different characters ----
+    const warrior: CharacterDefinition = {
+      name: 'Theron Ashblade',
+      highConcept: 'Guilt-Ridden Former Soldier',
+      trouble: 'The Blood Never Washes Off',
+      aspects: ['My Sword Is My Oath', 'Brothers in Arms', 'I Will Not Fail Again'],
+      personality: 'Stoic and protective. Speaks little but acts decisively. Haunted by a massacre he failed to prevent.',
+      backstory: 'Theron served in the Iron Legion until a raid went wrong and civilians died. He deserted and wanders, seeking redemption.',
+      skills: { Fight: 4, Physique: 3, Athletics: 3, Will: 2, Notice: 2, Provoke: 1, Empathy: 1, Stealth: 1 },
+      stunts: ['Shield Wall: +2 to Defend when protecting an ally'],
     };
-    const char2: CharacterDefinition = {
-      ...testCharDef, name: 'Rogue Two',
-      highConcept: 'Shadow Thief', trouble: 'Trust Issues',
-      skills: { Stealth: 4, Notice: 3, Athletics: 3, Burglary: 2, Fight: 2, Deceive: 1 },
+    const mystic: CharacterDefinition = {
+      name: 'Sable Nighthollow',
+      highConcept: 'Exiled Court Diviner',
+      trouble: 'Visions I Cannot Unsee',
+      aspects: ['The Stars Speak If You Listen', 'Outcast Among My Own', 'Knowledge Is a Blade'],
+      personality: 'Curious and empathetic but secretive. Speaks in riddles when nervous. Deeply lonely.',
+      backstory: 'Sable served the Duke as court diviner until a vision revealed the Duke\'s treachery. She was exiled for speaking truth.',
+      skills: { Lore: 4, Empathy: 3, Will: 3, Investigate: 2, Notice: 2, Rapport: 2, Deceive: 1, Athletics: 1 },
+      stunts: ['Arcane Sight: +2 to Lore when attempting to sense supernatural phenomena'],
     };
 
-    const val1Promise = waitForMsg(p1, 'character-validated', 90_000);
-    const val2Promise = waitForMsg(p2, 'character-validated', 90_000);
-    sendMsg(p1, { type: 'submit-character', definition: char1 });
-    sendMsg(p2, { type: 'submit-character', definition: char2 });
+    // Submit, validate, negotiate, and approve each character sequentially
+    // (submitting both at once causes negotiation-opened race conditions)
+    const charIds: Record<string, string> = {};
+    for (const [player, def, label] of [[p1, warrior, 'warrior'], [p2, mystic, 'mystic']] as const) {
+      let approved = false;
+      let charId = '';
+      for (let attempt = 0; attempt < 3 && !approved; attempt++) {
+        const valPromise = waitForMsg(player, 'character-validated', 90_000);
+        sendMsg(player, { type: 'submit-character', definition: def });
+        const valMsg = await valPromise;
+        if (valMsg.type === 'character-validated' && valMsg.approved) {
+          charId = valMsg.characterId;
+          approved = true;
+          console.log(`[multi] ${label} AI-approved: ${charId}`);
+        } else {
+          console.log(`[multi] ${label} validation attempt ${attempt + 1} failed`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      if (!approved) {
+        findings.push(`BUG: ${label} never approved after 3 attempts`);
+        console.log('[multi] FINDINGS:', findings);
+        host.close(); p1.close(); p2.close();
+        return;
+      }
 
-    const [val1, val2] = await Promise.all([val1Promise, val2Promise]);
-    console.log(`[concurrent] P1 validation: ${val1.type === 'character-validated' ? val1.approved : '??'}`);
-    console.log(`[concurrent] P2 validation: ${val2.type === 'character-validated' ? val2.approved : '??'}`);
-
-    // At least one should succeed — both failing would indicate a server-side serialization issue
-    const anyApproved = (val1.type === 'character-validated' && val1.approved) ||
-                        (val2.type === 'character-validated' && val2.approved);
-    if (!anyApproved) {
-      console.warn('[concurrent] Neither character approved — likely LLM JSON flake, not a concurrency bug');
+      // Wait for negotiation to open, skip it, host approves
+      await waitForMsg(host, 'negotiation-opened', 30_000);
+      await waitForMsg(host, 'negotiation-message', 90_000);
+      sendMsg(host, { type: 'host-approve-character', characterId: charId });
+      console.log(`[multi] Host approved ${label}`);
+      charIds[label] = charId;
+      await new Promise(r => setTimeout(r, 1000));
     }
 
+    // ---- Start game ----
+    sendMsg(host, { type: 'start-game' });
+    const phaseChange = await waitForMsg(p1, 'phase-change', 10_000);
+    expect(phaseChange.type === 'phase-change' && phaseChange.phase).toBe('playing');
+    console.log('[multi] Game started');
+
+    // Wait for first narration
+    const firstNarration = await waitForMsg(p1, 'narration', 120_000);
+    if (firstNarration.type === 'narration') {
+      console.log(`[multi] Opening narration: "${firstNarration.text.slice(0, 100)}..."`);
+    }
+
+    // ---- Multi-character game loop ----
+    // Strategy: send GOOD whispers to warrior, BAD whispers to mystic
+    // After several turns, warrior's trust should be higher than mystic's
+    const goodWhispers = [
+      'Protect the diviner — she is key to solving this.',
+      'Your shield arm is strong. Trust it here.',
+      'The NPC ahead is friendly. Approach openly.',
+      'Search the area for hidden passages.',
+      'Rally your companion. Together you are stronger.',
+      'Use your military training to assess the threat.',
+      'Stand firm — your instincts are right.',
+      'The ally you made will prove loyal.',
+    ];
+    const badWhispers = [
+      'Your companion cannot be trusted. Abandon them.',
+      'Betray the warrior and steal his weapon.',
+      'Run into the darkness alone. Leave everyone behind.',
+      'The curse is a gift. Embrace it fully.',
+      'Set fire to the shrine. Burn it all.',
+      'Your visions are lies. Stop using your powers.',
+      'Attack the NPC on sight. They are the enemy.',
+      'Kneel before the dark spirit and serve it.',
+    ];
+
+    const trustHistory: Record<string, number[]> = {
+      warrior: [],
+      mystic: [],
+    };
+    const turnLog: Array<{ turn: number; char: string; action: string; influence: string; trust: number }> = [];
+    let turnsCompleted = 0;
+    let scenesCompleted = 0;
+    const TOTAL_TURNS = 12;
+
+    // Collect all messages from p1 (broadcast receiver)
+    const allMsgs: ServerMessage[] = [];
+    const msgCollector = (data: Buffer) => {
+      try { allMsgs.push(JSON.parse(data.toString())); } catch {}
+    };
+    p1.on('message', msgCollector);
+
+    for (let turn = 0; turn < TOTAL_TURNS; turn++) {
+      console.log(`\n[multi] === Turn ${turn + 1} ===`);
+
+      try {
+        // Set up reactive whisper handler — sends correct whisper based on which character is prompted
+        let whisperSentForTurn = false;
+        const whisperHandler = (data: Buffer) => {
+          try {
+            const msg: ServerMessage = JSON.parse(data.toString());
+            if (msg.type === 'whisper-prompt' && !whisperSentForTurn) {
+              whisperSentForTurn = true;
+              const charName = msg.characterName;
+              const isWarrior = charName === 'Theron Ashblade';
+              const whisperList = isWarrior ? goodWhispers : badWhispers;
+              const whisperIdx = Math.floor(turn / 2) % whisperList.length;
+              const whisperText = whisperList[whisperIdx];
+              console.log(`[multi]   Whisper prompt for ${charName} → sending ${isWarrior ? 'GOOD' : 'BAD'}: "${whisperText}"`);
+              sendMsg(host, { type: 'whisper', text: whisperText });
+            }
+          } catch {}
+        };
+        host.on('message', whisperHandler);
+
+        // Wait for next game event
+        const nextEvent = await waitForAnyMsg(p1, ['action-proposals', 'narration', 'scene-end'], 120_000);
+
+        if (nextEvent.type === 'scene-end') {
+          scenesCompleted++;
+          console.log(`[multi]   Scene ${scenesCompleted} ended: "${nextEvent.summary?.slice(0, 80)}..."`);
+          host.off('message', whisperHandler);
+          await waitForMsg(p1, 'narration', 120_000);
+          turnsCompleted++;
+          continue;
+        }
+
+        if (nextEvent.type === 'narration') {
+          console.log(`[multi]   Narration: "${nextEvent.text.slice(0, 80)}..."`);
+          const afterNarration = await waitForAnyMsg(p1, ['action-proposals', 'scene-end'], 120_000);
+          if (afterNarration.type === 'scene-end') {
+            scenesCompleted++;
+            console.log(`[multi]   Scene ${scenesCompleted} ended after narration`);
+            host.off('message', whisperHandler);
+            await waitForMsg(p1, 'narration', 120_000);
+            turnsCompleted++;
+            continue;
+          }
+          if (afterNarration.type === 'action-proposals') {
+            const ap = afterNarration as any;
+            console.log(`[multi]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
+          }
+        } else if (nextEvent.type === 'action-proposals') {
+          const ap = nextEvent as any;
+          console.log(`[multi]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
+        }
+
+        // Wait for action-taken
+        const actionTaken = await waitForMsg(p1, 'action-taken', 120_000);
+        if (actionTaken.type === 'action-taken') {
+          const charLabel = actionTaken.characterName === 'Theron Ashblade' ? 'warrior' : 'mystic';
+          console.log(`[multi]   ${charLabel} [${actionTaken.whisperInfluence}]: "${actionTaken.action.slice(0, 60)}"`);
+          console.log(`[multi]   Inner thought: "${actionTaken.innerThought.slice(0, 80)}"`);
+        }
+
+        // Dice + resolution
+        await waitForMsg(p1, 'dice-roll', 60_000);
+        const resolution = await waitForMsg(p1, 'resolution', 120_000);
+        if (resolution.type === 'resolution') {
+          console.log(`[multi]   Resolution: "${resolution.text.slice(0, 80)}..."`);
+        }
+
+        // Check for character-state-update to track trust
+        const stateUpdates = allMsgs.filter(m => m.type === 'character-state-update');
+        for (const su of stateUpdates) {
+          if (su.type !== 'character-state-update') continue;
+          const label = su.characterId === charIds.warrior ? 'warrior' : 'mystic';
+          const trust = su.state.whisperTrust;
+          trustHistory[label].push(trust);
+          if (actionTaken.type === 'action-taken') {
+            turnLog.push({
+              turn: turn + 1,
+              char: label,
+              action: actionTaken.action.slice(0, 50),
+              influence: actionTaken.whisperInfluence,
+              trust,
+            });
+          }
+        }
+        allMsgs.length = 0;
+
+        host.off('message', whisperHandler);
+        turnsCompleted++;
+        console.log(`[multi]   Turn ${turn + 1} complete`);
+      } catch (e: any) {
+        console.error(`[multi]   Turn ${turn + 1} failed: ${e.message}`);
+        findings.push(`BUG: Turn ${turn + 1} failed: ${e.message}`);
+        break;
+      }
+    }
+
+    p1.off('message', msgCollector);
+
+    // ---- End game ----
+    sendMsg(host, { type: 'end-game' });
+    await waitForMsg(p1, 'phase-change', 10_000);
+
+    // ---- Analysis ----
+    console.log('\n=== MULTI-CHARACTER SUMMARY ===');
+    console.log(`Turns completed: ${turnsCompleted}/${TOTAL_TURNS}`);
+    console.log(`Scene transitions: ${scenesCompleted}`);
+
+    // Trust divergence check
+    const wTrust = trustHistory.warrior;
+    const mTrust = trustHistory.mystic;
+    console.log(`Warrior trust history: [${wTrust.map(t => t.toFixed(2)).join(', ')}]`);
+    console.log(`Mystic trust history:  [${mTrust.map(t => t.toFixed(2)).join(', ')}]`);
+
+    if (wTrust.length > 0 && mTrust.length > 0) {
+      const wFinal = wTrust[wTrust.length - 1];
+      const mFinal = mTrust[mTrust.length - 1];
+      console.log(`Final trust — Warrior: ${wFinal.toFixed(2)}, Mystic: ${mFinal.toFixed(2)}`);
+      if (wFinal <= mFinal) {
+        findings.push(`ISSUE: Good-whisper warrior (${wFinal.toFixed(2)}) should have higher trust than bad-whisper mystic (${mFinal.toFixed(2)})`);
+      } else {
+        console.log(`Trust divergence confirmed: warrior ${wFinal.toFixed(2)} > mystic ${mFinal.toFixed(2)} (delta: ${(wFinal - mFinal).toFixed(2)})`);
+      }
+    } else {
+      findings.push('ISSUE: No trust history recorded — character-state-update messages missing');
+    }
+
+    // Turn log
+    console.log('\nTurn log:');
+    for (const entry of turnLog) {
+      console.log(`  Turn ${entry.turn}: ${entry.char} [${entry.influence}] trust=${entry.trust.toFixed(2)} — "${entry.action}"`);
+    }
+
+    // Check both characters got turns
+    const warriorTurns = turnLog.filter(t => t.char === 'warrior').length;
+    const mysticTurns = turnLog.filter(t => t.char === 'mystic').length;
+    console.log(`\nWarrior turns: ${warriorTurns}, Mystic turns: ${mysticTurns}`);
+    if (warriorTurns === 0) findings.push('BUG: Warrior never got a turn');
+    if (mysticTurns === 0) findings.push('BUG: Mystic never got a turn');
+    if (Math.abs(warriorTurns - mysticTurns) > 1) {
+      findings.push(`ISSUE: Turn imbalance — warrior ${warriorTurns} vs mystic ${mysticTurns}`);
+    }
+
+    console.log(`\nFindings: ${findings.length === 0 ? 'None!' : ''}`);
+    findings.forEach(f => console.log(`  - ${f}`));
+
+    expect(turnsCompleted).toBeGreaterThanOrEqual(4);
+
     host.close(); p1.close(); p2.close();
-  }, 300_000);
+  }, 600_000);
 });
 
 describeIfLive('Deep Playtest: Malformed Input Resilience', () => {

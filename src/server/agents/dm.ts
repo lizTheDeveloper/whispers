@@ -41,13 +41,17 @@ export class DmAgent {
       ? 'ACT II (Confrontation): Escalate complications. Alliances are tested, secrets are revealed, the threat becomes personal. Make the characters pay a cost for progress.'
       : 'ACT III (Resolution): Drive toward the climax. The dramatic question MUST be answered this act. Converge all threads toward a final confrontation or revelation. After the climax, give a brief denouement showing consequences.';
 
+    // Scale pacing thresholds: larger parties generate more content per round
+    const developThreshold = partySize <= 1 ? 3 : 2;
+    const escalateThreshold = partySize <= 1 ? 6 : Math.max(3, 6 - partySize);
+
     const pacingHint = roundCount === 0
       ? 'This is the opening of a new scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Hint at trouble or opportunity.'
-      : roundCount < 3
+      : roundCount < developThreshold
       ? 'The scene is developing. Introduce complications, NPCs with agendas, or environmental obstacles. Not everything should go smoothly.'
-      : roundCount < 6
+      : roundCount < escalateThreshold
       ? 'The scene is in full swing. Escalate stakes — consequences from earlier actions catch up, allies may be threatened, hard choices emerge. Move toward a dramatic turning point.'
-      : `The scene has run for ${roundCount} rounds. Actively look for a climactic moment to end the scene. If a dramatic beat just landed, tension peaked, the party reached a new location, combat concluded, or a key revelation dropped — set isSceneEnd to true. Transition to keep the narrative moving.`;
+      : `The scene has run for ${roundCount} rounds (${partySize} characters acting per round). Actively look for a climactic moment to end the scene. If a dramatic beat just landed, tension peaked, the party reached a new location, combat concluded, or a key revelation dropped — set isSceneEnd to true. Transition to keep the narrative moving.`;
 
     const charBlock = pacing?.characterSummaries ? `\n\nParty status:\n${pacing.characterSummaries}` : '';
     const sceneLabel = pacing ? `Scene ${pacing.sceneNumber}, round ${roundCount + 1} (turn ${turnCount + 1})` : 'Scene';
