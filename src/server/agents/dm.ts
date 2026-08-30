@@ -81,8 +81,11 @@ export class DmAgent {
     const developThreshold = partySize <= 1 ? 2 : 2;
     const escalateThreshold = partySize <= 1 ? 5 : Math.max(2, 4 - partySize);
 
+    const hasPreviousScene = sceneNum > 1;
     const pacingHint = roundCount === 0
-      ? 'This is the opening of a new scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Hint at trouble or opportunity.'
+      ? hasPreviousScene
+        ? 'This is the opening of a NEW scene. Bridge from the previous scene — acknowledge what changed, what was won or lost, and why the party is in a different situation now. Then set the new stage: describe the new location, atmosphere, and sensory details. If UNRESOLVED THREADS exist in the world state, weave at least one into this scene opening as a hook or complication. The scene transition should feel like a chapter break, not a jump cut.'
+        : 'This is the opening of the FIRST scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Introduce the dramatic question. Hint at trouble or opportunity.'
       : roundCount < developThreshold
       ? 'The scene is developing. Introduce complications, NPCs with agendas, or environmental obstacles. Not everything should go smoothly. Do NOT set isSceneEnd — the scene has barely started.'
       : roundCount < escalateThreshold
@@ -107,7 +110,7 @@ export class DmAgent {
     return callLlm({
       messages: [
         { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}${locationHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds.${partyHint}\n\ncurrentLocationName MUST be an EXACT name from the "Known locations" list above (copy-paste it). If the party moves to a new area, pick the most fitting known location. Only invent a new name if NO known location fits.\n\nRespond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
+        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}${locationHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.${partyHint}\n\ncurrentLocationName MUST be an EXACT name from the "Known locations" list above (copy-paste it). If the party moves to a new area, pick the most fitting known location. Only invent a new name if NO known location fits.\n\nRespond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
       ],
       schema: DmNarrationSchema,
       maxTokens: 2048,

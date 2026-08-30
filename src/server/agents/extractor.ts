@@ -7,7 +7,7 @@ export class ExtractorAgent {
   async extractFacts(transcript: TranscriptMessage[], sceneNumber: number): Promise<FactExtraction> {
     const narrative = transcript
       .filter(m => m.role === 'dm' || m.role === 'character' || m.role === 'whisper')
-      .slice(-20);
+      .slice(-30);
     const text = narrative.map(m => `[${m.role}] ${m.content}`).join('\n');
 
     return callLlm({
