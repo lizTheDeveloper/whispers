@@ -24,6 +24,44 @@ function sendMsg(ws: WebSocket, msg: ClientMessage): void {
   ws.send(JSON.stringify(msg));
 }
 
+class MessageQueue {
+  private buffer: ServerMessage[] = [];
+  private waiters: Array<{ types: string[]; resolve: (msg: ServerMessage) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }> = [];
+
+  constructor(private ws: WebSocket) {
+    ws.on('message', (data: Buffer) => {
+      const msg: ServerMessage = JSON.parse(data.toString());
+      const idx = this.waiters.findIndex(w => w.types.includes(msg.type));
+      if (idx >= 0) {
+        const waiter = this.waiters.splice(idx, 1)[0]!;
+        clearTimeout(waiter.timer);
+        waiter.resolve(msg);
+      } else {
+        this.buffer.push(msg);
+      }
+    });
+  }
+
+  next(type: string, timeoutMs = 90_000): Promise<ServerMessage> {
+    return this.nextAny([type], timeoutMs);
+  }
+
+  nextAny(types: string[], timeoutMs = 90_000): Promise<ServerMessage> {
+    const idx = this.buffer.findIndex(m => types.includes(m.type));
+    if (idx >= 0) return Promise.resolve(this.buffer.splice(idx, 1)[0]!);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const wi = this.waiters.findIndex(w => w.resolve === resolve);
+        if (wi >= 0) this.waiters.splice(wi, 1);
+        reject(new Error(`Timeout waiting for ${types.join(',')} after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.waiters.push({ types, resolve, reject, timer });
+    });
+  }
+
+  drain() { this.buffer.length = 0; }
+}
+
 function waitForMsg(ws: WebSocket, type: string, timeoutMs = 90_000): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
     const handler = (data: Buffer) => {
@@ -161,7 +199,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
     const roomPromise = waitForMsg(host, 'room-joined');
     sendMsg(host, {
       type: 'create', name: 'Deep Playtest Session',
-      dmPreset: 'chronicler', scenarioId: null, systemId: 'fate-core', houseRules: null,
+      dmPreset: 'chronicler', scenarioId: 'collapsed-mine', systemId: 'fate-core', houseRules: null,
     });
     const roomMsg = await roomPromise;
     timings['room-create'] = Date.now() - t0;
@@ -255,6 +293,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
     }
 
     // ---- Phase 5: Multi-turn game play ----
+    const q = new MessageQueue(player);
     const turnTimings: number[] = [];
     const whisperResponses: string[] = [];
     let turnsCompleted = 0;
@@ -294,7 +333,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
 
     let scenesCompleted = 0;
     const whisperInfluences: string[] = [];
-    const TOTAL_TURNS = 25;
+    const TOTAL_TURNS = 30;
     let gameEndedNaturally = false;
 
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
@@ -317,7 +356,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
         };
         player.on('message', autoWhisper);
 
-        const actionMsg = await waitForAnyMsg(player, ['action-proposals', 'narration', 'scene-end', 'phase-change'], 120_000);
+        const actionMsg = await q.nextAny(['action-proposals', 'narration', 'scene-end', 'phase-change'], 120_000);
 
         if (actionMsg.type === 'phase-change' && (actionMsg as any).phase === 'ended') {
           player.off('message', autoWhisper);
@@ -328,7 +367,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
 
         if (actionMsg.type === 'narration') {
           console.log(`[playtest]   Narration: "${actionMsg.text.slice(0, 80)}..."`);
-          const nextMsg = await waitForAnyMsg(player, ['action-proposals', 'scene-end', 'phase-change'], 120_000);
+          const nextMsg = await q.nextAny(['action-proposals', 'scene-end', 'phase-change'], 120_000);
           if (nextMsg.type === 'phase-change' && (nextMsg as any).phase === 'ended') {
             player.off('message', autoWhisper);
             console.log(`[playtest]   Game ended naturally after narration`);
@@ -339,7 +378,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
             scenesCompleted++;
             console.log(`[playtest]   Scene ${scenesCompleted} ended after narration: "${(nextMsg as any).summary?.slice(0, 80)}..."`);
             player.off('message', autoWhisper);
-            const nextOrEnd = await waitForAnyMsg(player, ['narration', 'phase-change'], 120_000);
+            const nextOrEnd = await q.nextAny(['narration', 'phase-change'], 120_000);
             if (nextOrEnd.type === 'phase-change' && (nextOrEnd as any).phase === 'ended') {
               console.log(`[playtest]   Game ended after scene transition`);
               gameEndedNaturally = true;
@@ -365,7 +404,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           scenesCompleted++;
           console.log(`[playtest]   Scene ${scenesCompleted} ended: "${actionMsg.summary?.slice(0, 80)}..."`);
           player.off('message', autoWhisper);
-          const nextOrEnd = await waitForAnyMsg(player, ['narration', 'phase-change'], 120_000);
+          const nextOrEnd = await q.nextAny(['narration', 'phase-change'], 120_000);
           if (nextOrEnd.type === 'phase-change' && (nextOrEnd as any).phase === 'ended') {
             console.log(`[playtest]   Game ended after scene transition`);
             gameEndedNaturally = true;
@@ -379,7 +418,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           continue;
         }
 
-        const actionTaken = await waitForMsg(player, 'action-taken', 120_000);
+        const actionTaken = await q.next('action-taken', 120_000);
         if (actionTaken.type === 'action-taken') {
           const influence = (actionTaken as any).whisperInfluence ?? 'unknown';
           console.log(`[playtest]   Action [${influence}]: "${actionTaken.action.slice(0, 80)}"`);
@@ -390,12 +429,12 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           if (actionTaken.innerThought.length === 0) findings.push(`BUG: Turn ${turn + 1} returned empty inner thought`);
         }
 
-        const diceMsg = await waitForMsg(player, 'dice-roll', 90_000);
+        const diceMsg = await q.next('dice-roll', 90_000);
         if (diceMsg.type === 'dice-roll') {
           console.log(`[playtest]   Dice: ${diceMsg.result.description} (total: ${diceMsg.result.total})`);
         }
 
-        const resolution = await waitForMsg(player, 'resolution', 120_000);
+        const resolution = await q.next('resolution', 120_000);
         if (resolution.type === 'resolution') {
           console.log(`[playtest]   Resolution: "${resolution.text.slice(0, 80)}..."`);
           if (resolution.text.length < 10) findings.push(`ISSUE: Turn ${turn + 1} resolution suspiciously short`);
@@ -493,10 +532,13 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
       findings.push('ISSUE: No scene transitions after 8+ turns — DM never sets isSceneEnd=true');
     }
 
-    // Check server logs for compaction and memory events
+    // Check server logs for compaction, memory, and FP economy events
     const compactionLogs = allServerLogs.filter(l => l.includes('compaction') || l.includes('Mid-scene fact'));
     const memoryLogs = allServerLogs.filter(l => l.includes('[memory]') || l.includes('memories'));
     const factLogs = allServerLogs.filter(l => l.includes('Fact extraction'));
+    const aspectInvokeLogs = allServerLogs.filter(l => l.includes('Aspect invocation') || l.includes('Auto-invoke'));
+    const compelLogs = allServerLogs.filter(l => l.includes('Compel triggered'));
+    const recoveryLogs = allServerLogs.filter(l => l.includes('Scene recovery'));
 
     console.log('\n=== PLAYTEST SUMMARY ===');
     console.log(`Turns completed: ${turnsCompleted}/${TOTAL_TURNS}`);
@@ -507,6 +549,11 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
       const ignored = whisperInfluences.filter(w => w === 'ignored').length;
       console.log(`Whisper influence: ${followed} followed, ${partial} partial, ${ignored} ignored (of ${whisperInfluences.length})`);
     }
+    console.log(`FP economy: ${aspectInvokeLogs.length} aspect invocations, ${compelLogs.length} compels`);
+    aspectInvokeLogs.forEach(l => console.log(`  ${l.slice(0, 150)}`));
+    compelLogs.forEach(l => console.log(`  ${l.slice(0, 150)}`));
+    console.log(`Scene recovery events: ${recoveryLogs.length}`);
+    recoveryLogs.forEach(l => console.log(`  ${l.slice(0, 150)}`));
     console.log(`Fact extractions: ${factLogs.length}`);
     factLogs.forEach(l => console.log(`  ${l.slice(0, 120)}`));
     console.log(`Compaction events: ${compactionLogs.length}`);
@@ -516,6 +563,8 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
     if (turnTimings.length > 0) {
       console.log(`Turn times: avg=${Math.round(turnTimings.reduce((a, b) => a + b, 0) / turnTimings.length)}ms, min=${Math.min(...turnTimings)}ms, max=${Math.max(...turnTimings)}ms`);
     }
+    if (aspectInvokeLogs.length === 0 && turnsCompleted >= 10) findings.push('ISSUE: No aspect invocations in 10+ turns — FP spending may be broken');
+    if (compelLogs.length === 0 && turnsCompleted >= 10) findings.push('ISSUE: No compels in 10+ turns — FP earning may be broken');
     console.log(`Findings: ${findings.length === 0 ? 'None!' : ''}`);
     findings.forEach(f => console.log(`  - ${f}`));
 
@@ -664,6 +713,8 @@ describeIfLive('Deep Playtest: Multi-Character Party', () => {
     };
     p1.on('message', msgCollector);
 
+    const q1 = new MessageQueue(p1);
+
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
       console.log(`\n[multi] === Turn ${turn + 1} ===`);
 
@@ -688,25 +739,25 @@ describeIfLive('Deep Playtest: Multi-Character Party', () => {
         host.on('message', whisperHandler);
 
         // Wait for next game event
-        const nextEvent = await waitForAnyMsg(p1, ['action-proposals', 'narration', 'scene-end'], 120_000);
+        const nextEvent = await q1.nextAny(['action-proposals', 'narration', 'scene-end'], 120_000);
 
         if (nextEvent.type === 'scene-end') {
           scenesCompleted++;
           console.log(`[multi]   Scene ${scenesCompleted} ended: "${nextEvent.summary?.slice(0, 80)}..."`);
           host.off('message', whisperHandler);
-          await waitForMsg(p1, 'narration', 120_000);
+          await q1.next('narration', 120_000);
           turnsCompleted++;
           continue;
         }
 
         if (nextEvent.type === 'narration') {
           console.log(`[multi]   Narration: "${nextEvent.text.slice(0, 80)}..."`);
-          const afterNarration = await waitForAnyMsg(p1, ['action-proposals', 'scene-end'], 120_000);
+          const afterNarration = await q1.nextAny(['action-proposals', 'scene-end'], 120_000);
           if (afterNarration.type === 'scene-end') {
             scenesCompleted++;
             console.log(`[multi]   Scene ${scenesCompleted} ended after narration`);
             host.off('message', whisperHandler);
-            await waitForMsg(p1, 'narration', 120_000);
+            await q1.next('narration', 120_000);
             turnsCompleted++;
             continue;
           }
@@ -720,7 +771,7 @@ describeIfLive('Deep Playtest: Multi-Character Party', () => {
         }
 
         // Wait for action-taken
-        const actionTaken = await waitForMsg(p1, 'action-taken', 120_000);
+        const actionTaken = await q1.next('action-taken', 120_000);
         if (actionTaken.type === 'action-taken') {
           const charLabel = actionTaken.characterName === 'Theron Ashblade' ? 'warrior' : 'mystic';
           console.log(`[multi]   ${charLabel} [${actionTaken.whisperInfluence}]: "${actionTaken.action.slice(0, 60)}"`);
@@ -728,8 +779,8 @@ describeIfLive('Deep Playtest: Multi-Character Party', () => {
         }
 
         // Dice + resolution
-        await waitForMsg(p1, 'dice-roll', 90_000);
-        const resolution = await waitForMsg(p1, 'resolution', 120_000);
+        await q1.next('dice-roll', 90_000);
+        const resolution = await q1.next('resolution', 120_000);
         if (resolution.type === 'resolution') {
           console.log(`[multi]   Resolution: "${resolution.text.slice(0, 80)}..."`);
         }
