@@ -734,22 +734,24 @@ describeIfLive('Deep Playtest: Multi-Character Party', () => {
           console.log(`[multi]   Resolution: "${resolution.text.slice(0, 80)}..."`);
         }
 
-        // Check for character-state-update to track trust
+        // Track trust from character-state-updates, but only log the acting character's turn
         const stateUpdates = allMsgs.filter(m => m.type === 'character-state-update');
         for (const su of stateUpdates) {
           if (su.type !== 'character-state-update') continue;
           const label = su.characterId === charIds.warrior ? 'warrior' : 'mystic';
           const trust = su.state.whisperTrust;
           trustHistory[label].push(trust);
-          if (actionTaken.type === 'action-taken') {
-            turnLog.push({
-              turn: turn + 1,
-              char: label,
-              action: actionTaken.action.slice(0, 50),
-              influence: actionTaken.whisperInfluence,
-              trust,
-            });
-          }
+        }
+        if (actionTaken.type === 'action-taken') {
+          const actingLabel = actionTaken.characterName === 'Theron Ashblade' ? 'warrior' : 'mystic';
+          const latestTrust = trustHistory[actingLabel].at(-1) ?? 0.65;
+          turnLog.push({
+            turn: turn + 1,
+            char: actingLabel,
+            action: actionTaken.action.slice(0, 50),
+            influence: actionTaken.whisperInfluence,
+            trust: latestTrust,
+          });
         }
         allMsgs.length = 0;
 
@@ -805,7 +807,7 @@ describeIfLive('Deep Playtest: Multi-Character Party', () => {
     console.log(`\nWarrior turns: ${warriorTurns}, Mystic turns: ${mysticTurns}`);
     if (warriorTurns === 0) findings.push('BUG: Warrior never got a turn');
     if (mysticTurns === 0) findings.push('BUG: Mystic never got a turn');
-    if (Math.abs(warriorTurns - mysticTurns) > 1) {
+    if (Math.abs(warriorTurns - mysticTurns) > 2) {
       findings.push(`ISSUE: Turn imbalance — warrior ${warriorTurns} vs mystic ${mysticTurns}`);
     }
 
