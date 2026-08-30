@@ -257,6 +257,11 @@ export class GameLoop {
       };
     }
 
+    if (decision.chosenAction.trim().length < 10) {
+      console.log(`[game-loop] Degenerate action detected (${decision.chosenAction.length} chars: "${decision.chosenAction}"), using proposal fallback`);
+      decision.chosenAction = proposals.actions[0]?.description ?? 'Surveys the surroundings, weighing the options carefully';
+    }
+
     const genericPatterns = [
       /^something (feels|is|seems|isn't|doesn't feel) (off|wrong|right)/i,
       /^i (need|should|must|have) to be careful/i,

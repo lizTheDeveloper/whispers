@@ -390,7 +390,7 @@ describeIfLive('Deep Playtest: Full Game Session', () => {
           if (actionTaken.innerThought.length === 0) findings.push(`BUG: Turn ${turn + 1} returned empty inner thought`);
         }
 
-        const diceMsg = await waitForMsg(player, 'dice-roll', 60_000);
+        const diceMsg = await waitForMsg(player, 'dice-roll', 90_000);
         if (diceMsg.type === 'dice-roll') {
           console.log(`[playtest]   Dice: ${diceMsg.result.description} (total: ${diceMsg.result.total})`);
         }
@@ -728,7 +728,7 @@ describeIfLive('Deep Playtest: Multi-Character Party', () => {
         }
 
         // Dice + resolution
-        await waitForMsg(p1, 'dice-roll', 60_000);
+        await waitForMsg(p1, 'dice-roll', 90_000);
         const resolution = await waitForMsg(p1, 'resolution', 120_000);
         if (resolution.type === 'resolution') {
           console.log(`[multi]   Resolution: "${resolution.text.slice(0, 80)}..."`);

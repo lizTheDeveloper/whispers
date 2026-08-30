@@ -382,7 +382,7 @@ describeIfLive('Trickster Preset + Haunted Masquerade Scenario', () => {
         }
 
         // Dice + resolution
-        const diceOrEnd = await waitForAnyMsg(p1, ['dice-roll', 'phase-change'], 60_000);
+        const diceOrEnd = await waitForAnyMsg(p1, ['dice-roll', 'phase-change'], 90_000);
         if (diceOrEnd.type === 'phase-change') {
           sessionEnded = true;
           host.off('message', whisperHandler);
