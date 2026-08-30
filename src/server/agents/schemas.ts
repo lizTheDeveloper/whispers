@@ -94,8 +94,8 @@ export type CharacterValidation = z.infer<typeof CharacterValidationSchema>;
 export const DmSetupReplySchema = z.object({
   reply: z.string().min(1),
   done: z.boolean(),
-  dmInstructions: z.string().nullable(),
-  dmCustomPrompt: z.string().nullable(),
+  dmInstructions: z.string().nullable().default(null),
+  dmCustomPrompt: z.string().nullable().default(null),
 });
 export type DmSetupReply = z.infer<typeof DmSetupReplySchema>;
 
