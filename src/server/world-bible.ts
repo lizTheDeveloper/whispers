@@ -106,9 +106,11 @@ export class WorldBible {
     }
 
     const heldItems = this.db.prepare(
-      `SELECT i.name, e.name as holder_name
+      `SELECT i.name,
+              COALESCE(e.name, json_extract(c.definition, '$.name')) as holder_name
        FROM items i
        LEFT JOIN entities e ON i.holder_id = e.id
+       LEFT JOIN characters c ON i.holder_id = c.id
        WHERE i.campaign_id = ? AND i.holder_id IS NOT NULL`
     ).all(campaignId) as any[];
     if (heldItems.length > 0) {
