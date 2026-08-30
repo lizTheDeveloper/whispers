@@ -726,13 +726,17 @@ export class GameLoop {
   }
 
   private getCharacterSummaries(): string {
+    const charIds = Array.from(this.characters.keys());
     return Array.from(this.characters.values())
       .map(c => {
         const d = c.definition;
         const s = c.state;
-        const lastAction = this.transcript
+        const namePrefix = `${d.name}: `;
+        const recentActions = this.transcript
           .filter(m => m.role === 'character' && m.characterId === c.id)
-          .slice(-1)[0]?.content?.replace(`${d.name}: `, '') ?? '';
+          .slice(-5)
+          .map(m => m.content.replace(namePrefix, ''));
+        const lastAction = recentActions.slice(-1)[0] ?? '';
         const recentMemories = this.memoryStore.recall(c.id, 2);
         const mood = recentMemories.length > 0
           ? recentMemories.map(m => m.content).join('; ')
@@ -742,10 +746,25 @@ export class GameLoop {
           : s.whisperTrust > 0.4
           ? 'uncertain about the voice'
           : 'deeply distrusts the voice — create situations where GOOD advice would help them, forcing the player to earn back trust';
+
+        const behaviorHints: string[] = [];
+        if (recentActions.length >= 3) {
+          const cautious = /\b(look|observe|wait|cautious|careful|hide|watch|listen|stay)\b/i;
+          const social = /\b(talk|speak|ask|persuade|convince|argue|negotiate|confront|shout)\b/i;
+          const otherNames = charIds.filter(id => id !== c.id).map(id => this.characters.get(id)!.definition.name.split(' ')[0]!.toLowerCase());
+          const cautiousCount = recentActions.filter(a => cautious.test(a)).length;
+          const socialCount = recentActions.filter(a => social.test(a)).length;
+          const companionMentions = otherNames.length > 0 ? recentActions.filter(a => otherNames.some(n => a.toLowerCase().includes(n))).length : 0;
+          if (cautiousCount >= 3) behaviorHints.push('PLAYING TOO SAFE — force a confrontation they cannot avoid');
+          if (socialCount === 0 && recentActions.length >= 4) behaviorHints.push('NEVER TALKS TO ANYONE — introduce an NPC who blocks their path and demands conversation');
+          if (otherNames.length > 0 && companionMentions === 0 && recentActions.length >= 3) behaviorHints.push('IGNORING COMPANIONS — create a crisis that requires teamwork');
+        }
+
         let line = `${d.name}: ${d.highConcept} (trouble: "${d.trouble}") | Stress: ${s.stress}/3 | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints} | Trust: ${s.whisperTrust.toFixed(2)} (${whisperAttitude})`;
         if (lastAction) line += ` | Last: ${lastAction.slice(0, 60)}`;
         if (mood) line += ` | Mindset: ${mood.slice(0, 80)}`;
         if (s.inventory && s.inventory.length > 0) line += ` | Carrying: ${s.inventory.join(', ')}`;
+        if (behaviorHints.length > 0) line += ` | DM NOTE: ${behaviorHints.join('; ')}`;
         return line;
       })
       .join('\n');
