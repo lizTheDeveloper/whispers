@@ -233,6 +233,11 @@ export class GameLoop {
       };
     }
 
+    if (resolution.narration === 'The action unfolds...') {
+      const outcomeWord = resolution.outcome === 'failure' ? 'struggles with' : resolution.outcome === 'tie' ? 'barely manages' : 'pushes through';
+      resolution.narration = `${character.definition.name} ${outcomeWord} the attempt to ${decision.chosenAction.toLowerCase()}.`;
+    }
+
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
         this.applyStateChange(change.characterId, change.field, change.action, change.value);

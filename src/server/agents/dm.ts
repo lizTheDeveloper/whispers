@@ -34,10 +34,10 @@ export class DmAgent {
     const roundCount = Math.floor(turnCount / partySize);
     const sceneNum = pacing?.sceneNumber ?? 1;
 
-    // Session-level three-act structure
-    const sessionArc = sceneNum <= 2
+    // Session-level three-act structure (Act III at scene 4+ so a ~25-turn session reaches resolution)
+    const sessionArc = sceneNum <= 1
       ? 'ACT I (Setup): Establish the world, introduce the central mystery or threat. Plant clues and introduce key NPCs. The dramatic question should be clear by scene end.'
-      : sceneNum <= 4
+      : sceneNum <= 3
       ? 'ACT II (Confrontation): Escalate complications. Alliances are tested, secrets are revealed, the threat becomes personal. Make the characters pay a cost for progress.'
       : 'ACT III (Resolution): Drive toward the climax. The dramatic question MUST be answered this act. Converge all threads toward a final confrontation or revelation. After the climax, give a brief denouement showing consequences.';
 
@@ -73,7 +73,7 @@ export class DmAgent {
       ? `\nDice result: ${diceResult.description} (total: ${diceResult.total}). Use this roll to determine the outcome — do not invent your own. In FATE, add the relevant skill rank to the total and compare against the difficulty you set. Failures and success-with-cost make better stories than constant success.`
       : '';
 
-    const consequenceGuide = (sceneNumber ?? 1) >= 5
+    const consequenceGuide = (sceneNumber ?? 1) >= 4
       ? ' In Act III, failures should feel final and successes should resolve plot threads decisively.'
       : '';
 
