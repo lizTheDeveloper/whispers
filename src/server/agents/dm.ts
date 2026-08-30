@@ -107,10 +107,13 @@ export class DmAgent {
       : '';
     const sceneLabel = pacing ? `Scene ${pacing.sceneNumber}, round ${roundCount + 1} (turn ${turnCount + 1})` : 'Scene';
 
+    const { systemPrompt, criticalReminder, narrationHint } = this.buildSystemPrompt(ctx);
+    const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
+
     return callLlm({
       messages: [
-        { role: 'system', content: this.buildSystemPrompt(ctx) },
-        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}${locationHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.${partyHint}\n\ncurrentLocationName MUST be an EXACT name from the "Known locations" or "UNVISITED locations" list in the world state (copy-paste the name exactly). NEVER invent a new location name when UNVISITED locations exist — use one of those instead. If the world state shows UNVISITED locations, actively move the party toward one of them.\n\nRespond as JSON: { "narration": "...", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `${sceneLabel}${charBlock}\n\nWorld state:\n${ctx.worldSummary}\n\nRecent transcript:\n${recentTranscript}\n\nSession arc: ${sessionArc}\n\nPacing: ${pacingHint}${locationHint}\n\nNarrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.${partyHint}\n\ncurrentLocationName MUST be an EXACT name from the "Known locations" or "UNVISITED locations" list in the world state (copy-paste the name exactly). NEVER invent a new location name when UNVISITED locations exist — use one of those instead. If the world state shows UNVISITED locations, actively move the party toward one of them.${personalityReminder}\n\nRespond as JSON: { "narration": "2-4 vivid sentences.${narrationHint}", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }` },
       ],
       schema: DmNarrationSchema,
       maxTokens: 2048,
@@ -156,9 +159,12 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       charBlock += '\n';
     }
 
+    const { systemPrompt, criticalReminder, narrationHint } = this.buildSystemPrompt(ctx);
+    const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
+
     return callLlm({
       messages: [
-        { role: 'system', content: this.buildSystemPrompt(ctx) },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: `${charBlock}${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n\nRelevant rules:\n${ruleContext}\n\nResolve ${characterInfo ? characterInfo.name + "'s" : 'this'} action using the FATE steps above. A wounded character (high stress, existing consequences) should face HIGHER difficulty (+1 per consequence). Apply meaningful state changes:
 - "tie": minor cost (1 stress, or reveal information to an enemy, or lose time)
 - "success-with-cost": serious cost (2 stress, or a new consequence like "Twisted Ankle" or "Shaken Confidence", or an NPC turns hostile)
@@ -168,7 +174,7 @@ NARRATION RULES: Write the result in THIRD PERSON using the ACTING CHARACTER's n
 NPC DIALOGUE: If the action involves talking to, questioning, persuading, or confronting an NPC, the narration MUST include the NPC's spoken response in quotation marks. NPCs who respond with actual words create real drama — "I'll tell you nothing, sellsword" hits harder than "the merchant refuses."
 COOPERATIVE ACTIONS: If the action references a party member by name (coordinating, protecting, assisting), lower the difficulty by 1 and narrate how the teamwork helps. If the action HARMS or abandons a party member, add stress to BOTH characters — betrayal costs everyone.
 INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If they USE an item destructively (a potion consumed, a key that breaks), add {"field":"inventory","action":"remove","value":"<item name>"} to stateChanges. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"}.
-FATE POINT ECONOMY: If this action touches the character's trouble aspect or a consequence, COMPEL it — add {"field":"fatePoints","action":"set","value":${(characterInfo?.fatePoints ?? 3) + 1}} and narrate the complication. If the character spent effort invoking an aspect (referenced it in their action), spend a fate point: {"field":"fatePoints","action":"set","value":${Math.max(0, (characterInfo?.fatePoints ?? 3) - 1)}}.${consequenceGuide}\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
+FATE POINT ECONOMY: If this action touches the character's trouble aspect or a consequence, COMPEL it — add {"field":"fatePoints","action":"set","value":${(characterInfo?.fatePoints ?? 3) + 1}} and narrate the complication. If the character spent effort invoking an aspect (referenced it in their action), spend a fate point: {"field":"fatePoints","action":"set","value":${Math.max(0, (characterInfo?.fatePoints ?? 3) - 1)}}.${consequenceGuide}${personalityReminder}\n\nRespond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens.${narrationHint}", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }\nstateChanges must be objects, not strings. Use [] if no mechanical changes apply.` },
       ],
       schema: DmResolutionSchema,
       maxTokens: 1024,
@@ -277,9 +283,10 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     }
   }
 
-  private buildSystemPrompt(ctx: DmContext): { systemPrompt: string; criticalReminder: string } {
+  private buildSystemPrompt(ctx: DmContext): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
     let prompt: string;
     let criticalSection = '';
+    let narrationHint = '';
     if (ctx.dmCustomPrompt) {
       prompt = ctx.dmCustomPrompt + '\n';
     } else {
@@ -288,6 +295,13 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
       if (criticalIdx >= 0) {
         criticalSection = '\n' + presetText.slice(criticalIdx);
         presetText = presetText.slice(0, criticalIdx).trimEnd();
+        if (ctx.preset === 'professor') {
+          narrationHint = ' IMPORTANT: End the narration with a parenthetical teaching aside like (Empathy +4 vs Good difficulty = three shifts of success!)';
+        } else if (ctx.preset === 'chronicler') {
+          narrationHint = ' IMPORTANT: Include at least one non-visual sense (sound, smell, touch, or taste) in the narration';
+        } else if (ctx.preset === 'trickster') {
+          narrationHint = ' IMPORTANT: Include dramatic irony, dark humor, or a hidden cost in the narration';
+        }
       }
       prompt = presetText ? presetText + '\n' : `You are a TTRPG Dungeon Master with the "${ctx.preset}" personality.\n`;
     }
@@ -322,7 +336,7 @@ Storytelling principles:
 
     if (criticalSection) prompt += criticalSection;
     prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
-    return { systemPrompt: prompt, criticalReminder: criticalSection.trim() };
+    return { systemPrompt: prompt, criticalReminder: criticalSection.trim(), narrationHint };
   }
 
   private lookupRules(systemId: string, query: string): string {
