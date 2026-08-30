@@ -211,7 +211,8 @@ export class GameLoop {
     const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
-    const memories = this.memoryStore.recall(characterId, 8, sceneNarration);
+    const recallContext = [sceneNarration, charWorldContext].filter(Boolean).join('\n');
+    const memories = this.memoryStore.recall(characterId, 8, recallContext);
     if (memories.length > 0) console.log(`[memory] ${character.definition.name}: recalled ${memories.length} memories for context`);
 
     const partyMembers = Array.from(this.characters.entries())
