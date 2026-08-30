@@ -22,7 +22,7 @@ export class CharacterAgent {
     return callLlm({
       messages: [
         { role: 'system', content: charPrompt },
-        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Reference NPCs, items, or locations you know about.\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
+        { role: 'user', content: `Current scene:\n${ctx.sceneNarration}${worldBlock}\n\nRecent events:\n${recentTranscript}\n\nPropose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a goal — investigate a mystery, help an ally, confront a threat, or explore the unknown. Reference NPCs, items, or locations you know about. Make at least one action SOCIAL (talk to someone, persuade, deceive, intimidate).\n\nRespond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }` },
       ],
       schema: ActionProposalSchema,
       maxTokens: 768,
@@ -41,7 +41,7 @@ export class CharacterAgent {
         : 'A faint, distrusted voice murmurs at the edge of your thoughts';
       const guidance = trust > 0.5
         ? 'The voice has guided you before. Following it feels natural — but ALWAYS evaluate the advice on its own merits. Even a trusted voice can give bad advice. If the suggestion would clearly harm you, betray an ally, or be suicidal/reckless, IGNORE it and set a negative trustDelta.'
-        : 'You\'re wary of this voice. Follow only if the advice aligns with your instincts and common sense.';
+        : 'You\'re wary of this voice — it has led you astray before. BUT: you are not deaf. If this specific advice is CLEARLY safe and helpful on its own merits (protects an ally, avoids known danger, uses your strengths wisely), you CAN follow it and give a small positive trustDelta. The voice can earn back trust through consistently good advice. Only ignore advice that is vague, risky, or self-serving.';
       whisperText = `\n${voiceQuality}: "${whisper}"\nTrust level: ${trust.toFixed(2)} (0=ignore, 1=obey). ${guidance}
 
 trustDelta rules (ALWAYS set a non-zero value when a whisper is present):

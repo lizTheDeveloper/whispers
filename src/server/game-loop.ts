@@ -302,6 +302,22 @@ export class GameLoop {
       resolution.narration = `${character.definition.name} ${outcomeWord} the attempt to ${decision.chosenAction.toLowerCase()}.`;
     }
 
+    if (diceResult && resolution.difficulty != null && resolution.skill && campaign.system_id === 'fate-core') {
+      const skillKey = Object.keys(character.definition.skills).find(k => k.toLowerCase() === resolution.skill!.toLowerCase());
+      const skillRank = skillKey ? (character.definition.skills[skillKey] ?? 0) : 0;
+      const effort = diceResult.total + skillRank;
+      const shifts = effort - resolution.difficulty;
+      const correctOutcome: 'success' | 'failure' | 'tie' | 'success-with-cost' =
+        shifts >= 1 ? 'success'
+        : shifts === 0 ? 'tie'
+        : shifts >= -2 ? 'success-with-cost'
+        : 'failure';
+      if (resolution.outcome !== correctOutcome) {
+        console.log(`[game-loop] FATE outcome corrected: DM said ${resolution.outcome}, math says ${correctOutcome} (effort ${effort} vs diff ${resolution.difficulty}, shifts ${shifts})`);
+        resolution.outcome = correctOutcome;
+      }
+    }
+
     const affectedCharIds = new Set<string>();
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
@@ -482,7 +498,12 @@ export class GameLoop {
         const mood = recentMemories.length > 0
           ? recentMemories.map(m => m.content).join('; ')
           : '';
-        let line = `${d.name}: ${d.highConcept} | Stress: ${s.stress} | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints} | Trust: ${s.whisperTrust.toFixed(2)}`;
+        const whisperAttitude = s.whisperTrust > 0.7
+          ? 'trusts the voice'
+          : s.whisperTrust > 0.4
+          ? 'uncertain about the voice'
+          : 'deeply distrusts the voice — create situations where GOOD advice would help them, forcing the player to earn back trust';
+        let line = `${d.name}: ${d.highConcept} | Stress: ${s.stress} | Consequences: ${s.consequences.join(', ') || 'none'} | FP: ${s.fatePoints} | Trust: ${s.whisperTrust.toFixed(2)} (${whisperAttitude})`;
         if (lastAction) line += ` | Last: ${lastAction.slice(0, 60)}`;
         if (mood) line += ` | Mindset: ${mood.slice(0, 80)}`;
         return line;
