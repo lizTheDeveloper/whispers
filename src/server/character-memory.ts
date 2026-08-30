@@ -209,10 +209,10 @@ export class CharacterMemoryStore {
         .replace(/\*[^*]*\*/g, '')
         .trim();
       if (!content || content.length < 10 || content.startsWith('*') || content.startsWith('{')) {
-        content = `I saw ${actorName} ${action.slice(0, 80).toLowerCase()}.`;
+        content = this.fallbackObservation(actorName, action);
       }
     } catch {
-      content = `I saw ${actorName} ${action.slice(0, 80).toLowerCase()}.`;
+      content = this.fallbackObservation(actorName, action);
     }
 
     this.db.prepare(
@@ -220,6 +220,11 @@ export class CharacterMemoryStore {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(randomBytes(16).toString('hex'), observerId, campaignId, sceneNumber, turnNumber, 'social', content, 0, 0.4, 0.04);
     console.log(`[memory] ${observerName} observed ${actorName}: "${content.slice(0, 60)}"`);
+  }
+
+  private fallbackObservation(actorName: string, action: string): string {
+    const cleaned = action.replace(/^I\s+/i, '').slice(0, 80);
+    return `I watched ${actorName} ${cleaned}.`;
   }
 
   decayMemories(characterId: string): void {
