@@ -345,13 +345,18 @@ export class GameLoop {
     }
 
     const fpChanged = resolution.stateChanges.some(c => c.field === 'fatePoints');
-    if (!fpChanged && (resolution.outcome === 'failure' || resolution.outcome === 'success-with-cost')) {
+    const lastCompelTurn = (character as any)._lastCompelTurn ?? -Infinity;
+    if (!fpChanged && (resolution.outcome === 'failure' || resolution.outcome === 'success-with-cost') && this.state.currentTurn - lastCompelTurn >= 3) {
       const troubleWords = character.definition.trouble.toLowerCase().split(/\W+/).filter(w => w.length > 3);
       const narrationLower = (resolution.narration + ' ' + decision.chosenAction).toLowerCase();
-      const troubleRelevant = troubleWords.some(w => narrationLower.includes(w));
+      const matchCount = troubleWords.filter(w => narrationLower.includes(w)).length;
+      const troubleRelevant = matchCount >= 2 || (matchCount === 1 && troubleWords.some(w => w.length >= 5 && narrationLower.includes(w)));
       if (troubleRelevant) {
         character.state.fatePoints = Math.min(character.state.fatePoints + 1, 5);
+        (character as any)._lastCompelTurn = this.state.currentTurn;
+        console.log(`[game-loop] Compel triggered: "${character.definition.trouble}" matched in narration — ${character.definition.name} now at ${character.state.fatePoints} FP`);
         this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
+        this.broadcastFn({ type: 'narration', text: `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point]`, sceneNumber: this.state.currentScene });
         affectedCharIds.add(characterId);
       }
     }
