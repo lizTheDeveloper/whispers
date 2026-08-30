@@ -13,18 +13,22 @@
     { "name": "The Grand Ballroom", "description": "Vast hall with marble floors, a crystal chandelier, and a string quartet", "terrain": "interior" },
     { "name": "The Wine Cellar", "description": "Cool stone rooms beneath the manor, rows of dusty bottles", "terrain": "underground" },
     { "name": "The Duchess's Study", "description": "Private room upstairs, locked — contains her correspondence", "terrain": "interior" },
-    { "name": "The Garden Terrace", "description": "Moonlit stone terrace overlooking a hedge maze", "terrain": "exterior" }
+    { "name": "The Garden Terrace", "description": "Moonlit stone terrace overlooking a hedge maze", "terrain": "exterior" },
+    { "name": "The Servants' Corridor", "description": "Narrow passage behind the walls where staff move unseen between rooms", "terrain": "interior" },
+    { "name": "The Music Gallery", "description": "Upper balcony above the ballroom with curtained alcoves, perfect for eavesdropping", "terrain": "interior" }
   ],
   "plotHooks": [
     "Someone plans to assassinate the Duchess before midnight",
     "Lord Cassius has been seen whispering with an unknown guest near the wine cellar",
     "The Phantom in the white mask may be the ghost of the Duchess's late husband",
-    "Mira the servant knows more than she's told — but someone is watching her"
+    "Mira the servant knows more than she's told — but someone is watching her",
+    "A vial of poison was found hidden behind a wine rack in the cellar"
   ],
   "items": [
     { "name": "Ornate Mask", "description": "Your mask for the ball, conceals your identity" },
     { "name": "Mira's Note", "description": "Scrap of paper: 'The wine. Watch the wine.'" },
-    { "name": "Duchess's Signet Ring", "description": "Spotted on the ballroom floor, recently dropped" }
+    { "name": "Duchess's Signet Ring", "description": "Spotted on the ballroom floor, recently dropped" },
+    { "name": "Poison Vial", "description": "Small glass vial with residue, hidden behind wine bottles in the cellar" }
   ],
   "difficulty": "intermediate"
 }
