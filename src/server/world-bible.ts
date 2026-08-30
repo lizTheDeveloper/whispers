@@ -156,7 +156,12 @@ export class WorldBible {
         }
       }
       for (const item of diff.newItems) {
-        this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: item.properties ?? {}, holderId: item.holderId ?? null, locationId: item.locationId ?? null });
+        const existingItem = this.db.prepare('SELECT id FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, item.name) as any;
+        if (existingItem) {
+          if (item.description) this.db.prepare('UPDATE items SET description = ? WHERE id = ?').run(item.description, existingItem.id);
+        } else {
+          this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: item.properties ?? {}, holderId: item.holderId ?? null, locationId: item.locationId ?? null });
+        }
       }
       for (const evt of diff.newEvents) {
         if (evt.outcome) {
