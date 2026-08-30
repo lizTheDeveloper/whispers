@@ -268,10 +268,15 @@ export class GameLoop {
       /^(caution|careful|cautious|vigilant|wary)/i,
     ];
     if (genericPatterns.some(p => p.test(decision.innerThought))) {
-      const actionSnippet = (decision.chosenAction.replace(/^I\s+/i, '').split(/[.!]/)[0] ?? '').trim().slice(0, 50);
-      const memoryHook = memories.length > 0 ? (memories[0]!.content.split(/[.!]/)[0] ?? '').trim().slice(0, 40) : null;
+      const actionSnippet = decision.chosenAction
+        .replace(/^I\s+/i, '')
+        .replace(/^(try|attempt|decide|choose|want|drawing on|invoking|using) (to\s+)?/i, '')
+        .split(/[.!]/)[0]?.trim().slice(0, 50) ?? 'act';
+      const memoryHook = memories.length > 0
+        ? memories[0]!.content.replace(/^I\s+/i, '').split(/[.!]/)[0]?.trim().slice(0, 50)
+        : null;
       const contextDetail = memoryHook
-        ? `Remembering that ${memoryHook.toLowerCase()}, I'll ${actionSnippet.toLowerCase()}`
+        ? `Last time, ${memoryHook.toLowerCase()} — now I need to ${actionSnippet.toLowerCase()}`
         : `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}`;
       decision.innerThought = `${contextDetail}.`;
     }
