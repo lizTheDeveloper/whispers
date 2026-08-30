@@ -29,7 +29,6 @@ export class GameLoop {
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private stopped = false;
   private sceneTurnCount = 0;
-  private currentLocationId: string | null = null;
 
   constructor(
     private db: Database.Database,
@@ -108,7 +107,7 @@ export class GameLoop {
       return;
     }
 
-    const worldSummary = this.worldBible.getSummary(this.campaignId, this.currentLocationId ?? undefined);
+    const worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     let narration;
     try {
       narration = await this.dm.narrate({
@@ -138,7 +137,7 @@ export class GameLoop {
     if (narration.currentLocationName) {
       const loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
       if (loc) {
-        this.currentLocationId = loc.id;
+        this.state.currentLocationId = loc.id;
         if (narration.activeNpcs.length > 0) {
           console.log(`[game-loop] Location: "${loc.name}" — NPCs present: ${narration.activeNpcs.join(', ')}`);
         }
@@ -195,8 +194,8 @@ export class GameLoop {
     this.sceneTurnCount++;
     this.state.activeCharacterId = characterId;
 
-    const worldSummary = this.worldBible.getSummary(this.campaignId, this.currentLocationId ?? undefined);
-    const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.currentLocationId ?? undefined);
+    const worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
     const memories = this.memoryStore.recall(characterId, 8, sceneNarration);
@@ -254,6 +253,12 @@ export class GameLoop {
         whisperedInfluence: 'ignored' as const,
         trustDelta: 0,
       };
+    }
+
+    const genericThoughts = ['something feels off', 'i need to be careful', 'i should be cautious', 'something is wrong'];
+    if (genericThoughts.some(g => decision.innerThought.toLowerCase().startsWith(g))) {
+      const actionSnippet = decision.chosenAction.replace(/^I\s+/i, '').split(/[.!]/)[0].trim().slice(0, 50);
+      decision.innerThought = `I'm going to ${actionSnippet.toLowerCase()} — ${character.state.stress >= 2 ? 'the pressure is mounting and I cannot afford another mistake' : 'this is my best move given what I know'}.`;
     }
 
     this.addTranscript('character', `${character.definition.name}: ${decision.chosenAction}`, characterId);
@@ -425,6 +430,7 @@ export class GameLoop {
   private async maybeCompactTranscript(): Promise<void> {
     if (this.transcript.length < COMPACTION_THRESHOLD) return;
 
+    console.log(`[game-loop] Transcript compaction triggered at ${this.transcript.length} messages (threshold: ${COMPACTION_THRESHOLD})`);
     const extractCount = this.transcript.length - COMPACTION_KEEP_RECENT;
     const toExtract = this.transcript.slice(0, extractCount);
     const toKeep = this.transcript.slice(extractCount);
@@ -443,6 +449,7 @@ export class GameLoop {
       { role: 'system' as const, content: `[Session recap] ${summary}`, timestamp: new Date().toISOString() },
       ...toKeep,
     ];
+    console.log(`[game-loop] Compaction complete: ${extractCount} messages → 1 summary + ${toKeep.length} kept = ${this.transcript.length} total`);
   }
 
   private async endScene(): Promise<void> {
