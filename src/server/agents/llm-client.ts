@@ -94,7 +94,11 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       if (!response.ok) throw new Error(`LLM proxy returned ${response.status}`);
 
       const data = await response.json();
-      const text: string = (data?.text?.trim() ?? data?.choices?.[0]?.message?.content?.trim() ?? '') as string;
+      let text: string = (data?.text?.trim() ?? data?.choices?.[0]?.message?.content?.trim() ?? '') as string;
+
+      // Strip Qwen3 thinking tags (closed or unclosed at end of output)
+      text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
+      if (text.startsWith('<think>')) text = '';
 
       if (!schema) return text as CallLlmResult<S>;
 
