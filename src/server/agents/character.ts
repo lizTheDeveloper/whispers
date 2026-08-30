@@ -86,6 +86,9 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `Skills: ${skillLine}`,
       `Your strengths are ${topSkills} — lean into these when proposing actions. A character with high Lore uses knowledge, not swords. A character with high Fight charges in. Play to YOUR strengths.`,
       `Current state: ${ctx.state.stress}/3 stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
+      ctx.state.fatePoints > 0
+        ? `You have ${ctx.state.fatePoints} fate point${ctx.state.fatePoints > 1 ? 's' : ''} — invoke your aspects ("${d.aspects[0]}", "${d.trouble}") in your action description to spend one for a bonus. Example: "I use my ${d.aspects[0]} to..."`
+        : 'You have NO fate points — you cannot invoke aspects for bonuses. Play cautiously or accept your trouble to earn more.',
       ctx.state.consequences.length > 0
         ? `Consequences: ${ctx.state.consequences.join(', ')} — these injuries and conditions LIMIT what you can do. A broken arm means no climbing. A frightened mind means hesitation. Propose actions that acknowledge your wounds.`
         : `Consequences: none`,
