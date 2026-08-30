@@ -114,6 +114,14 @@ export class WorldBible {
     if (items.length > 0) {
       parts.push('Available items: ' + items.map((i: any) => i.name).join(', '));
     }
+    const rels = this.db.prepare(`SELECT r.type, r.description, e1.name as a_name, e2.name as b_name
+      FROM relationships r
+      JOIN entities e1 ON r.entity_a_id = e1.id
+      JOIN entities e2 ON r.entity_b_id = e2.id
+      WHERE r.campaign_id = ? ORDER BY r.rowid DESC LIMIT 5`).all(campaignId) as any[];
+    if (rels.length > 0) {
+      parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}`).join(', '));
+    }
     const currentScene = this.db.prepare('SELECT MAX(scene_number) as s FROM events WHERE campaign_id = ?').get(campaignId) as any;
     const maxScene = currentScene?.s ?? 0;
     const unresolved = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL AND scene_number > ? LIMIT 3').all(campaignId, maxScene - 5) as any[];
