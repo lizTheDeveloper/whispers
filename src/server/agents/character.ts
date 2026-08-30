@@ -84,8 +84,13 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `Aspects: ${d.aspects.join(', ')}`,
       `Skills: ${skillLine}`,
       `Your strengths are ${topSkills} — lean into these when proposing actions. A character with high Lore uses knowledge, not swords. A character with high Fight charges in. Play to YOUR strengths.`,
-      `Current state: ${ctx.state.stress} stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
-      `Consequences: ${ctx.state.consequences.length > 0 ? ctx.state.consequences.join(', ') : 'none'}`,
+      `Current state: ${ctx.state.stress}/3 stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
+      ctx.state.consequences.length > 0
+        ? `Consequences: ${ctx.state.consequences.join(', ')} — these injuries and conditions LIMIT what you can do. A broken arm means no climbing. A frightened mind means hesitation. Propose actions that acknowledge your wounds.`
+        : `Consequences: none`,
+      ctx.state.stress >= 2
+        ? `You are badly stressed (${ctx.state.stress}/3). You are rattled, exhausted, or hurt. Favor cautious, defensive, or desperate actions over bold ones.`
+        : '',
       memoryBlock,
       `\nAlways respond with valid JSON matching the requested format.`,
     ].filter(Boolean).join('\n');
