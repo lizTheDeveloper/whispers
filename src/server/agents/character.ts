@@ -215,9 +215,15 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       ? `\nYour companion just acted: "${companionRecent[0]}". Choose something that COMPLEMENTS their action, not duplicates it.`
       : '';
 
+    const memoryGoals = this.deriveGoals(ctx.memories ?? []);
+    const memoryGoalBlock = memoryGoals.length > 0
+      ? `\n<memory_goals>\nYour active goals from past experience:\n${memoryGoals.map(g => `- ${g}`).join('\n')}\nLet these goals inform your choice — pursue, advance, or reference them.\n</memory_goals>`
+      : '';
+
     const decisionMessage = [
       `<scene>\n${ctx.sceneNarration}\n</scene>`,
       `\n<events>\n${recentTranscript}\n</events>`,
+      memoryGoalBlock,
       whisperText ? `\n<whisper>${whisperText}\n</whisper>` : '',
       itemReminder ? `\n<inventory>${itemReminder}\n</inventory>` : '',
       varietyBlock ? `\n<recent_actions>${varietyBlock}\n</recent_actions>` : '',
@@ -284,6 +290,22 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
         : '',
       `\nAlways respond with valid JSON matching the requested format.`,
     ].filter(Boolean).join('\n');
+  }
+
+  private deriveGoals(memories: CharacterMemory[]): string[] {
+    if (memories.length === 0) return [];
+    const goals: string[] = [];
+    for (const m of memories) {
+      if (m.type === 'discovery' && m.importance >= 0.4) {
+        goals.push(`Investigate: ${m.content}`);
+      } else if (m.type === 'social' && m.importance >= 0.5 && m.emotionalValence < -0.2) {
+        goals.push(`Confront or resolve: ${m.content}`);
+      } else if (m.type === 'outcome' && m.emotionalValence < -0.3 && m.importance >= 0.4) {
+        goals.push(`Avoid repeating: ${m.content}`);
+      }
+      if (goals.length >= 2) break;
+    }
+    return goals;
   }
 
   private formatMemories(memories: CharacterMemory[]): string {
