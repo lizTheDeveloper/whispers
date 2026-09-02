@@ -239,7 +239,7 @@ export class GameLoop {
     const escalateThreshold = partySize <= 1 ? 6 : Math.max(4, 7 - partySize);
     const minRounds = this.state.currentScene <= 1
       ? (partySize >= 3 ? 4 : partySize === 2 ? 4 : 5)
-      : this.state.currentScene >= 5 ? 3
+      : this.state.currentScene >= 4 ? 3
       : escalateThreshold;
     const allowSceneEnd = roundCount >= minRounds || forceSceneEnd;
     if (narration.isSceneEnd && !allowSceneEnd) {
