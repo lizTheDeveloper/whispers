@@ -153,6 +153,7 @@ export class GameLoop {
         locationTurnCount: this.locationTurnCount,
         currentLocationName: this.lastLocationName || undefined,
         knownLocationNames: this.worldBible.getAllLocationNames(this.campaignId),
+        unvisitedLocationNames: this.worldBible.getUnvisitedLocationNames(this.campaignId),
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);

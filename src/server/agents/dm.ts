@@ -31,6 +31,7 @@ export interface ScenePacing {
   locationTurnCount?: number;
   currentLocationName?: string;
   knownLocationNames?: string[];
+  unvisitedLocationNames?: string[];
 }
 
 interface DmContext {
@@ -111,8 +112,13 @@ export class DmAgent {
     const { systemPrompt, criticalReminder, narrationHint } = this.buildSystemPrompt(ctx);
     const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
 
+    const unvisitedSet = new Set(pacing?.unvisitedLocationNames ?? []);
+    const hasUnvisited = unvisitedSet.size > 0;
     const locationList = pacing?.knownLocationNames && pacing.knownLocationNames.length > 0
-      ? `\n<valid_locations>\nYou MUST pick one of these EXACT names for currentLocationName:\n${pacing.knownLocationNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}\n</valid_locations>`
+      ? `\n<valid_locations>\nYou MUST pick one of these EXACT names for currentLocationName:\n${pacing.knownLocationNames.map((n, i) => {
+          const marker = unvisitedSet.has(n) ? ' ← UNVISITED (move the story here!)' : '';
+          return `${i + 1}. ${n}${marker}`;
+        }).join('\n')}${hasUnvisited ? '\nPrioritize UNVISITED locations — each holds unique content the players haven\'t seen yet.' : ''}\n</valid_locations>`
       : '';
 
     const userMessage = [

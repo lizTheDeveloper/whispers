@@ -291,6 +291,11 @@ export class WorldBible {
     return rows.map(r => r.name as string);
   }
 
+  getUnvisitedLocationNames(campaignId: string): string[] {
+    const rows = this.db.prepare('SELECT name FROM locations WHERE campaign_id = ? AND visited = 0').all(campaignId) as any[];
+    return rows.map(r => r.name as string);
+  }
+
   snapToKnownLocation(campaignId: string, name: string): string | null {
     const exact = this.getLocationByName(campaignId, name);
     if (exact) return exact.name;
