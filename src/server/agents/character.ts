@@ -323,7 +323,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
     ].filter(Boolean).join('\n');
   }
 
-  private deriveGoals(memories: CharacterMemory[]): string[] {
+  deriveGoals(memories: CharacterMemory[]): string[] {
     if (memories.length === 0) return [];
     const goals: string[] = [];
     for (const m of memories) {

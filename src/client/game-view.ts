@@ -143,6 +143,14 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       if (msg.trustHint) parts.push(msg.trustHint);
       (moodEl as HTMLElement).textContent = parts.join(' ');
     }
+    const existingGoals = whisperArea.querySelector('.whisper-goals');
+    if (existingGoals) existingGoals.remove();
+    if (msg.goals && msg.goals.length > 0) {
+      const goalsDiv = document.createElement('div');
+      goalsDiv.className = 'whisper-goals';
+      goalsDiv.innerHTML = msg.goals.map(g => `<span class="goal-tag">${g}</span>`).join('');
+      whisperArea.insertBefore(goalsDiv, whisperInput);
+    }
     const existingSuggestions = whisperArea.querySelector('.whisper-suggestions');
     if (existingSuggestions) existingSuggestions.remove();
     if (msg.suggestions && msg.suggestions.length > 0) {

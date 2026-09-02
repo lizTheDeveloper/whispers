@@ -141,9 +141,8 @@ export class GameLoop {
     if (npcHint) worldSummary += '\n' + npcHint;
     const whisperHint = this.getWhisperTensionHint();
     if (whisperHint) worldSummary += '\n' + whisperHint;
-    let narration;
-    try {
-      narration = await this.dm.narrate({
+    const narrateArgs = {
+      ctx: {
         preset: campaign.dm_preset,
         houseRules: campaign.house_rules,
         dmInstructions: campaign.dm_instructions ?? null,
@@ -152,7 +151,8 @@ export class GameLoop {
         worldSummary,
         transcript: this.transcript,
         systemId: campaign.system_id,
-      }, {
+      },
+      pacing: {
         sceneNumber: this.state.currentScene,
         sceneTurnCount: this.sceneTurnCount,
         characterSummaries: this.getCharacterSummaries(),
@@ -163,7 +163,15 @@ export class GameLoop {
         knownLocationNames: this.worldBible.getAllLocationNames(this.campaignId),
         unvisitedLocationNames: this.worldBible.getUnvisitedLocationNames(this.campaignId),
         isFinale: this.state.currentScene >= 4 && (this.state.currentTurn ?? 0) >= 18,
-      });
+      },
+    };
+    let narration;
+    try {
+      narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
+      if (this.isDegenerateNarration(narration.narration)) {
+        console.log(`[game-loop] Degenerate narration detected ("${narration.narration.slice(0, 40)}..."), retrying`);
+        narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
+      }
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
       narration = { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [], isSceneEnd: false };
@@ -331,7 +339,8 @@ export class GameLoop {
     const mood = this.buildCharacterMood(character, memories);
     const trustHint = this.buildTrustHint(character);
     const suggestions = this.buildWhisperSuggestions(character, proposals.actions.map(a => a.description), sceneNarration);
-    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions });
+    const goals = this.characterAgent.deriveGoals(memories);
+    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined });
 
     const whisper = await this.waitForWhisper(30_000);
     this.state.awaitingWhisper = false;
@@ -1119,6 +1128,14 @@ export class GameLoop {
       case 'dnd-5e': return '1d20';
       default: return '4dF';
     }
+  }
+
+  private isDegenerateNarration(text: string): boolean {
+    const stripped = text.replace(/[.\s]+/g, ' ').trim();
+    if (stripped.length < 40) return true;
+    if (/^the scene (continues|goes on|proceeds)/i.test(stripped)) return true;
+    if (/^(nothing happens|time passes|the story moves)/i.test(stripped)) return true;
+    return false;
   }
 
   private buildCharacterMood(character: { definition: CharacterDefinition; state: CharacterState; id: string }, memories: Array<{ content: string; type: string; emotionalValence: number }>): string {

@@ -728,6 +728,23 @@ button:disabled {
   box-shadow: none;
 }
 
+.whisper-goals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  width: 100%;
+  margin-bottom: 0.35rem;
+}
+.goal-tag {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  background: rgba(255, 180, 50, 0.1);
+  color: #e0a030;
+  border: 1px solid rgba(255, 180, 50, 0.25);
+  border-radius: 4px;
+  font-family: Georgia, serif;
+}
+
 /* ─── DM Question Panel ─── */
 
 .dm-question-panel {
