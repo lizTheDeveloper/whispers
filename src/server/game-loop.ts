@@ -272,6 +272,13 @@ export class GameLoop {
     const character = this.characters.get(characterId);
     if (!character) return;
 
+    if (character.state.consequences.includes('Taken Out (recovering)')) {
+      console.log(`[game-loop] Skipping ${character.definition.name} — taken out and recovering`);
+      this.state.currentTurn++;
+      this.sceneTurnCount++;
+      return;
+    }
+
     this.state.currentTurn++;
     this.sceneTurnCount++;
     this.state.activeCharacterId = characterId;
@@ -882,7 +889,7 @@ export class GameLoop {
       });
       const text = epilogue.trim();
       if (text && text.length > 20) {
-        this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
+        this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene });
         console.log(`[game-loop] Epilogue generated (${text.length} chars)`);
       }
     } catch (e) {
@@ -1041,11 +1048,16 @@ export class GameLoop {
     const allText = this.transcript.map(m => m.content).join(' ').toLowerCase();
     const charNames = new Set(Array.from(this.characters.values()).map(c => c.definition.name.toLowerCase()));
 
+    const skipWords = new Set([...TITLES, 'the', 'a', 'an', 'old', 'young', 'great', 'dark', 'tall']);
+    const npcSearchTerm = (name: string): string => {
+      const words = name.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !skipWords.has(w));
+      return words[0] ?? name.toLowerCase().split(/\s+/).pop()!;
+    };
     const counts: Array<{ name: string; count: number }> = npcs
       .filter(n => !charNames.has(n.name.toLowerCase()))
       .map(n => ({
         name: n.name,
-        count: (allText.match(new RegExp(n.name.toLowerCase().split(/\s+/)[0]!, 'g')) ?? []).length,
+        count: (allText.match(new RegExp(npcSearchTerm(n.name), 'g')) ?? []).length,
       }));
 
     const maxCount = Math.max(...counts.map(c => c.count), 0);
