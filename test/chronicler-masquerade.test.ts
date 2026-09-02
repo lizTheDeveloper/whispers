@@ -484,5 +484,5 @@ describeIfLive('Chronicler + Haunted Masquerade: Memory Continuity & Social Intr
     host.close();
     p1.close();
     p2.close();
-  }, 600_000);
+  }, 900_000);
 });

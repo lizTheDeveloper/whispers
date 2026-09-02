@@ -112,8 +112,9 @@ export class CharacterAgent {
           .slice(-2)
           .map(m => m.content)
       : [];
+    const companionNames = (ctx.partyMembers ?? []).map(p => p.name.split(' ')[0]).join(', ');
     const companionBlock = companionActions.length > 0
-      ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — if they fought, you investigate; if they protected, you scout ahead; if they talked, you watch for threats. Complement, don't copy.`
+      ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — complement them. At least one proposed action MUST reference ${companionNames} BY NAME — "I tell ${companionNames} to cover me while I..." or "I ask ${companionNames} what they think about..." or "I grab ${companionNames}'s arm and pull them toward...". Characters who never interact feel like strangers.`
       : '';
 
     const npcDirective = nearbyNpcs.length > 0
@@ -130,7 +131,7 @@ export class CharacterAgent {
       npcDirective ? `\n<npcs>${npcDirective}\n</npcs>` : '',
       `\n<events>\n${recentTranscript}\n</events>`,
       `\n<task>`,
-      `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action should INVOLVE them — coordinate an attack, ask for their expertise, protect them, or argue about strategy.`,
+      `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action MUST name them — "I tell ${companionNames || 'my companion'} to watch the door" or "I ask ${companionNames || 'my companion'} for their opinion on..." — parties are parties because members interact.`,
       `AVOID repeating actions from recent events. If you recently smiled, try confronting instead. If you recently fought, try investigating. Vary your approach.`,
       `Respond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }`,
       `</task>`,
@@ -180,7 +181,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
     const namePrefix = `${ctx.definition.name}: `;
     const recentActions = ctx.transcript
       .filter(m => m.role === 'character' && m.content.startsWith(namePrefix))
-      .slice(-3)
+      .slice(-5)
       .map(m => m.content.slice(namePrefix.length));
     const varietyBlock = recentActions.length > 0
       ? `\n\nYour last ${recentActions.length} actions (DO NOT repeat these themes — if you fought, try talking; if you protected, try investigating; if you stayed put, try moving): ${recentActions.join(' | ')}`
@@ -212,8 +213,9 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
           .slice(-1)
           .map(m => m.content)
       : [];
+    const decideCompanionNames = (ctx.partyMembers ?? []).map(p => p.name.split(' ')[0]).join(', ');
     const companionHint = companionRecent.length > 0
-      ? `\nYour companion just acted: "${companionRecent[0]}". Choose something that COMPLEMENTS their action, not duplicates it.`
+      ? `\nYour companion just acted: "${companionRecent[0]}". COMPLEMENT their action — and MENTION ${decideCompanionNames} BY NAME in your action if you're interacting with them. "I call out to ${decideCompanionNames}..." or "I move to cover ${decideCompanionNames}..." — parties that never speak to each other feel dead.`
       : '';
 
     const memoryGoals = this.deriveGoals(ctx.memories ?? []);
