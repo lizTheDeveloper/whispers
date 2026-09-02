@@ -346,6 +346,8 @@ export class GameLoop {
       decision.innerThought = `${contextDetail}.`;
     }
 
+    decision.innerThought = decision.innerThought.replace(/\bi\b/g, 'I').replace(/\bi'/g, "I'");
+
     this.addTranscript('character', `${character.definition.name}: ${decision.chosenAction}`, characterId);
     if (whisper) {
       const influenceNote = decision.whisperedInfluence === 'followed'
