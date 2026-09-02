@@ -269,6 +269,7 @@ export class GameLoop {
       whisperTrust: character.state.whisperTrust,
     });
 
+    this.broadcastFn({ type: 'character-state-update', characterId, state: character.state });
     this.state.awaitingWhisper = true;
     this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name });
 
