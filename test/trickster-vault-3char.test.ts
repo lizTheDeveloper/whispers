@@ -185,17 +185,37 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
       stunts: ['Master of Disguise: +2 to Deceive when impersonating someone', 'Read The Room: +2 to Empathy when first entering a social situation'],
     };
 
-    const charP1 = waitForMsg(host, 'characters-confirmed', 120_000);
-    sendMsg(p1, { type: 'submit-character', definition: thief });
-    sendMsg(p2, { type: 'submit-character', definition: tinker });
-    sendMsg(p3, { type: 'submit-character', definition: face });
-    await charP1;
-    console.log('[vault] Characters confirmed');
+    const charDefs: Array<[WebSocket, CharacterDefinition, string]> = [
+      [p1, thief, 'thief'], [p2, tinker, 'tinker'], [p3, face, 'face'],
+    ];
+    for (const [player, def, label] of charDefs) {
+      let approved = false;
+      let charId = '';
+      for (let attempt = 0; attempt < 3 && !approved; attempt++) {
+        const valPromise = waitForMsg(player, 'character-validated', 90_000);
+        sendMsg(player, { type: 'submit-character', definition: def });
+        const valMsg = await valPromise;
+        if (valMsg.type === 'character-validated' && valMsg.approved) {
+          charId = valMsg.characterId;
+          approved = true;
+          console.log(`[vault] ${label} AI-approved: ${charId}`);
+        } else {
+          console.log(`[vault] ${label} validation attempt ${attempt + 1} failed`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      if (!approved) throw new Error(`${label} never approved after 3 attempts`);
+      await waitForMsg(host, 'negotiation-opened', 30_000);
+      await waitForMsg(host, 'negotiation-message', 90_000);
+      sendMsg(host, { type: 'host-approve-character', characterId: charId });
+      console.log(`[vault] Host approved ${label}`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    console.log('[vault] All characters confirmed');
 
-    const startP = waitForMsg(host, 'phase-change');
     sendMsg(host, { type: 'start-game' });
-    const startMsg = await startP;
-    expect(startMsg.type).toBe('phase-change');
+    const startMsg = await waitForMsg(p1, 'phase-change', 10_000);
+    expect(startMsg.type === 'phase-change' && startMsg.phase).toBe('playing');
     console.log('[vault] Game started');
 
     const narrations: string[] = [];
@@ -227,74 +247,125 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
       28: { 'Pip Gearsoul': 'Break the Orrery rather than let anyone have it', 'Rook Blackthorn': 'Protect the team — let the Orrery go' },
     };
 
-    for (let turn = 1; turn <= TARGET_TURNS; turn++) {
-      try {
-        const narMsg = await waitForAnyMsg(host, ['narration', 'phase-change'], 120_000);
-        if (narMsg.type === 'phase-change') {
-          if ((narMsg as any).phase === 'ended') {
-            console.log(`[vault] Game ended at turn ${turn}`);
-            break;
-          }
-          continue;
-        }
-        if (narMsg.type !== 'narration') continue;
-        narrations.push(narMsg.text);
-        if ((narMsg as any).locationName) locations.add((narMsg as any).locationName);
-        turnCount = turn;
+    let gameEnded = false;
+    const allMessages: ServerMessage[] = [];
+    const msgQueue: ServerMessage[] = [];
+    let resolveNext: ((msg: ServerMessage) => void) | null = null;
 
-        if (narMsg.text.includes('Compel:') || narMsg.text.includes('trouble')) compelCount++;
+    host.on('message', (data: Buffer) => {
+      const msg: ServerMessage = JSON.parse(data.toString());
+      allMessages.push(msg);
+      if (resolveNext) {
+        const r = resolveNext;
+        resolveNext = null;
+        r(msg);
+      } else {
+        msgQueue.push(msg);
+      }
+    });
 
-        const sceneEndMsg = await waitForAnyMsg(host, ['action-proposals', 'scene-end', 'phase-change'], 120_000);
-        if (sceneEndMsg.type === 'scene-end') {
-          sceneCount++;
-          console.log(`[vault] Scene ${sceneCount} ended at turn ${turn}: ${(sceneEndMsg as any).summary?.slice(0, 80)}`);
-          continue;
-        }
-        if (sceneEndMsg.type === 'phase-change') {
-          if ((sceneEndMsg as any).phase === 'ended') break;
-          continue;
-        }
-        if (sceneEndMsg.type !== 'action-proposals') continue;
+    function nextMsg(timeoutMs = 120_000): Promise<ServerMessage> {
+      if (msgQueue.length > 0) return Promise.resolve(msgQueue.shift()!);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { resolveNext = null; reject(new Error(`nextMsg timeout after ${timeoutMs}ms`)); }, timeoutMs);
+        resolveNext = (msg) => { clearTimeout(timer); resolve(msg); };
+      });
+    }
 
-        const charName = (sceneEndMsg as any).characterName as string;
-        const whisperForChar = whisperPlan[turn]?.[charName];
-
-        await waitForMsg(host, 'whisper-prompt', 30_000);
-
-        if (whisperForChar) {
-          sendMsg(host, { type: 'whisper', text: whisperForChar });
-          console.log(`[vault] T${turn} whispered to ${charName.split(' ')[0]}: "${whisperForChar.slice(0, 50)}"`);
-        }
-
-        const actionMsg = await waitForMsg(host, 'action-taken', 120_000);
-        if (actionMsg.type === 'action-taken') {
-          actionsTaken.push({ char: (actionMsg as any).characterName, action: (actionMsg as any).action, turn });
-          const inf = (actionMsg as any).whisperInfluence;
-          if (whisperForChar && inf) {
-            console.log(`[vault] T${turn} ${charName.split(' ')[0]}: ${inf} — "${(actionMsg as any).action.slice(0, 60)}"`);
-          }
-        }
-
-        const resMsg = await waitForAnyMsg(host, ['narration', 'resolution', 'scene-end', 'phase-change'], 120_000);
-        if (resMsg.type === 'narration' || resMsg.type === 'resolution') {
-          const text = resMsg.text ?? '';
+    async function drainUntil(types: string[], timeoutMs = 120_000): Promise<ServerMessage> {
+      const deadline = Date.now() + timeoutMs;
+      while (true) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`drainUntil timeout for [${types.join(',')}]`);
+        const msg = await nextMsg(remaining);
+        if (types.includes(msg.type)) return msg;
+        if (msg.type === 'narration') narrations.push(msg.text);
+        if (msg.type === 'resolution') {
+          const text = msg.text ?? '';
           narrations.push(text);
           if (text.includes('invoke') || text.includes('draws on') || text.includes('channels')) invokeCount++;
           if (text.includes('stress') || text.includes('Stress')) stressEvents++;
         }
-        if (resMsg.type === 'scene-end') {
-          sceneCount++;
-          console.log(`[vault] Scene ${sceneCount} ended at turn ${turn}`);
+        if (msg.type === 'character-state-update') {
+          const st = (msg as any).state;
+          const cn = (msg as any).characterName ?? '';
+          if (st?.whisperTrust !== undefined) {
+            for (const [name, hist] of Object.entries(trustHistory)) {
+              if (cn.includes(name.split(' ')[0]!)) hist.push(st.whisperTrust);
+            }
+          }
         }
+        if (msg.type === 'phase-change' && (msg as any).phase === 'ended') {
+          gameEnded = true;
+          return msg;
+        }
+      }
+    }
 
-        const stateMsg = await waitForAnyMsg(host, ['character-state-update', 'narration', 'action-proposals', 'scene-end', 'phase-change'], 30_000).catch(() => null);
-        if (stateMsg?.type === 'character-state-update') {
-          const st = (stateMsg as any).state;
-          if (st?.whisperTrust !== undefined && charName) {
-            trustHistory[charName]?.push(st.whisperTrust);
+    for (let turn = 1; turn <= TARGET_TURNS && !gameEnded; turn++) {
+      try {
+        const roundStart = await drainUntil(['narration', 'phase-change', 'scene-end']);
+        if (gameEnded) break;
+        if (roundStart.type === 'scene-end') {
+          sceneCount++;
+          console.log(`[vault] Scene ${sceneCount} ended at turn ${turn}: ${(roundStart as any).summary?.slice(0, 80)}`);
+          turn--;
+          continue;
+        }
+        if (roundStart.type !== 'narration') continue;
+
+        if ((roundStart as any).locationName) locations.add((roundStart as any).locationName);
+        if (roundStart.text.includes('Compel:') || roundStart.text.includes('trouble')) compelCount++;
+
+        const sceneOrAction = await drainUntil(['action-proposals', 'scene-end', 'phase-change']);
+        if (gameEnded) break;
+        if (sceneOrAction.type === 'scene-end') {
+          sceneCount++;
+          console.log(`[vault] Scene ${sceneCount} ended at turn ${turn}: ${(sceneOrAction as any).summary?.slice(0, 80)}`);
+          continue;
+        }
+        if (sceneOrAction.type !== 'action-proposals') continue;
+
+        let charIdx = 0;
+        let currentProposals = sceneOrAction;
+
+        while (currentProposals.type === 'action-proposals') {
+          charIdx++;
+          turnCount = turn + charIdx - 1;
+          const charName = (currentProposals as any).characterName as string;
+          const whisperForChar = whisperPlan[turnCount]?.[charName];
+
+          await drainUntil(['whisper-prompt']);
+
+          if (whisperForChar) {
+            sendMsg(host, { type: 'whisper', text: whisperForChar });
+            console.log(`[vault] T${turnCount} whispered to ${charName.split(' ')[0]}: "${whisperForChar.slice(0, 50)}"`);
+          }
+
+          const actionMsg = await drainUntil(['action-taken']);
+          if (actionMsg.type === 'action-taken') {
+            actionsTaken.push({ char: (actionMsg as any).characterName, action: (actionMsg as any).action, turn: turnCount });
+            const inf = (actionMsg as any).whisperInfluence;
+            if (whisperForChar && inf) {
+              console.log(`[vault] T${turnCount} ${charName.split(' ')[0]}: ${inf} — "${(actionMsg as any).action.slice(0, 60)}"`);
+            }
+          }
+
+          const next = await drainUntil(['action-proposals', 'narration', 'scene-end', 'phase-change']);
+          if (gameEnded) break;
+          if (next.type === 'scene-end') {
+            sceneCount++;
+            console.log(`[vault] Scene ${sceneCount} ended at turn ${turnCount}`);
+            break;
+          }
+          if (next.type === 'action-proposals') {
+            currentProposals = next;
+          } else {
+            break;
           }
         }
 
+        turn = turnCount;
         if (turn % 5 === 0) {
           console.log(`[vault] Turn ${turn} complete — ${sceneCount} scenes, ${locations.size} locations, ${compelCount} compels, ${invokeCount} invokes`);
         }
