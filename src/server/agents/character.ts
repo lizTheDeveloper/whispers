@@ -16,20 +16,20 @@ interface CharacterContext {
 
 export class CharacterAgent {
   private static SKILL_KEYWORDS: Record<string, string[]> = {
-    Stealth: ['sneak', 'creep', 'slip', 'shadow', 'hide', 'crouch', 'silent', 'quietly', 'unseen', 'unnoticed', 'stealthy', 'dart', 'follow', 'trail', 'tiptoe', 'slink', 'ease past', 'skulk'],
+    Stealth: ['sneak', 'creep', 'slip past', 'slip into', 'slip through', 'shadow', 'hide', 'crouch', 'silent', 'quietly', 'unseen', 'unnoticed', 'stealthy', 'dart behind', 'trail behind', 'tiptoe', 'slink', 'ease past', 'skulk'],
     Fight: ['attack', 'strike', 'punch', 'kick', 'swing', 'slash', 'stab', 'fight', 'charge', 'tackle', 'grapple', 'block', 'parry', 'defend', 'hammer', 'smash', 'bash', 'shove', 'wrestle'],
-    Athletics: ['climb', 'jump', 'run', 'sprint', 'leap', 'dodge', 'vault', 'swim', 'scramble', 'dash', 'acrobat', 'rush', 'hurry', 'move quickly', 'race'],
-    Physique: ['wedge', 'brace', 'shore', 'lift', 'push', 'pull', 'heave', 'carry', 'hold', 'pry', 'force open', 'barricade'],
-    Burglary: ['pick', 'lock', 'crack', 'safe', 'disable', 'disarm', 'trap', 'mechanism', 'bypass', 'break in', 'jimmy', 'open', 'unlock', 'steal', 'pocket', 'swipe', 'take the'],
-    Notice: ['scan', 'watch', 'observe', 'look', 'listen', 'search', 'inspect', 'examine', 'peer', 'spot', 'survey', 'check', 'glance', 'notice', 'overhear', 'eavesdrop', 'scout'],
-    Investigate: ['investigate', 'clue', 'deduce', 'analyze', 'study', 'research', 'examine', 'piece together', 'figure out', 'scrutinize', 'compare', 'read the', 'decipher'],
-    Rapport: ['talk', 'ask', 'persuade', 'charm', 'befriend', 'negotiate', 'reason with', 'convince', 'appeal', 'approach', 'greet', 'introduce', 'confide', 'plead', 'request', 'question', 'whisper to'],
-    Deceive: ['lie', 'bluff', 'trick', 'disguise', 'pretend', 'feign', 'mislead', 'con', 'fake', 'impersonate', 'conceal', 'distract', 'divert', 'cover story'],
-    Empathy: ['read', 'sense', 'feel', 'intuit', 'understand', 'gauge', 'assess mood', 'empathize', 'study their face', 'body language'],
-    Provoke: ['taunt', 'intimidate', 'threaten', 'provoke', 'challenge', 'confront', 'demand', 'scare', 'accuse', 'corner', 'press', 'warn'],
-    Will: ['resist', 'endure', 'concentrate', 'focus', 'steel', 'brace', 'overcome fear', 'compose', 'steady', 'calm', 'center'],
+    Athletics: ['climb', 'jump', 'run', 'sprint', 'leap', 'dodge', 'vault over', 'swim', 'scramble', 'dash', 'acrobat', 'rush', 'move quickly', 'race'],
+    Physique: ['wedge', 'brace', 'shore', 'lift', 'push', 'pull', 'heave', 'carry', 'pry', 'force open', 'barricade'],
+    Burglary: ['pick the lock', 'lockpick', 'crack the', 'crack open', 'disable the', 'disarm the', 'trap', 'mechanism', 'bypass', 'break in', 'jimmy', 'unlock', 'steal', 'pocket', 'swipe'],
+    Notice: ['scan', 'watch for', 'observe', 'listen for', 'search for', 'inspect', 'peer', 'spot', 'survey', 'glance around', 'overhear', 'eavesdrop', 'scout ahead'],
+    Investigate: ['investigate', 'clue', 'deduce', 'analyze', 'study the', 'research', 'piece together', 'figure out', 'scrutinize', 'compare', 'decipher'],
+    Rapport: ['persuade', 'charm', 'befriend', 'negotiate', 'reason with', 'convince', 'appeal to', 'greet', 'introduce myself', 'confide', 'plead', 'whisper to'],
+    Deceive: ['lie', 'bluff', 'trick', 'disguise', 'pretend', 'feign', 'mislead', 'con ', 'fake', 'impersonate', 'distract', 'divert', 'cover story'],
+    Empathy: ['sense their', 'intuit', 'gauge', 'assess mood', 'empathize', 'read their face', 'body language', 'read their'],
+    Provoke: ['taunt', 'intimidate', 'threaten', 'provoke', 'challenge', 'confront', 'demand', 'scare', 'accuse', 'corner them'],
+    Will: ['resist', 'endure', 'concentrate', 'steel myself', 'brace', 'overcome fear', 'compose', 'steady myself', 'center'],
     Crafts: ['fix', 'repair', 'build', 'tinker', 'craft', 'modify', 'jury-rig', 'rewire', 'construct'],
-    Lore: ['recall', 'know', 'knowledge', 'recognize', 'identify', 'remember lore', 'ancient', 'history'],
+    Lore: ['recall', 'knowledge', 'recognize', 'identify', 'remember lore', 'ancient', 'history'],
     Contacts: ['contact', 'know someone', 'call in', 'favor', 'connection', 'ally', 'informant'],
   };
 
