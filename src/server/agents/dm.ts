@@ -181,7 +181,7 @@ export class DmAgent {
     const diceBlock = diceResult
       ? `\nDice result: ${diceResult.description} (total: ${diceResult.total}). FATE resolution steps:
 1. Pick the MOST relevant skill from the character's list${skillList ? ` (${skillList})` : ''}
-2. Set difficulty using the FATE ladder: 0=Mediocre (trivial), 1=Average (basic), 2=Fair (competent), 3=Good (hard), 4=Great (very hard), 5=Superb (near-impossible). Set difficulty BEFORE calculating — pick what makes narrative sense, not what guarantees a result. A master's challenges should match their skill: a +4 Burglary thief faces Great (+4) vault locks, not Average (+1) padlocks. Set difficulty >= 3 whenever the action uses the character's peak skill — easy victories aren't interesting.
+2. Set difficulty using the FATE ladder: 0=Mediocre, 1=Average, 2=Fair, 3=Good, 4=Great, 5=Superb. DIFFICULTY FLOOR: difficulty MUST be >= the chosen skill rank minus 1. A +4 skill means minimum difficulty 3; a +3 skill means minimum difficulty 2. Easy victories kill drama — the story needs ties, costs, and failures. When in doubt, set difficulty EQUAL to the skill rank (50% chance of clean success). Only set difficulty below the floor for truly trivial actions that don't advance the plot.
 3. Calculate effort = dice total (${diceResult.total}) + skill rank
 4. Calculate shifts = effort - difficulty
 5. Map shifts to outcome:

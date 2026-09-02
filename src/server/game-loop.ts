@@ -516,6 +516,11 @@ export class GameLoop {
       if (resolution.difficulty < 0) resolution.difficulty = 0;
       const skillKey = Object.keys(character.definition.skills).find(k => k.toLowerCase() === resolution.skill!.toLowerCase());
       const skillRank = skillKey ? (character.definition.skills[skillKey] ?? 0) : 0;
+      const diffFloor = Math.max(0, skillRank - 1);
+      if (resolution.difficulty < diffFloor) {
+        console.log(`[game-loop] FATE difficulty floored: DM set ${resolution.difficulty}, skill ${resolution.skill} +${skillRank} → min difficulty ${diffFloor}`);
+        resolution.difficulty = diffFloor;
+      }
       const effort = diceResult.total + skillRank;
       const shifts = effort - resolution.difficulty;
       const correctOutcome: 'success' | 'failure' | 'tie' | 'success-with-cost' =
