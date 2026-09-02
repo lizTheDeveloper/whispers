@@ -268,6 +268,19 @@ export class WorldBible {
     }
   }
 
+  getRelationships(campaignId: string): Array<{ entityAName: string; entityBName: string; type: string; description: string | null }> {
+    return this.db.prepare(`SELECT r.type, r.description,
+        COALESCE(e1.name, json_extract(c1.definition, '$.name')) as entityAName,
+        COALESCE(e2.name, json_extract(c2.definition, '$.name')) as entityBName
+      FROM relationships r
+      LEFT JOIN entities e1 ON r.entity_a_id = e1.id
+      LEFT JOIN entities e2 ON r.entity_b_id = e2.id
+      LEFT JOIN characters c1 ON r.entity_a_id = c1.id
+      LEFT JOIN characters c2 ON r.entity_b_id = c2.id
+      WHERE r.campaign_id = ? AND entityAName IS NOT NULL AND entityBName IS NOT NULL
+      ORDER BY r.rowid DESC LIMIT 10`).all(campaignId) as any[];
+  }
+
   getAllLocationNames(campaignId: string): string[] {
     const rows = this.db.prepare('SELECT name FROM locations WHERE campaign_id = ? ORDER BY visited ASC').all(campaignId) as any[];
     return rows.map(r => r.name as string);

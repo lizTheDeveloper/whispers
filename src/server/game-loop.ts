@@ -759,6 +759,7 @@ export class GameLoop {
   }
 
   private async generateEpilogue(): Promise<void> {
+    const campaign = this.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(this.campaignId) as any;
     const scenes = this.db.prepare(
       'SELECT scene_number, summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number ASC'
     ).all(this.campaignId) as Array<{ scene_number: number; summary: string }>;
@@ -766,17 +767,32 @@ export class GameLoop {
     const charLines = Array.from(this.characters.values()).map(c => {
       const memories = this.memoryStore.recall(c.id, 3);
       const memText = memories.map(m => m.content).join('. ');
-      return `${c.definition.name} (${c.definition.highConcept}): stress ${c.state.stress}/3, ${c.state.fatePoints} FP, trust ${c.state.whisperTrust.toFixed(2)}. Key memories: ${memText || 'none'}`;
+      const trustArc = c.state.whisperTrust >= 0.7 ? 'deeply trusts the guiding voice'
+        : c.state.whisperTrust >= 0.4 ? 'remains uncertain about the whispers'
+        : 'has grown wary of the voice in their mind';
+      return `${c.definition.name} (${c.definition.highConcept}): stress ${c.state.stress}/3, ${c.state.fatePoints} FP, ${trustArc}. Key memories: ${memText || 'none'}`;
     }).join('\n');
+
+    const relationships = this.worldBible.getRelationships(this.campaignId);
+    const relBlock = relationships.length > 0
+      ? `\nKey relationships: ${relationships.slice(0, 6).map(r => `${r.entityAName} ${r.type} ${r.entityBName}`).join('; ')}`
+      : '';
 
     const sceneSummaries = scenes.map(s => `Scene ${s.scene_number}: ${s.summary}`).join('\n\n');
     const worldState = this.worldBible.getCompactSummary(this.campaignId);
 
+    const presetVoices: Record<string, string> = {
+      professor: 'You are an academic storyteller. End with a teaching moment — what did the characters (and the players) learn? Reference a specific rule or mechanic that shaped the story. Warm, slightly pedantic, like a favorite teacher closing a lesson.',
+      trickster: 'You are a mischievous narrator. End with an ironic twist or unanswered question — something that makes the players realize the story was never quite what they thought. Playful, knowing, with a wink.',
+      chronicler: 'You are a poetic historian. End with sensory imagery and the weight of what was witnessed. Name specific places and people. Your epilogue should read like the closing passage of a chronicle — beautiful, precise, haunted by what might have been.',
+    };
+    const voiceHint = presetVoices[campaign?.dm_preset] ?? 'Write in the DM\'s voice — warm, reflective, slightly bittersweet.';
+
     try {
       const epilogue = await callLlm({
         messages: [
-          { role: 'system', content: 'You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. Write in the DM\'s voice — warm, reflective, slightly bittersweet. 3-5 sentences.' },
-          { role: 'user', content: `Session complete: ${this.state.currentScene} scenes, ${this.state.currentTurn} turns.\n\nScenes:\n${sceneSummaries}\n\nCharacters:\n${charLines}\n\nWorld:\n${worldState}\n\nWrite a brief closing narration. What did the characters accomplish? What was lost along the way? What questions linger? End with one evocative image — the kind players remember.` },
+          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences.` },
+          { role: 'user', content: `Session complete: ${this.state.currentScene} scenes, ${this.state.currentTurn} turns.\n\nScenes:\n${sceneSummaries}\n\nCharacters:\n${charLines}${relBlock}\n\nWorld:\n${worldState}\n\nWrite a brief closing narration. What did the characters accomplish? What was lost along the way? What questions linger? End with one evocative image — the kind players remember.` },
         ],
         maxTokens: 512,
       });
