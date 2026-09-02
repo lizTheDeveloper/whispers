@@ -462,6 +462,13 @@ button:disabled {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 0.9rem;
 }
+.narration-entry.resolution {
+  color: var(--text-main);
+  border-left: 3px solid var(--accent);
+  padding-left: 0.8rem;
+  font-size: 0.92rem;
+  opacity: 0.92;
+}
 .narration-entry.taken-out {
   color: var(--gene-pink);
   font-weight: 700;
