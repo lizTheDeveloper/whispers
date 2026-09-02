@@ -264,10 +264,11 @@ describeIfLive('Mine Trickster 2-Char: Chaos + Strategist in Collapsed Mine', ()
               dialogueTurns.push({ char: (actionMsg as any).characterName, turn: round });
             }
 
-            // Track cooperative actions (mentions of the other character)
+            // Track cooperative actions (mentions of the other character by any name part)
             const otherChar = charName === 'Forge Ironhand' ? 'Sister Calla' : 'Forge Ironhand';
-            const otherFirst = otherChar.split(' ')[0]!.toLowerCase();
-            if (action.toLowerCase().includes(otherFirst) || (spokenWords ?? '').toLowerCase().includes(otherFirst)) {
+            const otherParts = otherChar.toLowerCase().split(' ');
+            const actionAndWords = [action.toLowerCase(), (spokenWords ?? '').toLowerCase()].join(' ');
+            if (otherParts.some(part => part.length > 2 && actionAndWords.includes(part))) {
               cooperativeActions.push({ char: charName, mentionedOther: otherChar, turn: round });
             }
 
