@@ -60,7 +60,7 @@ describe('world bible', () => {
       newItems: [],
       newEvents: [{ sceneNumber: 1, description: 'Party reached the river', participants: [], outcome: null }],
       newRelationships: [],
-    });
+    }, { allowNewLocations: true });
     const loc = wb.getLocationByName('c1', 'River Styx');
     expect(loc).not.toBeNull();
   });

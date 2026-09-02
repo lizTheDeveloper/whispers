@@ -133,6 +133,8 @@ export class GameLoop {
     let worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     const npcHint = this.getNpcEngagementHint();
     if (npcHint) worldSummary += '\n' + npcHint;
+    const whisperHint = this.getWhisperTensionHint();
+    if (whisperHint) worldSummary += '\n' + whisperHint;
     let narration;
     try {
       narration = await this.dm.narrate({
@@ -245,6 +247,8 @@ export class GameLoop {
       return;
     }
 
+    const charNames = this.state.initiativeOrder.map(id => this.characters.get(id)?.definition.name ?? `UNKNOWN(${id})`);
+    console.log(`[game-loop] Round start: ${charNames.length} characters: ${charNames.join(', ')}`);
     for (const charId of this.state.initiativeOrder) {
       if (this.stopped) return;
       await this.processTurn(charId, campaign);
@@ -859,7 +863,7 @@ export class GameLoop {
         newEvents: (scenario.plotHooks ?? []).map((hook: string, i: number) => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
         newRelationships: [] as any[],
       };
-      this.worldBible.applyDiff(this.campaignId, diff);
+      this.worldBible.applyDiff(this.campaignId, diff, { allowNewLocations: true });
 
       if (scenario.openingNarration) {
         this.transcript.push({ role: 'system' as const, content: `[Scenario] ${scenario.openingNarration}`, timestamp: new Date().toISOString() });

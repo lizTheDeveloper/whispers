@@ -359,14 +359,17 @@ export class WorldBible {
     return reverses[type] ?? `have a ${type} relationship with`;
   }
 
-  applyDiff(campaignId: string, diff: WorldBibleDiff): void {
+  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean }): void {
+    const allowNewLocations = opts?.allowNewLocations ?? false;
     const tx = this.db.transaction(() => {
       for (const loc of diff.newLocations) {
         const existing = this.getLocationByName(campaignId, loc.name);
         if (existing) {
           if (loc.description) this.db.prepare('UPDATE locations SET description = ? WHERE id = ?').run(loc.description, existing.id);
-        } else {
+        } else if (allowNewLocations) {
           this.addLocation({ id: genId(), campaignId, name: loc.name, description: loc.description, terrain: loc.terrain, connections: [], coords: null });
+        } else {
+          console.log(`[world-bible] Dropped extracted location "${loc.name}" — not in scenario`);
         }
       }
       for (const ent of diff.newEntities) {
