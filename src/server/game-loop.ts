@@ -150,6 +150,7 @@ export class GameLoop {
         sessionTurnCount: this.state.currentTurn,
         locationTurnCount: this.locationTurnCount,
         currentLocationName: this.lastLocationName || undefined,
+        knownLocationNames: this.worldBible.getAllLocationNames(this.campaignId),
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
@@ -168,10 +169,18 @@ export class GameLoop {
       }
       let loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
       if (!loc) {
+        const snapped = this.worldBible.snapToKnownLocation(this.campaignId, narration.currentLocationName);
+        if (snapped) {
+          console.log(`[game-loop] Location snapped: "${narration.currentLocationName}" → "${snapped}"`);
+          narration.currentLocationName = snapped;
+          loc = this.worldBible.getLocationByName(this.campaignId, snapped);
+        }
+      }
+      if (!loc) {
         const newId = randomBytes(16).toString('hex');
         this.worldBible.addLocation({ id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null });
         loc = { id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null };
-        console.log(`[game-loop] Auto-created location "${narration.currentLocationName}" from DM narration`);
+        console.log(`[game-loop] Auto-created location "${narration.currentLocationName}" (no snap match found)`);
       }
       this.state.currentLocationId = loc.id;
       this.worldBible.markLocationVisited(this.campaignId, loc.id);

@@ -77,6 +77,18 @@ describe('world bible', () => {
     expect(rels).toContain('You are manipulated by Cassius');
   });
 
+  it('snaps fuzzy location names to known locations', async () => {
+    const { WorldBible } = await import('../src/server/world-bible.js');
+    const wb = new WorldBible(db);
+    wb.addLocation({ id: 'loc1', campaignId: 'c1', name: 'The Rusty Anchor', description: 'A tavern', terrain: 'urban', connections: [], coords: null });
+    wb.addLocation({ id: 'loc2', campaignId: 'c1', name: 'Hidden Stairwell', description: 'A dark passage', terrain: 'dungeon', connections: [], coords: null });
+
+    expect(wb.snapToKnownLocation('c1', 'The Rusty Anchor')).toBe('The Rusty Anchor');
+    expect(wb.snapToKnownLocation('c1', 'Rusty Anchor Tavern')).toBe('The Rusty Anchor');
+    expect(wb.snapToKnownLocation('c1', 'the hidden stairwell')).toBe('Hidden Stairwell');
+    expect(wb.snapToKnownLocation('c1', 'Completely Unknown Place')).toBeNull();
+  });
+
   it('deduplicates entities by name on diff apply', async () => {
     const { WorldBible } = await import('../src/server/world-bible.js');
     const wb = new WorldBible(db);

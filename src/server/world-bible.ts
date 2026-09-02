@@ -268,6 +268,32 @@ export class WorldBible {
     }
   }
 
+  getAllLocationNames(campaignId: string): string[] {
+    const rows = this.db.prepare('SELECT name FROM locations WHERE campaign_id = ? ORDER BY visited ASC').all(campaignId) as any[];
+    return rows.map(r => r.name as string);
+  }
+
+  snapToKnownLocation(campaignId: string, name: string): string | null {
+    const exact = this.getLocationByName(campaignId, name);
+    if (exact) return exact.name;
+
+    const all = this.getAllLocationNames(campaignId);
+    if (all.length === 0) return null;
+
+    const stopWords = new Set(['the', 'a', 'an', 'of', 'in', 'at', 'to', 'and', 'or', 'its', 'with']);
+    const queryWords = name.toLowerCase().split(/[\s'-]+/).filter(w => w.length > 2 && !stopWords.has(w));
+    if (queryWords.length === 0) return null;
+
+    let bestName: string | null = null;
+    let bestScore = 0;
+    for (const locName of all) {
+      const locWords = locName.toLowerCase().split(/[\s'-]+/).filter(w => w.length > 2 && !stopWords.has(w));
+      const shared = queryWords.filter(w => locWords.some(lw => lw.includes(w) || w.includes(lw))).length;
+      if (shared > bestScore) { bestScore = shared; bestName = locName; }
+    }
+    return bestScore >= 1 ? bestName : null;
+  }
+
   getCharacterRelationships(campaignId: string, characterId: string, characterName: string): string {
     const rels = this.db.prepare(`SELECT r.type, r.description,
         COALESCE(e1.name, json_extract(c1.definition, '$.name')) as a_name,

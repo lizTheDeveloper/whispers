@@ -30,6 +30,7 @@ export interface ScenePacing {
   sessionTurnCount?: number;
   locationTurnCount?: number;
   currentLocationName?: string;
+  knownLocationNames?: string[];
 }
 
 interface DmContext {
@@ -110,6 +111,10 @@ export class DmAgent {
     const { systemPrompt, criticalReminder, narrationHint } = this.buildSystemPrompt(ctx);
     const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
 
+    const locationList = pacing?.knownLocationNames && pacing.knownLocationNames.length > 0
+      ? `\n<valid_locations>\nYou MUST pick one of these EXACT names for currentLocationName:\n${pacing.knownLocationNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}\n</valid_locations>`
+      : '';
+
     const userMessage = [
       `<scene>`,
       sceneLabel,
@@ -118,10 +123,11 @@ export class DmAgent {
       `</scene>`,
       charBlock ? `\n<party>\n${charBlock.trim()}\n</party>` : '',
       `\n<world>\n${ctx.worldSummary}\n</world>`,
+      locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
       `\n<task>`,
       `Narrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. VARY YOUR OPENING — don't start with the character's name every time. Try starting with: a sound, an NPC speaking, a sensory detail, a shift in the environment, or an action in progress. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.${partyHint}`,
-      `currentLocationName MUST be an EXACT name from the "Known locations" or "UNVISITED locations" list in the world state (copy-paste the name exactly). NEVER invent a new location name — always use an existing one. If UNVISITED locations exist, move the party toward one. If all locations are visited, return to one with new circumstances (a hidden passage discovered, NPCs moved, environment changed). Only if the world state shows NO locations at all may you introduce a new name.${personalityReminder}`,
+      `currentLocationName MUST be COPIED EXACTLY from the <valid_locations> list above. NEVER invent a new location name. If no <valid_locations> section exists, you may introduce a new name.${personalityReminder}`,
       `Respond as JSON: { "narration": "2-4 vivid sentences.${narrationHint}", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }`,
       `</task>`,
     ].filter(Boolean).join('\n');
