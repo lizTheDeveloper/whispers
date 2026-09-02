@@ -143,11 +143,15 @@ export class DmAgent {
         }).join('\n')}${hasUnvisited ? '\nPrioritize UNVISITED locations — each holds unique content the players haven\'t seen yet.' : ''}\n</valid_locations>`
       : '';
 
+    const troubleHint = pacing && roundCount > 0 && roundCount % 3 === 1
+      ? this.buildTroubleHint(pacing.characterSummaries)
+      : '';
+
     const userMessage = [
       `<scene>`,
       sceneLabel,
       `Session arc: ${sessionArc}`,
-      `Pacing: ${pacingHint}${locationHint}`,
+      `Pacing: ${pacingHint}${locationHint}${troubleHint}`,
       `</scene>`,
       charBlock ? `\n<party>\n${charBlock.trim()}\n</party>` : '',
       `\n<world>\n${ctx.worldSummary}\n</world>`,
@@ -402,6 +406,17 @@ Storytelling principles:
     if (criticalSection) prompt += criticalSection;
     prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
     return { systemPrompt: prompt, criticalReminder: criticalSection.trim(), narrationHint };
+  }
+
+  private buildTroubleHint(charSummaries: string): string {
+    const troubles: string[] = [];
+    for (const line of charSummaries.split('\n')) {
+      const match = line.match(/^([^:]+):.+\(trouble: "([^"]+)"\)/);
+      if (match) troubles.push(`${match[1]}'s trouble is "${match[2]}"`);
+    }
+    if (troubles.length === 0) return '';
+    const target = troubles[Math.floor(Math.random() * troubles.length)]!;
+    return `\nCOMPEL OPPORTUNITY: ${target}. Create a situation THIS narration that directly confronts this trouble — a person from their past, a temptation that exploits their flaw, or a dilemma where their weakness is the path of least resistance. The best compels feel inevitable, not forced.`;
   }
 
   private lookupRules(systemId: string, query: string): string {
