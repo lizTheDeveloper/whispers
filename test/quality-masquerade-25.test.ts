@@ -77,7 +77,7 @@ const MASQUERADE_LOCATIONS = [
 ];
 
 describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
-  it('runs 25 rounds evaluating story quality, trust, skill variety, and location fidelity', async () => {
+  it('runs 25 rounds evaluating story quality, trust, skill variety, and location fidelity', { timeout: 1_800_000 }, async () => {
     const findings: string[] = [];
 
     const { ws: hostWs, q: host } = await connectWsQ();
