@@ -82,9 +82,15 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     h3.textContent = `${msg.characterName} is considering:`;
     container.appendChild(h3);
     const ul = document.createElement('ul');
-    for (const a of msg.actions) {
+    for (let i = 0; i < msg.actions.length; i++) {
       const li = document.createElement('li');
-      li.textContent = a;
+      li.textContent = msg.actions[i]!;
+      if (msg.actionReasons && msg.actionReasons[i]) {
+        const reason = document.createElement('span');
+        reason.className = 'action-reason';
+        reason.textContent = ` — ${msg.actionReasons[i]}`;
+        li.appendChild(reason);
+      }
       ul.appendChild(li);
     }
     container.appendChild(ul);
@@ -98,6 +104,18 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     whisperArea.style.display = 'flex';
     whisperInput.focus();
     whisperInput.placeholder = `Whisper to ${msg.characterName}...`;
+    if ((msg as any).mood || (msg as any).trustHint) {
+      const moodEl = whisperArea.querySelector('.whisper-context') ?? (() => {
+        const el = document.createElement('div');
+        el.className = 'whisper-context';
+        whisperArea.insertBefore(el, whisperArea.firstChild);
+        return el;
+      })();
+      const parts: string[] = [];
+      if ((msg as any).mood) parts.push((msg as any).mood);
+      if ((msg as any).trustHint) parts.push((msg as any).trustHint);
+      (moodEl as HTMLElement).textContent = parts.join(' ');
+    }
     let remaining = 15;
     whisperBtn.textContent = `Whisper (${remaining}s)`;
     if (whisperTimer) clearInterval(whisperTimer);

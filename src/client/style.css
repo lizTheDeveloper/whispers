@@ -528,6 +528,23 @@ button:disabled {
 .action-proposals li:hover {
   background: rgba(0, 255, 136, 0.08);
 }
+.action-reason {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  font-style: italic;
+  margin-top: 0.2rem;
+}
+.whisper-context {
+  width: 100%;
+  font-size: 0.82rem;
+  color: var(--signal);
+  font-style: italic;
+  padding: 0.3rem 0.5rem;
+  margin-bottom: 0.3rem;
+  opacity: 0.85;
+  line-height: 1.35;
+}
 
 /* ─── DM Question Panel ─── */
 

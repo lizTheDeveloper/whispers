@@ -32,8 +32,8 @@ export type ServerMessage =
   | { type: 'phase-change'; phase: GamePhase }
   | { type: 'narration'; text: string; sceneNumber: number; locationName?: string; isEpilogue?: boolean }
   | { type: 'scene-image'; imageUrl: string; locationName: string }
-  | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; whisperTrust: number }
-  | { type: 'whisper-prompt'; characterId: string; characterName: string }
+  | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; actionReasons?: string[]; whisperTrust: number }
+  | { type: 'whisper-prompt'; characterId: string; characterName: string; mood?: string; trustHint?: string }
   | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }
   | { type: 'dice-roll'; result: DiceResult; context: string }
   | { type: 'resolution'; text: string }

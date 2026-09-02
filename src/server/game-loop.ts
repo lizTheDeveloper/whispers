@@ -12,7 +12,7 @@ import { callLlm } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
-import type { Character, TranscriptMessage, RoomState } from '../shared/types.js';
+import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
 const BASE_COMPACTION_THRESHOLD = 35;
@@ -321,12 +321,15 @@ export class GameLoop {
       characterId,
       characterName: character.definition.name,
       actions: proposals.actions.map(a => a.description),
+      actionReasons: proposals.actions.map(a => a.reasoning),
       whisperTrust: character.state.whisperTrust,
     });
 
     this.broadcastFn({ type: 'character-state-update', characterId, state: character.state });
     this.state.awaitingWhisper = true;
-    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name });
+    const mood = this.buildCharacterMood(character, memories);
+    const trustHint = this.buildTrustHint(character);
+    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint });
 
     const whisper = await this.waitForWhisper(15_000);
     this.state.awaitingWhisper = false;
@@ -446,7 +449,7 @@ export class GameLoop {
     }
     const recoveryCap = currentTrust < 0.40 && effectiveDelta > 0 ? 0.12 : 0.08;
     if (effectiveDelta > recoveryCap) effectiveDelta = recoveryCap;
-    character.state.whisperTrust = Math.max(0, Math.min(0.95, currentTrust + effectiveDelta));
+    character.state.whisperTrust = Math.max(0.10, Math.min(0.95, currentTrust + effectiveDelta));
     if (recoveryCap === 0.12 && effectiveDelta > 0) {
       console.log(`[game-loop] Low-trust recovery boost: ${character.definition.name} trust ${currentTrust.toFixed(2)} → ${character.state.whisperTrust.toFixed(2)} (+${effectiveDelta.toFixed(2)}, cap raised to 0.12)`);
     }
@@ -669,7 +672,10 @@ export class GameLoop {
         outcomeDelta = -0.02;
       }
       if (outcomeDelta !== 0) {
-        character.state.whisperTrust = Math.max(0, Math.min(0.95, preTrust + outcomeDelta));
+        if (preTrust < 0.25 && outcomeDelta < 0) {
+          outcomeDelta *= 0.5;
+        }
+        character.state.whisperTrust = Math.max(0.10, Math.min(0.95, preTrust + outcomeDelta));
         console.log(`[game-loop] Post-resolution trust: ${character.definition.name} ${resolution.outcome}${gainedStress ? '+stress' : ''} after following whisper — trust ${preTrust.toFixed(2)} → ${character.state.whisperTrust.toFixed(2)} (${outcomeDelta > 0 ? '+' : ''}${outcomeDelta.toFixed(2)})`);
       }
     }
@@ -992,6 +998,36 @@ export class GameLoop {
       case 'dnd-5e': return '1d20';
       default: return '4dF';
     }
+  }
+
+  private buildCharacterMood(character: { definition: CharacterDefinition; state: CharacterState; id: string }, memories: Array<{ content: string; type: string; emotionalValence: number }>): string {
+    const name = character.definition.name.split(' ')[0]!;
+    const parts: string[] = [];
+
+    const recentMem = memories.slice(0, 3);
+    const avgValence = recentMem.length > 0
+      ? recentMem.reduce((sum, m) => sum + m.emotionalValence, 0) / recentMem.length
+      : 0;
+    if (avgValence < -0.3) parts.push('troubled by recent events');
+    else if (avgValence > 0.3) parts.push('buoyed by recent success');
+
+    if (character.state.stress >= 2) parts.push('under heavy stress');
+    if (character.state.consequences.length > 0) parts.push(`carrying wounds: ${character.state.consequences[0]}`);
+    if (character.state.fatePoints === 0) parts.push('out of fate points — vulnerable');
+
+    const troublePull = recentMem.some(m => m.content.toLowerCase().includes(character.definition.trouble.toLowerCase().split(' ')[0]!));
+    if (troublePull) parts.push(`their trouble "${character.definition.trouble}" is weighing on them`);
+
+    if (parts.length === 0) parts.push('focused and alert');
+    return `${name} is ${parts.join(', ')}.`;
+  }
+
+  private buildTrustHint(character: { state: CharacterState }): string {
+    const trust = character.state.whisperTrust;
+    if (trust >= 0.75) return 'They trust your voice deeply — your words carry weight.';
+    if (trust >= 0.55) return 'They listen, but weigh your words against their own judgment.';
+    if (trust >= 0.35) return 'They\'re uncertain about you — choose your words carefully.';
+    return 'They barely hear you. Only the most compelling whisper might reach them.';
   }
 
   private getCharacterSummaries(): string {
