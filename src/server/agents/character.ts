@@ -17,8 +17,9 @@ interface CharacterContext {
 export class CharacterAgent {
   private static SKILL_KEYWORDS: Record<string, string[]> = {
     Stealth: ['sneak', 'creep', 'slip', 'shadow', 'hide', 'crouch', 'silent', 'quietly', 'unseen', 'unnoticed', 'stealthy', 'dart'],
-    Fight: ['attack', 'strike', 'punch', 'kick', 'swing', 'slash', 'stab', 'fight', 'charge', 'tackle', 'grapple', 'block', 'parry', 'defend'],
+    Fight: ['attack', 'strike', 'punch', 'kick', 'swing', 'slash', 'stab', 'fight', 'charge', 'tackle', 'grapple', 'block', 'parry', 'defend', 'hammer', 'smash', 'bash'],
     Athletics: ['climb', 'jump', 'run', 'sprint', 'leap', 'dodge', 'vault', 'swim', 'scramble', 'dash', 'acrobat'],
+    Physique: ['wedge', 'brace', 'shore', 'lift', 'push', 'pull', 'heave', 'carry', 'hold', 'pry'],
     Burglary: ['pick', 'lock', 'crack', 'safe', 'disable', 'disarm', 'trap', 'mechanism', 'bypass', 'break in', 'jimmy'],
     Notice: ['scan', 'watch', 'observe', 'look', 'listen', 'search', 'inspect', 'examine', 'peer', 'spot', 'survey'],
     Investigate: ['investigate', 'clue', 'deduce', 'analyze', 'study', 'research', 'examine', 'piece together', 'figure out'],
@@ -79,7 +80,7 @@ export class CharacterAgent {
     const nearbyNpcs = this.extractNearbyNpcs(ctx.worldContext);
     const ownActions = ctx.transcript
       .filter(m => m.role === 'character' && m.content.startsWith(namePrefix))
-      .slice(-3)
+      .slice(-5)
       .map(m => m.content.slice(namePrefix.length));
     const ownActionsBlock = ownActions.length > 0
       ? `\n\nYour recent actions (DO NOT repeat these): ${ownActions.join('; ')}`

@@ -427,7 +427,8 @@ export class GameLoop {
       } else if (decision.whisperedInfluence === 'partially-followed') {
         effectiveDelta = character.state.whisperTrust < 0.40 ? 0.06
           : character.state.whisperTrust < 0.60 ? 0.04
-          : 0.02;
+          : character.state.whisperTrust < 0.75 ? 0.02
+          : 0;
       } else {
         effectiveDelta = character.state.whisperTrust < 0.50 ? 0.08 : 0.05;
       }
