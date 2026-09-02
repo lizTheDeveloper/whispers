@@ -8,6 +8,7 @@ import { CharacterAgent } from './agents/character.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
 import { CharacterMemoryStore } from './character-memory.js';
+import { callLlm } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint } from './checkpoint.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
@@ -112,6 +113,7 @@ export class GameLoop {
     if ((this.state.currentTurn ?? 0) >= sessionHardLimit) {
       console.log(`[game-loop] Session hard limit (${sessionHardLimit} turns, party ${partySize}) — ending session`);
       await this.endScene();
+      await this.generateEpilogue();
       this.broadcastFn({ type: 'phase-change', phase: 'ended' });
       this.stopped = true;
       return;
@@ -192,6 +194,7 @@ export class GameLoop {
       await this.endScene();
       if (isFinale) {
         console.log(`[game-loop] Finale scene concluded — session complete`);
+        await this.generateEpilogue();
         this.broadcastFn({ type: 'phase-change', phase: 'ended' });
         this.stopped = true;
         return;
@@ -710,6 +713,38 @@ export class GameLoop {
     this.lastLocationName = '';
     this.state.currentScene++;
     clearCampaignImageCache(this.campaignId);
+  }
+
+  private async generateEpilogue(): Promise<void> {
+    const scenes = this.db.prepare(
+      'SELECT scene_number, summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number ASC'
+    ).all(this.campaignId) as Array<{ scene_number: number; summary: string }>;
+
+    const charLines = Array.from(this.characters.values()).map(c => {
+      const memories = this.memoryStore.recall(c.id, 3);
+      const memText = memories.map(m => m.content).join('. ');
+      return `${c.definition.name} (${c.definition.highConcept}): stress ${c.state.stress}/3, ${c.state.fatePoints} FP, trust ${c.state.whisperTrust.toFixed(2)}. Key memories: ${memText || 'none'}`;
+    }).join('\n');
+
+    const sceneSummaries = scenes.map(s => `Scene ${s.scene_number}: ${s.summary}`).join('\n\n');
+    const worldState = this.worldBible.getCompactSummary(this.campaignId);
+
+    try {
+      const epilogue = await callLlm({
+        messages: [
+          { role: 'system', content: 'You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. Write in the DM\'s voice — warm, reflective, slightly bittersweet. 3-5 sentences.' },
+          { role: 'user', content: `Session complete: ${this.state.currentScene} scenes, ${this.state.currentTurn} turns.\n\nScenes:\n${sceneSummaries}\n\nCharacters:\n${charLines}\n\nWorld:\n${worldState}\n\nWrite a brief closing narration. What did the characters accomplish? What was lost along the way? What questions linger? End with one evocative image — the kind players remember.` },
+        ],
+        maxTokens: 512,
+      });
+      const text = epilogue.trim();
+      if (text && text.length > 20) {
+        this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene });
+        console.log(`[game-loop] Epilogue generated (${text.length} chars)`);
+      }
+    } catch (e) {
+      console.error('[game-loop] Epilogue generation failed:', e);
+    }
   }
 
   private async seedScenario(scenarioId: string): Promise<void> {
