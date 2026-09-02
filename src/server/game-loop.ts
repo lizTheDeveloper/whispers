@@ -553,7 +553,31 @@ export class GameLoop {
         : 'failure';
       if (resolution.outcome !== correctOutcome) {
         console.log(`[game-loop] FATE outcome corrected: DM said ${resolution.outcome}, math says ${correctOutcome} (effort ${effort} vs diff ${resolution.difficulty}, shifts ${shifts})`);
+        const dmSaid = resolution.outcome;
         resolution.outcome = correctOutcome;
+        if (dmSaid === 'success' && (correctOutcome === 'tie' || correctOutcome === 'success-with-cost' || correctOutcome === 'failure')) {
+          const correctionBeats: Record<string, string[]> = {
+            tie: [
+              `But the victory isn't clean — something slips, cracks, or shifts in the process.`,
+              `Yet something catches — a snag, a cost, a complication they didn't foresee.`,
+              `The moment teeters between triumph and consequence.`,
+            ],
+            'success-with-cost': [
+              `But the price is steep — the effort leaves its mark.`,
+              `Success, yes — but the kind that leaves bruises.`,
+              `They push through, but the strain shows.`,
+            ],
+            failure: [
+              `But the numbers don't lie — the attempt falls short, and the situation shifts against them.`,
+              `Yet despite the effort, circumstances conspire — and the moment slips away.`,
+              `But fate has other plans — the attempt crumbles under scrutiny.`,
+            ],
+          };
+          const beats = correctionBeats[correctOutcome] ?? [];
+          if (beats.length > 0) {
+            resolution.narration = resolution.narration.trimEnd().replace(/\.?$/, '. ') + beats[(this.state.currentTurn ?? 0) % beats.length];
+          }
+        }
       }
 
       if (campaign.dm_preset === 'professor') {
@@ -621,11 +645,37 @@ export class GameLoop {
     }
 
     const preResolutionStress = character.state.stress;
+    const preConsequences = [...character.state.consequences];
+    const preInventory = [...(character.state.inventory ?? [])];
     const affectedCharIds = new Set<string>();
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
         this.applyStateChange(change.characterId, change.field, change.action, change.value);
         affectedCharIds.add(change.characterId);
+      }
+    }
+
+    const narrationLower = resolution.narration.toLowerCase();
+    const firstName = getFirstName(character.definition.name);
+    const newConsequences = character.state.consequences.filter(c => !preConsequences.includes(c) && c !== 'Taken Out (recovering)');
+    for (const cons of newConsequences) {
+      if (!narrationLower.includes(cons.toLowerCase().split(/\s+/)[0]!)) {
+        resolution.narration += ` ${firstName} winces — ${cons.toLowerCase()}.`;
+        console.log(`[game-loop] Added un-narrated consequence: "${cons}"`);
+      }
+    }
+    const gainedItems = (character.state.inventory ?? []).filter(i => !preInventory.includes(i));
+    for (const item of gainedItems) {
+      if (!narrationLower.includes(item.toLowerCase().split(/\s+/)[0]!)) {
+        resolution.narration += ` ${firstName} pockets the ${item.toLowerCase()}.`;
+        console.log(`[game-loop] Added un-narrated item gain: "${item}"`);
+      }
+    }
+    const lostItems = preInventory.filter(i => !(character.state.inventory ?? []).includes(i));
+    for (const item of lostItems) {
+      if (!narrationLower.includes(item.toLowerCase().split(/\s+/)[0]!)) {
+        resolution.narration += ` The ${item.toLowerCase()} is gone.`;
+        console.log(`[game-loop] Added un-narrated item loss: "${item}"`);
       }
     }
 

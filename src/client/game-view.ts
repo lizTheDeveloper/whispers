@@ -47,7 +47,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       locationBar.style.display = 'block';
     }
   });
-  ws.on('resolution', (msg) => { if (msg.type === 'resolution') appendLog(msg.text, 'dm'); });
+  ws.on('resolution', (msg) => { if (msg.type === 'resolution') appendLog(msg.text, 'resolution'); });
   const sessionStats = { scenes: 0, followed: 0, partial: 0, ignored: 0 };
 
   ws.on('scene-end', (msg) => {
@@ -160,7 +160,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       }
       whisperArea.insertBefore(sugDiv, whisperInput);
     }
-    let remaining = 15;
+    let remaining = 30;
     whisperBtn.textContent = `Whisper (${remaining}s)`;
     if (whisperTimer) clearInterval(whisperTimer);
     whisperTimer = setInterval(() => {
