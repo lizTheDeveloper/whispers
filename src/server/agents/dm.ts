@@ -32,6 +32,7 @@ export interface ScenePacing {
   currentLocationName?: string;
   knownLocationNames?: string[];
   unvisitedLocationNames?: string[];
+  isFinale?: boolean;
 }
 
 interface DmContext {
@@ -58,26 +59,29 @@ export class DmAgent {
 
     const sessionTurn = pacing?.sessionTurnCount ?? 0;
 
-    // Session-level three-act structure (Act III at scene 4+ so a ~25-turn session reaches resolution)
+    const isFinale = pacing?.isFinale ?? (sceneNum >= 5 && sessionTurn >= 20);
+
     let sessionArc: string;
     if (sceneNum <= 1) {
       sessionArc = 'ACT I (Setup): Establish the world, introduce the central mystery or threat. Plant clues and introduce key NPCs. The dramatic question should be clear by scene end.';
     } else if (sceneNum <= 3) {
       sessionArc = 'ACT II (Confrontation): Escalate complications. Alliances are tested, secrets are revealed, the threat becomes personal. Make the characters pay a cost for progress.';
-    } else if (sceneNum <= 4) {
+    } else if (!isFinale) {
       sessionArc = 'ACT III (Resolution): Drive toward the climax. The dramatic question MUST be answered this act. Converge all threads toward a final confrontation or revelation. Stop introducing new complications — use what exists.';
     } else {
       sessionArc = `SESSION FINALE (scene ${sceneNum}): This is the LAST scene. Let it play out over multiple turns — do NOT try to narrate several rounds in one response. Each narration is ONE moment: describe what happens, let the character act, then you narrate again. No new locations or mysteries. Use established NPCs, items, and threads. Build toward a decisive confrontation, then end with a denouement. Do NOT set isSceneEnd on the opening narration.`;
     }
 
-    if (sessionTurn >= 20 && sceneNum >= 4) {
-      if (sceneNum >= 5 && roundCount >= 5) {
+    if (isFinale) {
+      if (roundCount >= 5) {
         sessionArc += ` WRAP UP NOW (turn ${sessionTurn}, round ${roundCount}): narrate the final outcome — victory, defeat, or bittersweet resolution — and set isSceneEnd to true. The story must end.`;
-      } else if (sceneNum >= 5 && roundCount >= 3) {
+      } else if (roundCount >= 3) {
         sessionArc += ` (Turn ${sessionTurn}, round ${roundCount} — the climax should land THIS round. After one more decisive action, narrate the resolution and end the scene.)`;
       } else {
         sessionArc += ` (Turn ${sessionTurn} of session — converge toward resolution, but give the ending room to breathe.)`;
       }
+    } else if (sessionTurn >= 20 && sceneNum >= 4) {
+      sessionArc += ` (Turn ${sessionTurn} of session — converge toward resolution, but give the ending room to breathe.)`;
     }
 
     const developThreshold = partySize <= 1 ? 3 : 3;
@@ -150,7 +154,7 @@ export class DmAgent {
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
       `\n<task>`,
-      `Narrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. VARY YOUR OPENING — don't start with the character's name every time. Try starting with: a sound, an NPC speaking, a sensory detail, a shift in the environment, or an action in progress. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.${partyHint}`,
+      `Narrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. VARY YOUR OPENING — don't start with the character's name every time. Try starting with: a sound, an NPC speaking, a sensory detail, a shift in the environment, or an action in progress. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.\nNPC INITIATIVE: If activeNpcs are present, at least one NPC must SPEAK or ACT in the narration — they approach the party, ask a question, block a path, offer information, make a demand, or reveal something. "The foreman steps from the shadows, voice hoarse: 'You shouldn't be down here.'" NPCs who initiate create drama the characters MUST respond to.${partyHint}`,
       `currentLocationName MUST be COPIED EXACTLY from the <valid_locations> list above. NEVER invent a new location name. If no <valid_locations> section exists, you may introduce a new name.${personalityReminder}`,
       `Respond as JSON: { "narration": "2-4 vivid sentences.${narrationHint}", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }`,
       `</task>`,

@@ -49,11 +49,34 @@ export class CharacterAgent {
     return null;
   }
 
+  private detectRepeatedOpeners(actions: string[]): string[] {
+    if (actions.length < 2) return [];
+    const openers = actions.map(a => {
+      const words = a.replace(/^["']/, '').trim().split(/\s+/).slice(0, 3);
+      return words.join(' ').toLowerCase();
+    });
+    const counts: Record<string, number> = {};
+    for (const opener of openers) {
+      counts[opener] = (counts[opener] ?? 0) + 1;
+    }
+    return Object.entries(counts)
+      .filter(([, count]) => count >= 2)
+      .map(([opener]) => opener);
+  }
+
+  private extractNearbyNpcs(worldContext: string | undefined): string[] {
+    if (!worldContext) return [];
+    const match = worldContext.match(/People nearby:\s*(.+?)(?:\n|$)/);
+    if (!match) return [];
+    return (match[1] ?? '').split(';').map(s => s.trim().split(/\s*\(/)[0]?.trim()).filter((n): n is string => !!n && n.length > 0);
+  }
+
   async proposeActions(ctx: CharacterContext): Promise<ActionProposal> {
     const charPrompt = this.buildCharacterPrompt(ctx);
     const recentTranscript = ctx.transcript.slice(-10).map(m => `[${m.role}] ${m.content}`).join('\n');
     const worldBlock = ctx.worldContext ? `\n\nWhat you know about the world:\n${ctx.worldContext}` : '';
     const namePrefix = `${ctx.definition.name}: `;
+    const nearbyNpcs = this.extractNearbyNpcs(ctx.worldContext);
     const ownActions = ctx.transcript
       .filter(m => m.role === 'character' && m.content.startsWith(namePrefix))
       .slice(-3)
@@ -77,6 +100,11 @@ export class CharacterAgent {
         })()
       : '';
 
+    const repeatedOpeners = this.detectRepeatedOpeners(ownActions);
+    const phraseVarietyBlock = repeatedOpeners.length > 0
+      ? `\n\nPHRASING VARIETY (MANDATORY): You keep starting actions with "${repeatedOpeners.join('", "')}". DO NOT begin your next action with those words. Start differently — "Turning to...", "With a sharp glance...", "Drawing my blade...", "Stepping forward...", "Confronting...", etc.`
+      : '';
+
     const companionActions = ctx.partyMembers && ctx.partyMembers.length > 0
       ? ctx.transcript
           .filter(m => m.role === 'character' && !m.content.startsWith(namePrefix))
@@ -87,12 +115,18 @@ export class CharacterAgent {
       ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — if they fought, you investigate; if they protected, you scout ahead; if they talked, you watch for threats. Complement, don't copy.`
       : '';
 
+    const npcDirective = nearbyNpcs.length > 0
+      ? `\nNPCs HERE NOW: ${nearbyNpcs.join(', ')}. One of your proposed actions MUST be talking directly to one of them by name — "I confront ${nearbyNpcs[0]} about..." or "I ask ${nearbyNpcs[nearbyNpcs.length > 1 ? 1 : 0]} what they know about..."`
+      : '';
+
     const userMessage = [
       `<scene>\n${ctx.sceneNarration}\n</scene>`,
       worldBlock ? `\n<world>${worldBlock}\n</world>` : '',
       ownActionsBlock ? `\n<recent_actions>${ownActionsBlock}\n</recent_actions>` : '',
       companionBlock ? `\n<companions>${companionBlock}\n</companions>` : '',
       skillRotationBlock ? `\n<skill_rotation>${skillRotationBlock}\n</skill_rotation>` : '',
+      phraseVarietyBlock ? `\n<phrasing>${phraseVarietyBlock}\n</phrasing>` : '',
+      npcDirective ? `\n<npcs>${npcDirective}\n</npcs>` : '',
       `\n<events>\n${recentTranscript}\n</events>`,
       `\n<task>`,
       `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action should INVOLVE them — coordinate an attack, ask for their expertise, protect them, or argue about strategy.`,
@@ -166,6 +200,11 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
         })()
       : '';
 
+    const decisionRepeatedOpeners = this.detectRepeatedOpeners(recentActions);
+    const decisionPhraseBlock = decisionRepeatedOpeners.length > 0
+      ? `\nPHRASING VARIETY: You keep starting actions with "${decisionRepeatedOpeners.join('", "')}". DO NOT begin this action with those words. Start with a completely different verb or phrase.`
+      : '';
+
     const companionRecent = ctx.partyMembers && ctx.partyMembers.length > 0
       ? ctx.transcript
           .filter(m => m.role === 'character' && !m.content.startsWith(namePrefix))
@@ -183,6 +222,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       itemReminder ? `\n<inventory>${itemReminder}\n</inventory>` : '',
       varietyBlock ? `\n<recent_actions>${varietyBlock}\n</recent_actions>` : '',
       decisionRotationBlock ? `\n<skill_rotation>${decisionRotationBlock}\n</skill_rotation>` : '',
+      decisionPhraseBlock ? `\n<phrasing>${decisionPhraseBlock}\n</phrasing>` : '',
       companionHint ? `\n<companions>${companionHint}\n</companions>` : '',
       `\n<task>`,
       `Choose your action now.`,
