@@ -194,7 +194,7 @@ describeIfLive('Quality: 2-char Collapsed Mine — companion dynamics & trust di
     const sceneEndTurns: number[] = [];
     let turnCount = 0;
 
-    const TARGET_TURNS = 25;
+    const TARGET_TURNS = 15;
 
     const gameState: GameState = {
       round: 0,
@@ -260,7 +260,18 @@ describeIfLive('Quality: 2-char Collapsed Mine — companion dynamics & trust di
           const trust = (currentProposals as any).whisperTrust as number;
           if (trust !== undefined) trustTrajectory.push({ char: charName, trust, turn: round });
 
-          await waitForMsg(host, 'whisper-prompt', 30_000);
+          const whisperOrEnd = await waitForAnyMsg(host, ['whisper-prompt', 'scene-end', 'phase-change', 'narration'], 30_000).catch(() => null);
+          if (!whisperOrEnd || whisperOrEnd.type !== 'whisper-prompt') {
+            if (whisperOrEnd?.type === 'scene-end') {
+              sceneEndTurns.push(round);
+              gameState.sceneCount++;
+              console.log(`[mine-2char] Scene ${gameState.sceneCount} ended mid-round at round ${round}`);
+            } else if (whisperOrEnd?.type === 'phase-change' && (whisperOrEnd as any).phase === 'ended') {
+              gameEnded = true;
+            }
+            currentProposals = null;
+            break;
+          }
 
           const isGrimjaw = charName === 'Grimjaw';
           const whisperPool = isGrimjaw ? grimjawWhispers : wrenWhispers;

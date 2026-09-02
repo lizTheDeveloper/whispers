@@ -418,12 +418,17 @@ export class GameLoop {
       if (decision.whisperedInfluence === 'ignored') {
         effectiveDelta = -0.08;
       } else if (decision.whisperedInfluence === 'partially-followed') {
-        effectiveDelta = 0.03;
+        effectiveDelta = character.state.whisperTrust < 0.40 ? 0.06
+          : character.state.whisperTrust < 0.60 ? 0.04
+          : 0.02;
       } else {
         effectiveDelta = character.state.whisperTrust < 0.50 ? 0.08 : 0.05;
       }
     }
     const currentTrust = character.state.whisperTrust;
+    if (currentTrust > 0.85 && effectiveDelta > 0) {
+      effectiveDelta *= 0.5;
+    }
     const recoveryCap = currentTrust < 0.40 && effectiveDelta > 0 ? 0.12 : 0.08;
     if (effectiveDelta > recoveryCap) effectiveDelta = recoveryCap;
     character.state.whisperTrust = Math.max(0, Math.min(0.95, currentTrust + effectiveDelta));
