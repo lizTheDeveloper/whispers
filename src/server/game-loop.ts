@@ -177,10 +177,24 @@ export class GameLoop {
         }
       }
       if (!loc) {
-        const newId = randomBytes(16).toString('hex');
-        this.worldBible.addLocation({ id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null });
-        loc = { id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null };
-        console.log(`[game-loop] Auto-created location "${narration.currentLocationName}" (no snap match found)`);
+        const knownNames = this.worldBible.getAllLocationNames(this.campaignId);
+        if (knownNames.length > 0) {
+          const unvisitedNames = knownNames.filter(n => {
+            const l = this.worldBible.getLocationByName(this.campaignId, n);
+            return l && !this.worldBible.isLocationVisited(this.campaignId, l.id);
+          });
+          const fallbackName = unvisitedNames.length > 0
+            ? unvisitedNames[Math.floor(Math.random() * unvisitedNames.length)]!
+            : knownNames[Math.floor(Math.random() * knownNames.length)]!;
+          console.log(`[game-loop] DM invented "${narration.currentLocationName}" — force-redirecting to "${fallbackName}" (${unvisitedNames.length} unvisited available)`);
+          narration.currentLocationName = fallbackName;
+          loc = this.worldBible.getLocationByName(this.campaignId, fallbackName)!;
+        } else {
+          const newId = randomBytes(16).toString('hex');
+          this.worldBible.addLocation({ id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null });
+          loc = { id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null };
+          console.log(`[game-loop] Auto-created location "${narration.currentLocationName}" (no known locations exist)`);
+        }
       }
       this.state.currentLocationId = loc.id;
       this.worldBible.markLocationVisited(this.campaignId, loc.id);

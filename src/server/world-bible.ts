@@ -281,6 +281,11 @@ export class WorldBible {
       ORDER BY r.rowid DESC LIMIT 10`).all(campaignId) as any[];
   }
 
+  isLocationVisited(campaignId: string, locationId: string): boolean {
+    const row = this.db.prepare('SELECT visited FROM locations WHERE id = ? AND campaign_id = ?').get(locationId, campaignId) as any;
+    return row?.visited === 1;
+  }
+
   getAllLocationNames(campaignId: string): string[] {
     const rows = this.db.prepare('SELECT name FROM locations WHERE campaign_id = ? ORDER BY visited ASC').all(campaignId) as any[];
     return rows.map(r => r.name as string);
