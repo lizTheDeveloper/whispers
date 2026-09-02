@@ -382,7 +382,11 @@ export class GameLoop {
 
     decision.innerThought = decision.innerThought.replace(/\bi\b/g, 'I').replace(/\bi'/g, "I'");
 
-    this.addTranscript('character', `${character.definition.name}: ${decision.chosenAction}`, characterId);
+    let actionTranscript = `${character.definition.name}: ${decision.chosenAction}`;
+    if (decision.spokenWords) {
+      actionTranscript += ` — "${decision.spokenWords}"`;
+    }
+    this.addTranscript('character', actionTranscript, characterId);
     if (whisper) {
       const influenceNote = decision.whisperedInfluence === 'followed'
         ? `${character.definition.name} heeded the whisper`
@@ -396,6 +400,7 @@ export class GameLoop {
       characterId,
       characterName: character.definition.name,
       action: decision.chosenAction,
+      spokenWords: decision.spokenWords ?? null,
       innerThought: decision.innerThought,
       whisperInfluence: whisper ? decision.whisperedInfluence : 'none',
     });
@@ -430,7 +435,9 @@ export class GameLoop {
           dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
           campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
         },
-        decision.chosenAction,
+        decision.spokenWords
+          ? `${decision.chosenAction} — says: "${decision.spokenWords}"`
+          : decision.chosenAction,
         diceResult,
         this.state.currentScene,
         {

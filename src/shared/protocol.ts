@@ -34,7 +34,7 @@ export type ServerMessage =
   | { type: 'scene-image'; imageUrl: string; locationName: string }
   | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; whisperTrust: number }
   | { type: 'whisper-prompt'; characterId: string; characterName: string }
-  | { type: 'action-taken'; characterId: string; characterName: string; action: string; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }
+  | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }
   | { type: 'dice-roll'; result: DiceResult; context: string }
   | { type: 'resolution'; text: string }
   | { type: 'dm-question'; question: string }

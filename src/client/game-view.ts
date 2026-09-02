@@ -121,6 +121,9 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     whisperBtn.textContent = 'Whisper';
     actionArea.innerHTML = '';
     appendLog(`${msg.characterName}: ${msg.action}`, 'character');
+    if (msg.spokenWords) {
+      appendLog(`"${msg.spokenWords}"`, 'dialogue');
+    }
     appendLog(`(${msg.innerThought})`, 'whisper');
     if (msg.whisperInfluence && msg.whisperInfluence !== 'none') {
       const label = msg.whisperInfluence === 'followed' ? 'heeded your whisper'
