@@ -1167,7 +1167,7 @@ export class GameLoop {
       }));
 
     const maxCount = Math.max(...counts.map(c => c.count), 0);
-    const neglected = counts.filter(c => c.count === 0 && maxCount >= 2);
+    const neglected = counts.filter(c => c.count === 0 || (maxCount >= 5 && c.count <= 1));
     if (neglected.length === 0) return null;
 
     const names = neglected.slice(0, 3).map(n => n.name).join(', ');
