@@ -70,8 +70,9 @@ export class CharacterAgent {
             .sort((a, b) => b[1] - a[1])
             .slice(0, 3)
             .map(([k, v]) => `${k} (+${v})`);
+          const forbidden = CharacterAgent.SKILL_KEYWORDS[dominant]?.slice(0, 6).join(', ') ?? '';
           return otherSkills.length > 0
-            ? `\n\nSKILL ROTATION: You've been over-relying on ${dominant}. This turn, lead with a DIFFERENT skill: ${otherSkills.join(', ')}. A thief can also fight, observe, talk, or run — show range.`
+            ? `\n\nSKILL ROTATION (MANDATORY): You've used ${dominant} in 2+ of your last 3 actions. This turn you MUST NOT ${dominant.toLowerCase()}. DO NOT use words like: ${forbidden}. Instead, propose actions using: ${otherSkills.join(', ')}. For example: fight someone, climb something, pick a lock, ask an NPC a question, or observe your surroundings.`
             : '';
         })()
       : '';
@@ -158,8 +159,9 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
             .sort((a, b) => b[1] - a[1])
             .slice(0, 3)
             .map(([k, v]) => `${k} (+${v})`);
+          const forbidden = CharacterAgent.SKILL_KEYWORDS[dominant]?.slice(0, 6).join(', ') ?? '';
           return otherSkills.length > 0
-            ? `\nYou've leaned on ${dominant} too much — choose an action that uses ${otherSkills.join(' or ')} instead.`
+            ? `\nSKILL ROTATION: You MUST NOT choose a ${dominant}-based action this turn. Avoid: ${forbidden}. Pick an action that uses ${otherSkills.join(' or ')} instead.`
             : '';
         })()
       : '';
