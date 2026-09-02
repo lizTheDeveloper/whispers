@@ -15,6 +15,40 @@ interface CharacterContext {
 }
 
 export class CharacterAgent {
+  private static SKILL_KEYWORDS: Record<string, string[]> = {
+    Stealth: ['sneak', 'creep', 'slip', 'shadow', 'hide', 'crouch', 'silent', 'quietly', 'unseen', 'unnoticed', 'stealthy', 'dart'],
+    Fight: ['attack', 'strike', 'punch', 'kick', 'swing', 'slash', 'stab', 'fight', 'charge', 'tackle', 'grapple', 'block', 'parry', 'defend'],
+    Athletics: ['climb', 'jump', 'run', 'sprint', 'leap', 'dodge', 'vault', 'swim', 'scramble', 'dash', 'acrobat'],
+    Burglary: ['pick', 'lock', 'crack', 'safe', 'disable', 'disarm', 'trap', 'mechanism', 'bypass', 'break in', 'jimmy'],
+    Notice: ['scan', 'watch', 'observe', 'look', 'listen', 'search', 'inspect', 'examine', 'peer', 'spot', 'survey'],
+    Investigate: ['investigate', 'clue', 'deduce', 'analyze', 'study', 'research', 'examine', 'piece together', 'figure out'],
+    Rapport: ['talk', 'ask', 'persuade', 'charm', 'befriend', 'negotiate', 'reason with', 'convince', 'appeal'],
+    Deceive: ['lie', 'bluff', 'trick', 'disguise', 'pretend', 'feign', 'mislead', 'con', 'fake', 'impersonate'],
+    Empathy: ['read', 'sense', 'feel', 'intuit', 'understand', 'gauge', 'assess mood', 'empathize'],
+    Provoke: ['taunt', 'intimidate', 'threaten', 'provoke', 'challenge', 'confront', 'demand', 'scare'],
+    Will: ['resist', 'endure', 'concentrate', 'focus', 'steel', 'brace', 'overcome fear'],
+    Crafts: ['fix', 'repair', 'build', 'tinker', 'craft', 'modify', 'jury-rig', 'rewire', 'construct'],
+    Lore: ['recall', 'know', 'knowledge', 'recognize', 'identify', 'remember lore', 'ancient', 'history'],
+    Contacts: ['contact', 'know someone', 'call in', 'favor', 'connection', 'ally', 'informant'],
+  };
+
+  private detectDominantSkill(actions: string[], characterSkills: Record<string, number>): string | null {
+    if (actions.length < 2) return null;
+    const counts: Record<string, number> = {};
+    for (const action of actions) {
+      const lower = action.toLowerCase();
+      for (const [skill, keywords] of Object.entries(CharacterAgent.SKILL_KEYWORDS)) {
+        if (!(skill in characterSkills)) continue;
+        if (keywords.some(kw => lower.includes(kw))) {
+          counts[skill] = (counts[skill] ?? 0) + 1;
+        }
+      }
+    }
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (sorted.length > 0 && sorted[0]![1] >= 2) return sorted[0]![0];
+    return null;
+  }
+
   async proposeActions(ctx: CharacterContext): Promise<ActionProposal> {
     const charPrompt = this.buildCharacterPrompt(ctx);
     const recentTranscript = ctx.transcript.slice(-10).map(m => `[${m.role}] ${m.content}`).join('\n');
@@ -26,6 +60,20 @@ export class CharacterAgent {
       .map(m => m.content.slice(namePrefix.length));
     const ownActionsBlock = ownActions.length > 0
       ? `\n\nYour recent actions (DO NOT repeat these): ${ownActions.join('; ')}`
+      : '';
+
+    const dominant = this.detectDominantSkill(ownActions, ctx.definition.skills);
+    const skillRotationBlock = dominant
+      ? (() => {
+          const otherSkills = Object.entries(ctx.definition.skills)
+            .filter(([k, v]) => k !== dominant && v >= 1)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([k, v]) => `${k} (+${v})`);
+          return otherSkills.length > 0
+            ? `\n\nSKILL ROTATION: You've been over-relying on ${dominant}. This turn, lead with a DIFFERENT skill: ${otherSkills.join(', ')}. A thief can also fight, observe, talk, or run — show range.`
+            : '';
+        })()
       : '';
 
     const companionActions = ctx.partyMembers && ctx.partyMembers.length > 0
@@ -43,6 +91,7 @@ export class CharacterAgent {
       worldBlock ? `\n<world>${worldBlock}\n</world>` : '',
       ownActionsBlock ? `\n<recent_actions>${ownActionsBlock}\n</recent_actions>` : '',
       companionBlock ? `\n<companions>${companionBlock}\n</companions>` : '',
+      skillRotationBlock ? `\n<skill_rotation>${skillRotationBlock}\n</skill_rotation>` : '',
       `\n<events>\n${recentTranscript}\n</events>`,
       `\n<task>`,
       `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action should INVOLVE them — coordinate an attack, ask for their expertise, protect them, or argue about strategy.`,
@@ -101,6 +150,20 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       ? `\n\nYour last ${recentActions.length} actions (DO NOT repeat these themes — if you fought, try talking; if you protected, try investigating; if you stayed put, try moving): ${recentActions.join(' | ')}`
       : '';
 
+    const dominant = this.detectDominantSkill(recentActions, ctx.definition.skills);
+    const decisionRotationBlock = dominant
+      ? (() => {
+          const otherSkills = Object.entries(ctx.definition.skills)
+            .filter(([k, v]) => k !== dominant && v >= 1)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([k, v]) => `${k} (+${v})`);
+          return otherSkills.length > 0
+            ? `\nYou've leaned on ${dominant} too much — choose an action that uses ${otherSkills.join(' or ')} instead.`
+            : '';
+        })()
+      : '';
+
     const companionRecent = ctx.partyMembers && ctx.partyMembers.length > 0
       ? ctx.transcript
           .filter(m => m.role === 'character' && !m.content.startsWith(namePrefix))
@@ -117,6 +180,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       whisperText ? `\n<whisper>${whisperText}\n</whisper>` : '',
       itemReminder ? `\n<inventory>${itemReminder}\n</inventory>` : '',
       varietyBlock ? `\n<recent_actions>${varietyBlock}\n</recent_actions>` : '',
+      decisionRotationBlock ? `\n<skill_rotation>${decisionRotationBlock}\n</skill_rotation>` : '',
       companionHint ? `\n<companions>${companionHint}\n</companions>` : '',
       `\n<task>`,
       `Choose your action now.`,
@@ -152,7 +216,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `Personality: ${d.personality}`,
       `Aspects: ${d.aspects.join(', ')}`,
       `Skills: ${skillLine}`,
-      `Your strengths are ${topSkills} — lean into these when proposing actions. A character with high Lore uses knowledge, not swords. A character with high Fight charges in. Play to YOUR strengths.`,
+      `Your best skills are ${topSkills}, but you have a full skill set. Use ALL your skills across the adventure — a thief can also fight, observe, negotiate, or run. Vary which skill drives each action; never use the same approach twice in a row.`,
       `Current state: ${ctx.state.stress}/3 stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
       ctx.state.fatePoints > 0
         ? `You have ${ctx.state.fatePoints} fate point${ctx.state.fatePoints > 1 ? 's' : ''}.${ctx.state.fatePoints >= 4 ? ' You are OVERFLOWING with fate points — SPEND them!' : ''} To spend a fate point for a +2 bonus, mention an aspect naturally in a NARRATIVE action (not "spending" or "invoking" — those are game terms). Your aspects: "${d.highConcept}", "${d.trouble}", ${d.aspects.map(a => `"${a}"`).join(', ')}. Example: "I call on my ${d.aspects[0]} and charge into the fray" — describe WHAT YOU DO, weaving the aspect into the story.`
