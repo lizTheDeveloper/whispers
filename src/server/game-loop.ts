@@ -1002,6 +1002,22 @@ export class GameLoop {
     return `NPC ROTATION: ${names} ha${neglected.length === 1 ? 's' : 've'} not appeared yet — introduce or mention ${neglected.length === 1 ? 'them' : 'one of them'} in this narration. Every NPC should get screen time.`;
   }
 
+  private getWhisperTensionHint(): string | null {
+    const hints: string[] = [];
+    for (const [, char] of this.characters) {
+      const trust = char.state.whisperTrust;
+      const name = char.definition.name.split(' ')[0]!;
+      if (trust >= 0.35 && trust <= 0.45) {
+        hints.push(`WHISPER CRISIS — ${name}'s trust is at ${trust.toFixed(2)} (tipping point). Present a moment where trusting the voice would clearly HELP — a warning about hidden danger, advice that plays to their strengths. Let the player prove the voice is worth listening to.`);
+      } else if (trust >= 0.65 && trust <= 0.75) {
+        hints.push(`WHISPER TEST — ${name} deeply trusts the voice (${trust.toFixed(2)}). Present a moral dilemma where the "smart" choice conflicts with the "right" choice. Force the player to decide: do they guide their character toward safety or integrity?`);
+      } else if (trust <= 0.20) {
+        hints.push(`WHISPER DEAF — ${name} barely hears the voice anymore (${trust.toFixed(2)}). Show what happens when a character has NO inner compass — bad decisions compound, danger closes in. Make the player WANT to rebuild trust.`);
+      }
+    }
+    return hints.length > 0 ? hints.join('\n') : null;
+  }
+
   private addTranscript(role: TranscriptMessage['role'], content: string, characterId?: string): void {
     this.transcript.push({ role, content, characterId, timestamp: new Date().toISOString() });
   }
