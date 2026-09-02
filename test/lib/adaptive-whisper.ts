@@ -11,10 +11,11 @@ export interface GameState {
   characterNames: string[];
 }
 
-const usedWhispers = new Map<string, Set<string>>();
+const recentWhispers = new Map<string, string[]>();
+const RECENT_WINDOW = 10;
 
 export function resetWhisperHistory(): void {
-  usedWhispers.clear();
+  recentWhispers.clear();
 }
 
 export function generateWhisper(
@@ -26,15 +27,13 @@ export function generateWhisper(
 ): string {
   const templates = getTemplatesForStyle(style, charName, state, lastNarration, lastAction);
   const key = `${style}:${charName}`;
-  if (!usedWhispers.has(key)) usedWhispers.set(key, new Set());
-  const used = usedWhispers.get(key)!;
+  if (!recentWhispers.has(key)) recentWhispers.set(key, []);
+  const recent = recentWhispers.get(key)!;
 
-  let best = templates[0]!;
-  for (const t of templates) {
-    if (!used.has(t)) { best = t; break; }
-  }
-  used.add(best);
-  if (used.size >= templates.length) used.clear();
+  const fresh = templates.filter(t => !recent.includes(t));
+  const best = fresh.length > 0 ? fresh[0]! : templates[0]!;
+  recent.push(best);
+  if (recent.length > RECENT_WINDOW) recent.shift();
   return best;
 }
 

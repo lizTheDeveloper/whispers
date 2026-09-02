@@ -80,8 +80,8 @@ export class DmAgent {
       } else {
         sessionArc += ` (Turn ${sessionTurn} of session — converge toward resolution, but give the ending room to breathe.)`;
       }
-    } else if (sessionTurn >= 20 && sceneNum >= 4) {
-      sessionArc += ` (Turn ${sessionTurn} of session — converge toward resolution, but give the ending room to breathe.)`;
+    } else if (sessionTurn >= 16 && sceneNum >= 3) {
+      sessionArc += ` (Turn ${sessionTurn} of session — the story is approaching its climax. Start converging threads toward a resolution.)`;
     }
 
     const developThreshold = partySize <= 1 ? 3 : 3;

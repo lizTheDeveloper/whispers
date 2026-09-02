@@ -707,6 +707,19 @@ export class GameLoop {
     this.state.sceneTurnCount = this.sceneTurnCount;
     saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state, this.transcript);
 
+    if ((this.state.currentTurn ?? 0) % 4 === 0) {
+      const recentForExtraction = this.transcript.slice(-8);
+      this.extractor.extractFacts(recentForExtraction, this.state.currentScene)
+        .then(facts => {
+          const total = facts.newLocations.length + facts.newEntities.length + facts.newItems.length + facts.newEvents.length + facts.newRelationships.length;
+          if (total > 0) {
+            this.worldBible.applyDiff(this.campaignId, facts);
+            console.log(`[game-loop] Periodic extraction (turn ${this.state.currentTurn}): ${total} facts (${facts.newEvents.length} events, ${facts.newRelationships.length} rels, ${facts.newEntities.length} entities)`);
+          }
+        })
+        .catch(e => console.error('[game-loop] Periodic extraction failed:', (e as Error).message?.slice(0, 100)));
+    }
+
     await this.maybeCompactTranscript();
   }
 
