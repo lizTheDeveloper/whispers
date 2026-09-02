@@ -202,7 +202,14 @@ describeIfLive('Adaptive Whispers: Strategist vs Antagonist at Frontier Outpost'
         }
         turnCount = round;
 
-        const next = await waitForAnyMsg(host, ['action-proposals', 'scene-end', 'phase-change'], 120_000);
+        let next: ServerMessage | null = null;
+        for (let seek = 0; seek < 6; seek++) {
+          const peek = await waitForAnyMsg(host, ['action-proposals', 'scene-end', 'phase-change', 'character-state-update', 'resolution', 'dice-roll'], 120_000);
+          if (peek.type === 'character-state-update' || peek.type === 'resolution' || peek.type === 'dice-roll') continue;
+          next = peek;
+          break;
+        }
+        if (!next) continue;
         if (next.type === 'scene-end') {
           sceneCount++;
           gameState.sceneCount = sceneCount;
@@ -259,11 +266,11 @@ describeIfLive('Adaptive Whispers: Strategist vs Antagonist at Frontier Outpost'
 
           if (charIdx < 1) {
             let found = false;
-            for (let drain = 0; drain < 8 && !found; drain++) {
-              const peek = await waitForAnyMsg(host, ['action-proposals', 'narration', 'scene-end', 'phase-change', 'character-state-update', 'dice-roll'], 60_000).catch(() => null);
+            for (let drain = 0; drain < 12 && !found; drain++) {
+              const peek = await waitForAnyMsg(host, ['action-proposals', 'narration', 'scene-end', 'phase-change', 'character-state-update', 'dice-roll', 'resolution'], 60_000).catch(() => null);
               if (!peek) { currentProposals = null; break; }
               if (peek.type === 'action-proposals') { currentProposals = peek; found = true; }
-              else if (peek.type === 'character-state-update' || peek.type === 'dice-roll') { continue; }
+              else if (peek.type === 'character-state-update' || peek.type === 'dice-roll' || peek.type === 'resolution') { continue; }
               else { currentProposals = null; break; }
             }
             if (!found) currentProposals = null;
