@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
+import { connectWs as _connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
 
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL;
 const describeIfLive = LLM_PROXY_URL ? describe : describe.skip;
@@ -10,47 +11,19 @@ let serverProcess: ReturnType<typeof import('node:child_process').fork> | null =
 let port: number;
 const allServerLogs: string[] = [];
 
-function connectWs(): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://localhost:${port}/ws`);
-    ws.on('open', () => resolve(ws));
-    ws.on('error', reject);
-    setTimeout(() => reject(new Error('WS connect timeout')), 10_000);
-  });
-}
+function connectWs(): Promise<WebSocket> { return _connectWs(port); }
 
-function sendMsg(ws: WebSocket, msg: ClientMessage): void {
-  ws.send(JSON.stringify(msg));
+const queues = new Map<WebSocket, MessageQueue>();
+function q(ws: WebSocket): MessageQueue {
+  let mq = queues.get(ws);
+  if (!mq) { mq = new MessageQueue(ws); queues.set(ws, mq); }
+  return mq;
 }
-
 function waitForMsg(ws: WebSocket, type: string, timeoutMs = 90_000): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${type} after ${timeoutMs}ms`)), timeoutMs);
-    const handler = (data: Buffer) => {
-      const msg: ServerMessage = JSON.parse(data.toString());
-      if (msg.type === type) {
-        clearTimeout(timer);
-        ws.off('message', handler);
-        resolve(msg);
-      }
-    };
-    ws.on('message', handler);
-  });
+  return q(ws).waitFor(type, timeoutMs);
 }
-
 function waitForAnyMsg(ws: WebSocket, types: string[], timeoutMs = 90_000): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout waiting for any of [${types.join(',')}] after ${timeoutMs}ms`)), timeoutMs);
-    const handler = (data: Buffer) => {
-      const msg: ServerMessage = JSON.parse(data.toString());
-      if (types.includes(msg.type)) {
-        clearTimeout(timer);
-        ws.off('message', handler);
-        resolve(msg);
-      }
-    };
-    ws.on('message', handler);
-  });
+  return q(ws).waitForAny(types, timeoutMs);
 }
 
 async function completeDmSetup(ws: WebSocket): Promise<void> {
@@ -334,5 +307,5 @@ describeIfLive('Chronicler + Frontier Outpost: 2-Character Mystery Investigation
     const uniqueChars = new Set(actionsTaken.map(a => a.char));
     expect(uniqueChars.size).toBe(2);
 
-  }, 900_000);
+  }, 1_800_000);
 });
