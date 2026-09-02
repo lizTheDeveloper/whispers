@@ -59,7 +59,7 @@ export class DmAgent {
 
     const sessionTurn = pacing?.sessionTurnCount ?? 0;
 
-    const isFinale = pacing?.isFinale ?? (sceneNum >= 5 && sessionTurn >= 20);
+    const isFinale = pacing?.isFinale ?? (sceneNum >= 4 && sessionTurn >= 18);
 
     let sessionArc: string;
     if (sceneNum <= 1) {
