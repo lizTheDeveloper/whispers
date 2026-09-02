@@ -84,17 +84,35 @@ export class DmAgent {
     const escalateThreshold = partySize <= 1 ? 6 : Math.max(4, 7 - partySize);
 
     const hasPreviousScene = sceneNum > 1;
-    const pacingHint = roundCount === 0
-      ? hasPreviousScene
+
+    const developBeats = [
+      'Introduce an NPC with a secret agenda — they want something from the party and will offer something tempting in exchange.',
+      'Add an environmental complication: a door locks behind them, a storm rolls in, lights go out, a passage collapses. The terrain itself becomes an obstacle.',
+      'A clue or discovery reframes the situation — what seemed safe is dangerous, what seemed simple is layered. Reveal that an assumption was wrong.',
+    ];
+    const escalateBeats = [
+      'An NPC betrays expectations — an ally reveals a hidden motive, an enemy offers help with strings attached, or a neutral party picks a side.',
+      'Time pressure arrives: a countdown starts, a threat approaches, an ally calls for help from elsewhere. The party must choose between competing urgent needs.',
+      'A consequence from an earlier action catches up — someone they offended returns with backup, a shortcut they took has a hidden cost, a promise comes due.',
+      'Force a hard choice between two things the party cares about: save the hostage or catch the villain, protect the secret or warn the village, keep the item or trade it for passage.',
+    ];
+
+    let pacingHint: string;
+    if (roundCount === 0) {
+      pacingHint = hasPreviousScene
         ? 'This is the opening of a NEW scene. Bridge from the previous scene — acknowledge what changed, what was won or lost, and why the party is in a different situation now. Then set the new stage: describe the new location, atmosphere, and sensory details. If UNRESOLVED THREADS exist in the world state, weave at least one into this scene opening as a hook or complication. The scene transition should feel like a chapter break, not a jump cut.'
-        : 'This is the opening of the FIRST scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Introduce the dramatic question. Hint at trouble or opportunity.'
-      : roundCount < developThreshold
-      ? 'The scene is developing. Introduce complications, NPCs with agendas, or environmental obstacles. Not everything should go smoothly. Do NOT set isSceneEnd — the scene has barely started.'
-      : roundCount < escalateThreshold
-      ? 'The scene is in full swing. Escalate stakes — consequences from earlier actions catch up, allies may be threatened, hard choices emerge. Move toward a dramatic turning point. Do NOT set isSceneEnd yet — let the tension build.'
-      : roundCount < escalateThreshold + 3
-      ? `The scene has run for ${roundCount} rounds. Actively look for a climactic moment to end the scene. If a dramatic beat just landed, tension peaked, the party reached a new location, combat concluded, or a key revelation dropped — set isSceneEnd to true. Transition to keep the narrative moving.`
-      : `SCENE OVERRUN: ${roundCount} rounds. You MUST end this scene NOW. Narrate a dramatic climax or cliffhanger and set isSceneEnd to true. Do not continue — the story needs to move forward.`;
+        : 'This is the opening of the FIRST scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Introduce the dramatic question. Hint at trouble or opportunity.';
+    } else if (roundCount < developThreshold) {
+      const beat = developBeats[(roundCount - 1) % developBeats.length]!;
+      pacingHint = `The scene is developing (round ${roundCount}). ${beat} Do NOT set isSceneEnd — the scene has barely started.`;
+    } else if (roundCount < escalateThreshold) {
+      const beat = escalateBeats[(roundCount - developThreshold) % escalateBeats.length]!;
+      pacingHint = `The scene is escalating (round ${roundCount}). ${beat} Do NOT set isSceneEnd yet — let the tension build toward a climax.`;
+    } else if (roundCount < escalateThreshold + 3) {
+      pacingHint = `The scene has run for ${roundCount} rounds. Actively look for a climactic moment to end the scene. If a dramatic beat just landed, tension peaked, the party reached a new location, combat concluded, or a key revelation dropped — set isSceneEnd to true. Transition to keep the narrative moving.`;
+    } else {
+      pacingHint = `SCENE OVERRUN: ${roundCount} rounds. You MUST end this scene NOW. Narrate a dramatic climax or cliffhanger and set isSceneEnd to true. Do not continue — the story needs to move forward.`;
+    }
 
     const locTurns = pacing?.locationTurnCount ?? 0;
     const locationHint = locTurns >= 4
