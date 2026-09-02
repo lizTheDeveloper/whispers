@@ -1081,6 +1081,18 @@ export class GameLoop {
         hints.push(`WHISPER DEAF — ${name} barely hears the voice anymore (${trust.toFixed(2)}). Show what happens when a character has NO inner compass — bad decisions compound, danger closes in. Make the player WANT to rebuild trust.`);
       }
     }
+    if (this.characters.size >= 2) {
+      const trusts = Array.from(this.characters.values()).map(c => ({
+        name: c.definition.name.split(' ')[0]!,
+        trust: c.state.whisperTrust,
+      }));
+      trusts.sort((a, b) => b.trust - a.trust);
+      const gap = trusts[0]!.trust - trusts[trusts.length - 1]!.trust;
+      if (gap >= 0.3) {
+        hints.push(`TRUST SPLIT — ${trusts[0]!.name} (${trusts[0]!.trust.toFixed(2)}) trusts the voice while ${trusts[trusts.length - 1]!.name} (${trusts[trusts.length - 1]!.trust.toFixed(2)}) resists it. Create a situation where their different relationships with the voice put them at odds — one wants to follow a hunch, the other insists on caution.`);
+      }
+    }
+
     return hints.length > 0 ? hints.join('\n') : null;
   }
 
