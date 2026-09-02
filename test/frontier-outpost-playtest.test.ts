@@ -57,7 +57,7 @@ async function completeDmSetup(ws: WebSocket): Promise<void> {
   await waitForMsg(ws, 'dm-settings');
   await waitForMsg(ws, 'dm-chat-reply');
   const followUps = [
-    'Use FATE Core. Dungeon crawl in an abandoned mine with rescue mission. Two players. No house rules.',
+    'Use FATE Core. Investigation scenario at a frontier trading post. Two players. No house rules.',
     'Yes, everything is decided. Start the game now. We are ready.',
     'Confirmed. Lock it in. Done.',
   ];
@@ -74,7 +74,7 @@ beforeAll(async () => {
   if (!LLM_PROXY_URL) return;
   const { fork } = await import('node:child_process');
   const { resolve } = await import('node:path');
-  port = 4200 + Math.floor(Math.random() * 50);
+  port = 4300 + Math.floor(Math.random() * 50);
   serverProcess = fork(
     resolve(import.meta.dirname, '../node_modules/.bin/tsx'),
     [resolve(import.meta.dirname, '../src/server/index.ts')],
@@ -99,21 +99,21 @@ afterAll(async () => {
   }
   if (allServerLogs.length > 0) {
     console.log('\n=== SERVER LOGS ===');
-    allServerLogs.slice(-60).forEach(l => console.log(l));
+    allServerLogs.slice(-80).forEach(l => console.log(l));
   }
 });
 
-describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
-  it('runs 25 turns with exploration, NPC encounters, item usage, and professor teaching asides', async () => {
+describeIfLive('Chronicler + Frontier Outpost: 2-Character Mystery Investigation', () => {
+  it('runs 25 rounds with investigation, NPC negotiation, faction dynamics, and chronicler voice', async () => {
     const findings: string[] = [];
 
     const host = await connectWs();
     const roomPromise = waitForMsg(host, 'room-joined');
     sendMsg(host, {
       type: 'create',
-      name: 'Professor Mine Playtest',
-      dmPreset: 'professor',
-      scenarioId: 'collapsed-mine',
+      name: 'Frontier Outpost Playtest',
+      dmPreset: 'chronicler',
+      scenarioId: 'frontier-outpost',
       systemId: 'fate-core',
       houseRules: null,
     });
@@ -125,33 +125,33 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
 
     const p1 = await connectWs();
     const p2 = await connectWs();
-    sendMsg(p1, { type: 'join', joinCode, playerName: 'Scout' });
-    sendMsg(p2, { type: 'join', joinCode, playerName: 'Healer' });
+    sendMsg(p1, { type: 'join', joinCode, playerName: 'Diplomat' });
+    sendMsg(p2, { type: 'join', joinCode, playerName: 'Tracker' });
     await Promise.all([waitForMsg(p1, 'room-joined'), waitForMsg(p2, 'room-joined')]);
 
-    const scout: CharacterDefinition = {
-      name: 'Kael Ashwood',
-      highConcept: 'Wilderness Tracker Who Reads The Land Like A Book',
-      trouble: 'I Trust The Forest More Than People',
-      aspects: ['Sharp Eyes Miss Nothing', 'Every Trail Tells A Story', 'The Wild Keeps Its Own Counsel'],
-      personality: 'Quiet, observant, distrustful of authority. Speaks through actions more than words.',
-      backstory: 'Raised by a trapper after being abandoned as a child. Found by the village but never fully joined it.',
-      skills: { Notice: 4, Athletics: 3, Stealth: 3, Survival: 2, Fight: 2, Will: 1, Investigate: 1, Rapport: 0 },
-      stunts: ['Keen Eyes: +2 to Notice in natural environments', 'Sure-Footed: +2 to Athletics when climbing or traversing rough terrain'],
+    const diplomat: CharacterDefinition = {
+      name: 'Mira Voss',
+      highConcept: 'Border Diplomat Who Speaks Every Language But Her Own Heart',
+      trouble: 'I Make Promises I Cannot Keep',
+      aspects: ['Words Are My Weapons', 'The Treaty Must Hold', 'Everyone Has A Price — Even Me'],
+      personality: 'Charismatic and calculating. Finds leverage in every conversation. Haunted by deals gone wrong.',
+      backstory: 'Sent by the governor to broker peace. Failed once before at a border dispute — twelve people died. This time she will not fail.',
+      skills: { Rapport: 4, Deceive: 3, Empathy: 3, Investigate: 2, Will: 2, Lore: 1, Notice: 1, Athletics: 0 },
+      stunts: ['Silver Tongue: +2 to Rapport when negotiating between hostile parties', 'Read The Room: +2 to Empathy when assessing group mood'],
     };
 
-    const healer: CharacterDefinition = {
-      name: 'Sister Wren Holloway',
-      highConcept: 'Field Medic With An Unbreakable Oath',
-      trouble: 'I Cannot Turn Away From Suffering',
-      aspects: ['Steady Hands In A Crisis', 'The Oath Binds Me To All Who Bleed', 'I Have Seen What Fear Does To Good People'],
-      personality: 'Compassionate but pragmatic. Unflinching in the face of injury, but haunted by those she could not save.',
-      backstory: 'Former military medic who left the army after a massacre she could not prevent. Now serves the village.',
-      skills: { Empathy: 4, Lore: 3, Will: 3, Rapport: 2, Notice: 2, Investigate: 1, Athletics: 1, Fight: 0 },
-      stunts: ['Combat Medic: +2 to Empathy when stabilizing a wounded person', 'Iron Nerve: +2 to Will when facing disturbing or terrifying sights'],
+    const tracker: CharacterDefinition = {
+      name: 'Renn Blackwood',
+      highConcept: 'Frontier Scout Who Trusts Tracks More Than Words',
+      trouble: 'The Wilderness Has My Loyalty — Not Any Flag',
+      aspects: ['The Land Remembers Everything', 'No Trail Goes Cold On My Watch', 'I Owe Debts I Cannot Name'],
+      personality: 'Laconic and intense. Reads terrain, animals, and weather like a language. Uncomfortable with politics.',
+      backstory: 'A former nomad scout who crossed to the settler side years ago. Neither side fully trusts him. He tracked the horn\'s path to the outpost — the mud, the dog prints, the wagon ruts.',
+      skills: { Notice: 4, Investigate: 3, Athletics: 3, Stealth: 2, Survival: 2, Fight: 1, Will: 1, Rapport: 0 },
+      stunts: ['Read The Land: +2 to Investigate when examining outdoor tracks or terrain', 'Quick Reflexes: +2 to Athletics when reacting to sudden danger'],
     };
 
-    for (const [player, def, label] of [[p1, scout, 'scout'], [p2, healer, 'healer']] as const) {
+    for (const [player, def, label] of [[p1, diplomat, 'diplomat'], [p2, tracker, 'tracker']] as const) {
       let approved = false;
       let charId = '';
       for (let attempt = 0; attempt < 3 && !approved; attempt++) {
@@ -161,9 +161,9 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
         if (valMsg.type === 'character-validated' && (valMsg as any).approved) {
           charId = (valMsg as any).characterId;
           approved = true;
-          console.log(`[mine] ${label} AI-approved: ${charId}`);
+          console.log(`[outpost] ${label} AI-approved: ${charId}`);
         } else {
-          console.log(`[mine] ${label} validation attempt ${attempt + 1} failed`);
+          console.log(`[outpost] ${label} validation attempt ${attempt + 1} failed`);
           await new Promise(r => setTimeout(r, 2000));
         }
       }
@@ -174,38 +174,40 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
       await waitForMsg(host, 'negotiation-opened', 30_000);
       await waitForMsg(host, 'negotiation-message', 90_000);
       sendMsg(host, { type: 'host-approve-character', characterId: charId });
-      console.log(`[mine] Host approved ${label}`);
+      console.log(`[outpost] Host approved ${label}`);
       await new Promise(r => setTimeout(r, 1000));
     }
 
     sendMsg(host, { type: 'start-game' });
     const startMsg = await waitForMsg(p1, 'phase-change', 10_000);
     expect(startMsg.type === 'phase-change' && (startMsg as any).phase).toBe('playing');
-    console.log('[mine] Game started');
+    console.log('[outpost] Game started');
 
     const narrations: string[] = [];
     const actionsTaken: Array<{ char: string; action: string; turn: number }> = [];
     const locations = new Set<string>();
     let sceneCount = 0;
     let turnCount = 0;
-    let teachingAsides = 0;
     let compelCount = 0;
-    let itemMentions = 0;
+    let diplomacyActions = 0;
+    let investigateActions = 0;
+    let npcInteractions = 0;
+    let conflictMoments = 0;
 
     const TARGET_TURNS = 25;
 
     const whisperPlan: Record<number, Record<string, string>> = {
-      1: { 'Kael Ashwood': 'Look for the ventilation shaft — the map Tobias drew might help' },
-      2: { 'Sister Wren Holloway': 'Talk to Tobias — he saw something in the dark. Be gentle.' },
-      3: { 'Kael Ashwood': 'Something is off about Foreman Greaves — press him about his burns' },
-      4: { 'Sister Wren Holloway': 'The crystals are dangerous — do NOT touch them, just observe' },
-      5: { 'Kael Ashwood': 'Go deeper. The miners might still be alive past the collapse.' },
-      6: { 'Sister Wren Holloway': 'Use the crystal shard — it might react to the cavern walls' },
-      7: { 'Kael Ashwood': 'The Pale Woman is not your enemy. Approach carefully.' },
-      8: { 'Sister Wren Holloway': 'Save the miners first. The mystery can wait.', 'Kael Ashwood': 'Forget the miners — this discovery is bigger than a rescue' },
-      9: { 'Kael Ashwood': 'Trust Wren. She sees things you miss about people.' },
-      10: { 'Sister Wren Holloway': 'Greaves caused this collapse. Confront him before he runs.' },
-      12: { 'Kael Ashwood': 'The forest has always protected you. Let it guide you out.' },
+      1: { 'Mira Voss': 'Talk to Marshal Thorne first — she knows more than she admits. Be diplomatic but firm.' },
+      2: { 'Renn Blackwood': 'Check Kef\'s wagon wheels for shrine mud. Don\'t let him see you looking.' },
+      3: { 'Mira Voss': 'Offer Chieftain Asha a private audience. Show respect for nomad customs.' },
+      4: { 'Renn Blackwood': 'Find Old Berrin at the shrine. He heard something that night — protect him while he talks.' },
+      5: { 'Mira Voss': 'Kef is the thief. But confront him privately — public accusation will start a fight.' },
+      6: { 'Renn Blackwood': 'The howling in the hills — go investigate. Take the herb poultice from Brother Moss.' },
+      7: { 'Mira Voss': 'Propose a joint search party — settlers and nomads together. It builds trust.', 'Renn Blackwood': 'Ignore the diplomat. Go alone. The caves hold answers.' },
+      8: { 'Mira Voss': 'The letter in Thorne\'s strongbox — ask her about frontier antiquities buyers.' },
+      9: { 'Renn Blackwood': 'Dara is right to be suspicious. Tell her what you found at Kef\'s wagon.' },
+      10: { 'Mira Voss': 'Time is running out. Propose returning the horn at dawn as a peace ceremony.' },
+      12: { 'Renn Blackwood': 'Brother Moss knows what the horn really does. The howling — it\'s not just storms.' },
     };
 
     let gameEnded = false;
@@ -213,25 +215,25 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
       try {
         const narMsg = await waitForAnyMsg(host, ['narration', 'phase-change'], 180_000);
         if (narMsg.type === 'phase-change') {
-          if ((narMsg as any).phase === 'ended') { console.log(`[mine] Game ended at round ${round}`); gameEnded = true; break; }
+          if ((narMsg as any).phase === 'ended') { console.log(`[outpost] Game ended at round ${round}`); gameEnded = true; break; }
           continue;
         }
         narrations.push(narMsg.text);
         if ((narMsg as any).locationName) locations.add((narMsg as any).locationName);
         turnCount = round;
 
-        if (narMsg.text.includes('Compel:') || narMsg.text.includes('trouble')) compelCount++;
+        const narText = narMsg.text.toLowerCase();
+        if (/\b(tension|hostil|threaten|armed|blood|war)\b/.test(narText)) conflictMoments++;
 
         const next = await waitForAnyMsg(host, ['action-proposals', 'scene-end', 'phase-change'], 120_000);
         if (next.type === 'scene-end') {
           sceneCount++;
-          console.log(`[mine] Scene ${sceneCount} ended at round ${round}`);
+          console.log(`[outpost] Scene ${sceneCount} ended at round ${round}`);
           continue;
         }
         if (next.type === 'phase-change') { if ((next as any).phase === 'ended') { gameEnded = true; break; } continue; }
         if (next.type !== 'action-proposals') continue;
 
-        // Process ALL characters in this round (server sends char turns back-to-back before next narration)
         let currentProposals: ServerMessage | null = next;
         for (let charIdx = 0; charIdx < 2 && currentProposals; charIdx++) {
           const charName = (currentProposals as any).characterName as string;
@@ -240,26 +242,30 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
           await waitForMsg(host, 'whisper-prompt', 30_000);
           if (whisper) {
             sendMsg(host, { type: 'whisper', text: whisper });
-            console.log(`[mine] R${round} whispered to ${charName.split(' ')[0]}: "${whisper.slice(0, 50)}"`);
+            console.log(`[outpost] R${round} whispered to ${charName.split(' ')[0]}: "${whisper.slice(0, 60)}"`);
           }
 
           const actionMsg = await waitForMsg(host, 'action-taken', 120_000);
           if (actionMsg.type === 'action-taken') {
-            actionsTaken.push({ char: (actionMsg as any).characterName, action: (actionMsg as any).action, turn: round });
+            const action = (actionMsg as any).action as string;
+            actionsTaken.push({ char: (actionMsg as any).characterName, action, turn: round });
+
+            const lowerAction = action.toLowerCase();
+            if (/\b(talk|speak|persuade|negotiate|argue|propose|convince|appeal|address)\b/.test(lowerAction)) diplomacyActions++;
+            if (/\b(search|examine|investigate|inspect|look|track|follow|check|study)\b/.test(lowerAction)) investigateActions++;
           }
 
-          // After action-taken, server sends resolution/narration, dice-roll, character-state-update, then possibly next char's proposals
           const resMsg = await waitForAnyMsg(host, ['narration', 'resolution', 'scene-end', 'phase-change'], 120_000);
           if (resMsg.type === 'narration' || resMsg.type === 'resolution') {
             const text = resMsg.text ?? '';
             narrations.push(text);
-            if (/\([^)]*\+\d+[^)]*vs[^)]*\+\d+[^)]*\)/.test(text)) teachingAsides++;
-            const itemNames = ['lantern', 'map', 'crystal', 'shard', 'journal', 'blueprint'];
-            if (itemNames.some(n => text.toLowerCase().includes(n))) itemMentions++;
+            const npcNames = ['thorne', 'asha', 'kef', 'berrin', 'dara', 'moss'];
+            if (npcNames.some(n => text.toLowerCase().includes(n))) npcInteractions++;
+            if (/compel|trouble/i.test(text)) compelCount++;
           }
           if (resMsg.type === 'scene-end') {
             sceneCount++;
-            console.log(`[mine] Scene ${sceneCount} ended at round ${round} (during char ${charIdx + 1})`);
+            console.log(`[outpost] Scene ${sceneCount} ended at round ${round} (during char ${charIdx + 1})`);
             currentProposals = null;
             break;
           }
@@ -269,7 +275,6 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
             break;
           }
 
-          // Wait for next char's action-proposals, skipping character-state-update/dice-roll messages
           if (charIdx < 1) {
             let found = false;
             for (let drain = 0; drain < 8 && !found; drain++) {
@@ -284,36 +289,44 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
         }
 
         if (round % 3 === 0) {
-          console.log(`[mine] Round ${round} — ${sceneCount} scenes, ${locations.size} locs, ${teachingAsides} asides, ${itemMentions} items, ${actionsTaken.length} actions`);
+          console.log(`[outpost] Round ${round} — ${sceneCount} scenes, ${locations.size} locs, ${diplomacyActions} diplomacy, ${investigateActions} investigate, ${npcInteractions} npc, ${actionsTaken.length} actions`);
         }
       } catch (e) {
         findings.push(`Round ${round}: ${(e as Error).message}`);
-        console.error(`[mine] Round ${round} error:`, (e as Error).message);
+        console.error(`[outpost] Round ${round} error:`, (e as Error).message);
         if (round < 3) throw e;
       }
     }
 
-    console.log(`\n[mine] === RESULTS ===`);
-    console.log(`[mine] Rounds: ${turnCount}/${TARGET_TURNS}`);
-    console.log(`[mine] Actions taken: ${actionsTaken.length} (by ${new Set(actionsTaken.map(a => a.char)).size} characters)`);
-    console.log(`[mine] Scenes: ${sceneCount}`);
-    console.log(`[mine] Locations: ${[...locations].join(', ')}`);
-    console.log(`[mine] Teaching asides: ${teachingAsides}`);
-    console.log(`[mine] Item mentions: ${itemMentions}`);
-    console.log(`[mine] Compels: ${compelCount}`);
+    console.log(`\n[outpost] === RESULTS ===`);
+    console.log(`[outpost] Rounds: ${turnCount}/${TARGET_TURNS}`);
+    console.log(`[outpost] Actions taken: ${actionsTaken.length} (by ${new Set(actionsTaken.map(a => a.char)).size} characters)`);
+    console.log(`[outpost] Scenes: ${sceneCount}`);
+    console.log(`[outpost] Locations: ${[...locations].join(', ')}`);
+    console.log(`[outpost] Diplomacy actions: ${diplomacyActions}`);
+    console.log(`[outpost] Investigation actions: ${investigateActions}`);
+    console.log(`[outpost] NPC interactions: ${npcInteractions}`);
+    console.log(`[outpost] Conflict moments: ${conflictMoments}`);
+    console.log(`[outpost] Compels detected: ${compelCount}`);
 
-    const npcMentions: Record<string, number> = { maren: 0, tobias: 0, greaves: 0, 'pale woman': 0, foreman: 0, elder: 0 };
+    const npcMentions: Record<string, number> = { thorne: 0, asha: 0, kef: 0, berrin: 0, dara: 0, moss: 0 };
     const allText = narrations.join(' ').toLowerCase();
     for (const key of Object.keys(npcMentions)) {
       npcMentions[key] = (allText.match(new RegExp(key, 'gi')) ?? []).length;
     }
-    console.log(`[mine] NPCs: ${JSON.stringify(npcMentions)}`);
+    console.log(`[outpost] NPCs: ${JSON.stringify(npcMentions)}`);
 
-    const mineLocations = ['thornhaven', 'mine entrance', 'ventilation shaft', 'upper tunnels', 'collapse zone', 'deep excavation', 'crystal chamber'];
-    const visitedMine = mineLocations.filter(l => [...locations].some(v => v.toLowerCase().includes(l.split(' ')[0]!)));
-    console.log(`[mine] Mine locations visited: ${visitedMine.join(', ')} (${visitedMine.length}/${mineLocations.length})`);
+    const outpostLocations = ['common room', 'shrine hill', 'wagon', 'stables', 'marshal', 'caves', 'moss'];
+    const visitedOutpost = outpostLocations.filter(l => [...locations].some(v => v.toLowerCase().includes(l)));
+    console.log(`[outpost] Outpost locations visited: ${visitedOutpost.join(', ')} (${visitedOutpost.length}/${outpostLocations.length})`);
 
-    if (findings.length > 0) console.log(`[mine] Findings: ${findings.join('; ')}`);
+    const charActions: Record<string, number> = {};
+    for (const a of actionsTaken) {
+      charActions[a.char] = (charActions[a.char] ?? 0) + 1;
+    }
+    console.log(`[outpost] Actions per char: ${JSON.stringify(charActions)}`);
+
+    if (findings.length > 0) console.log(`[outpost] Findings: ${findings.join('; ')}`);
 
     expect(turnCount).toBeGreaterThanOrEqual(5);
     expect(sceneCount).toBeGreaterThanOrEqual(2);

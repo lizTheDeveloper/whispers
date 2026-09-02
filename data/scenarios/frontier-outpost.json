@@ -1,0 +1,38 @@
+{
+  "id": "frontier-outpost",
+  "name": "The Frontier Outpost",
+  "description": "A remote trading post where a stolen relic threatens fragile peace between settlers, nomads, and something old in the hills.",
+  "openingNarration": "Dustwind Crossing is the last outpost before the Barrens — a huddle of timber buildings where settlers trade grain for nomad-forged steel. Tonight the common room is tense. A sacred relic belonging to the Windwalker nomads has vanished from the shrine on the hill, and their chieftain has given the settlers until dawn to return it or face consequences. The relic is a carved bone horn said to calm the storms that sweep the Barrens. Without it, the next storm season could destroy the outpost. Settler Marshal Thorne insists her people didn't take it. Chieftain Asha says the tracks lead into the outpost. Both are armed. Both have followers who want blood. And something has been howling in the hills since the horn disappeared.",
+  "npcs": [
+    { "name": "Marshal Thorne", "description": "Weather-beaten settler leader with calloused hands and a short temper.", "disposition": "defensive", "motivation": "Protect the settlers, but secretly fears one of them DID take the relic" },
+    { "name": "Chieftain Asha", "description": "Windwalker nomad leader, calm voice masking cold fury.", "disposition": "distrustful", "motivation": "Recover the relic before dawn or honor demands action against the settlers" },
+    { "name": "Kef the Trader", "description": "A charming merchant who arrived three days ago with a full wagon and too many questions.", "disposition": "evasive", "motivation": "Has been buying relics across the frontier — the horn would complete a set" },
+    { "name": "Old Berrin", "description": "Elderly settler who tends the shrine, half-blind but sharp-eared.", "disposition": "helpful", "motivation": "The only person both sides trust — heard something the night the horn vanished" },
+    { "name": "Dara Windwalker", "description": "Young nomad scout, impatient and proud, Asha's niece.", "disposition": "hostile", "motivation": "Wants to search the outpost by force and suspects the party of being spies" },
+    { "name": "Brother Moss", "description": "An itinerant healer camped outside town, quiet and watchful.", "disposition": "neutral", "motivation": "Knows the relic's true power and fears what happens if it reaches the wrong hands" }
+  ],
+  "locations": [
+    { "name": "The Common Room", "description": "Smoky timber hall where settlers and nomads eye each other across rough tables", "terrain": "interior" },
+    { "name": "The Shrine Hill", "description": "Windswept hilltop where the relic stood, now empty — ritual markings in the dirt", "terrain": "exterior" },
+    { "name": "Kef's Wagon", "description": "Covered merchant wagon on the outpost edge, locked and guarded by a large dog", "terrain": "exterior" },
+    { "name": "The Stables", "description": "Low timber building, hay-floored, where nomad horses and settler mules share space", "terrain": "interior" },
+    { "name": "The Marshal's Office", "description": "Thorne's quarters with a locked strongbox and a map of the frontier on the wall", "terrain": "interior" },
+    { "name": "The Hill Caves", "description": "Shallow caves above the outpost where the howling echoes — something lives here", "terrain": "underground" },
+    { "name": "Brother Moss's Camp", "description": "A lean-to shelter outside town with herbs drying on lines and a carefully tended fire", "terrain": "exterior" }
+  ],
+  "plotHooks": [
+    "Old Berrin heard footsteps and a wagon creak the night the horn vanished — but won't say more unless he feels safe",
+    "Kef's wagon has fresh mud from the Shrine Hill on its wheels",
+    "Dara found a settler's belt buckle near the empty shrine",
+    "Brother Moss knows the horn doesn't just calm storms — it binds something in the hills that the howling belongs to",
+    "Marshal Thorne's strongbox contains a letter offering gold for 'frontier antiquities'",
+    "The howling in the hills is getting closer — and louder — with each hour the horn is missing"
+  ],
+  "items": [
+    { "name": "Settler Belt Buckle", "description": "Brass buckle with the Dustwind Crossing emblem, found near the shrine" },
+    { "name": "Berrin's Testimony", "description": "The old man's account of what he heard: wheels, footsteps, a dog growling" },
+    { "name": "Frontier Map", "description": "Shows the outpost, shrine, caves, and trade routes — one route is circled in fresh ink" },
+    { "name": "Herb Poultice", "description": "From Brother Moss, soothes wounds and calms nerves" }
+  ],
+  "difficulty": "intermediate"
+}
