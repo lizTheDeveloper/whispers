@@ -580,6 +580,19 @@ export class GameLoop {
       }
     }
 
+    const actionWords = new Set(decision.chosenAction.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3));
+    if (actionWords.size > 0) {
+      const sentences = resolution.narration.split(/(?<=[.!?])\s+/);
+      if (sentences.length > 1) {
+        const firstWords = sentences[0]!.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3);
+        const overlap = firstWords.filter(w => actionWords.has(w)).length;
+        if (overlap >= Math.min(4, actionWords.size * 0.6)) {
+          resolution.narration = sentences.slice(1).join(' ');
+          console.log(`[game-loop] Stripped echo sentence (${overlap} overlapping words)`);
+        }
+      }
+    }
+
     this.addTranscript('dm', resolution.narration);
     this.broadcastFn({ type: 'resolution', text: resolution.narration });
 
