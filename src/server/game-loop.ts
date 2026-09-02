@@ -237,9 +237,11 @@ export class GameLoop {
 
     const worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    const charRelationships = this.worldBible.getCharacterRelationships(this.campaignId, characterId, character.definition.name);
+    const fullCharContext = [charWorldContext, charRelationships].filter(Boolean).join('\n');
     const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
 
-    const recallContext = [sceneNarration, charWorldContext].filter(Boolean).join('\n');
+    const recallContext = [sceneNarration, fullCharContext].filter(Boolean).join('\n');
     const memories = this.memoryStore.recall(characterId, 8, recallContext);
     if (memories.length > 0) console.log(`[memory] ${character.definition.name}: recalled ${memories.length} memories for context`);
 
@@ -258,7 +260,7 @@ export class GameLoop {
         sceneNarration,
         transcript: this.transcript,
         memories,
-        worldContext: charWorldContext,
+        worldContext: fullCharContext,
         partyMembers,
       });
     } catch (e) {
@@ -288,7 +290,7 @@ export class GameLoop {
     let decision;
     try {
       decision = await this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: charWorldContext, partyMembers },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: fullCharContext, partyMembers },
         whisper,
       );
     } catch (e) {

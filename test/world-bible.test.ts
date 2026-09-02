@@ -65,6 +65,18 @@ describe('world bible', () => {
     expect(loc).not.toBeNull();
   });
 
+  it('returns personalized character relationships', async () => {
+    const { WorldBible } = await import('../src/server/world-bible.js');
+    const wb = new WorldBible(db);
+    db.prepare("INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)").run('ch1', 'c1', '{"name":"Elara Thorne"}', '{}');
+    wb.addEntity({ id: 'npc1', campaignId: 'c1', type: 'npc', name: 'Cassius', description: 'A spy', disposition: 'suspicious', alive: true, locationId: null, metadata: {} });
+    wb.addRelationship({ campaignId: 'c1', entityAId: 'ch1', entityBId: 'npc1', type: 'distrust', description: 'Elara suspects Cassius poisoned the wine' });
+    wb.addRelationship({ campaignId: 'c1', entityAId: 'npc1', entityBId: 'ch1', type: 'manipulates', description: 'Cassius is playing Elara for information' });
+    const rels = wb.getCharacterRelationships('c1', 'ch1', 'Elara Thorne');
+    expect(rels).toContain('You distrust Cassius');
+    expect(rels).toContain('You are manipulated by Cassius');
+  });
+
   it('deduplicates entities by name on diff apply', async () => {
     const { WorldBible } = await import('../src/server/world-bible.js');
     const wb = new WorldBible(db);

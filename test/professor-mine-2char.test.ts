@@ -151,14 +151,36 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
       stunts: ['Combat Medic: +2 to Empathy when stabilizing a wounded person', 'Iron Nerve: +2 to Will when facing disturbing or terrifying sights'],
     };
 
-    const charP = waitForMsg(host, 'characters-confirmed', 120_000);
-    sendMsg(p1, { type: 'submit-character', definition: scout });
-    sendMsg(p2, { type: 'submit-character', definition: healer });
-    await charP;
+    for (const [player, def, label] of [[p1, scout, 'scout'], [p2, healer, 'healer']] as const) {
+      let approved = false;
+      let charId = '';
+      for (let attempt = 0; attempt < 3 && !approved; attempt++) {
+        const valPromise = waitForMsg(player, 'character-validated', 90_000);
+        sendMsg(player, { type: 'submit-character', definition: def });
+        const valMsg = await valPromise;
+        if (valMsg.type === 'character-validated' && (valMsg as any).approved) {
+          charId = (valMsg as any).characterId;
+          approved = true;
+          console.log(`[mine] ${label} AI-approved: ${charId}`);
+        } else {
+          console.log(`[mine] ${label} validation attempt ${attempt + 1} failed`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      if (!approved) {
+        findings.push(`BUG: ${label} never approved after 3 attempts`);
+        return;
+      }
+      await waitForMsg(host, 'negotiation-opened', 30_000);
+      await waitForMsg(host, 'negotiation-message', 90_000);
+      sendMsg(host, { type: 'host-approve-character', characterId: charId });
+      console.log(`[mine] Host approved ${label}`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
 
-    const startP = waitForMsg(host, 'phase-change');
     sendMsg(host, { type: 'start-game' });
-    await startP;
+    const startMsg = await waitForMsg(p1, 'phase-change', 10_000);
+    expect(startMsg.type === 'phase-change' && (startMsg as any).phase).toBe('playing');
     console.log('[mine] Game started');
 
     const narrations: string[] = [];

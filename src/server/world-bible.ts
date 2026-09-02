@@ -268,6 +268,48 @@ export class WorldBible {
     }
   }
 
+  getCharacterRelationships(campaignId: string, characterId: string, characterName: string): string {
+    const rels = this.db.prepare(`SELECT r.type, r.description,
+        COALESCE(e1.name, json_extract(c1.definition, '$.name')) as a_name,
+        COALESCE(e2.name, json_extract(c2.definition, '$.name')) as b_name
+      FROM relationships r
+      LEFT JOIN entities e1 ON r.entity_a_id = e1.id
+      LEFT JOIN entities e2 ON r.entity_b_id = e2.id
+      LEFT JOIN characters c1 ON r.entity_a_id = c1.id
+      LEFT JOIN characters c2 ON r.entity_b_id = c2.id
+      WHERE r.campaign_id = ? AND (r.entity_a_id = ? OR r.entity_b_id = ?)
+      ORDER BY r.rowid DESC LIMIT 8`).all(campaignId, characterId, characterId) as any[];
+
+    if (rels.length === 0) return '';
+
+    const lines = rels.map((r: any) => {
+      const isSubject = r.a_name?.toLowerCase() === characterName.toLowerCase();
+      const other = isSubject ? r.b_name : r.a_name;
+      const verb = isSubject ? r.type : this.reverseRelationType(r.type);
+      const desc = r.description ? ` — ${r.description}` : '';
+      return `- You ${verb} ${other}${desc}`;
+    });
+
+    return `Your relationships:\n${lines.join('\n')}`;
+  }
+
+  private reverseRelationType(type: string): string {
+    const reverses: Record<string, string> = {
+      'protects': 'are protected by',
+      'suspects': 'are suspected by',
+      'distrust': 'are distrusted by',
+      'admires': 'are admired by',
+      'fears': 'are feared by',
+      'manipulates': 'are manipulated by',
+      'betrayed-by': 'betrayed',
+      'alliance': 'are allied with',
+      'rivalry': 'have a rivalry with',
+      'debt': 'are owed by',
+      'cooperates-with': 'cooperate with',
+    };
+    return reverses[type] ?? `have a ${type} relationship with`;
+  }
+
   applyDiff(campaignId: string, diff: WorldBibleDiff): void {
     const tx = this.db.transaction(() => {
       for (const loc of diff.newLocations) {
