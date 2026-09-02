@@ -501,10 +501,13 @@ export class GameLoop {
         const bestAspect = character.definition.highConcept;
         console.log(`[game-loop] Auto-invoke: ${character.definition.name} spends 1 FP (${currentFp} → ${newFp}) on "${bestAspect}" — ${resolution.outcome} → ${upgradedOutcome}`);
         resolution.outcome = upgradedOutcome;
-        resolution.narration = resolution.narration.replace(
-          /barely manages to|tries to/,
-          'draws on inner strength and'
-        );
+        const invokeFirst = getFirstName(character.definition.name);
+        const invokeBeats = [
+          `${invokeFirst} draws on "${bestAspect}" — and the tide turns.`,
+          `Something shifts — "${bestAspect}" — and ${invokeFirst} finds a way through.`,
+          `${invokeFirst} channels "${bestAspect}," turning a near-miss into a decisive moment.`,
+        ];
+        resolution.narration += ' ' + invokeBeats[(this.state.currentTurn ?? 0) % invokeBeats.length];
         this.addTranscript('system', `[${character.definition.name} invokes "${bestAspect}" for +2 — outcome upgraded to ${upgradedOutcome}! (${newFp} FP remaining)]`);
       }
     }
@@ -546,7 +549,16 @@ export class GameLoop {
         (character as any)._lastCompelTurn = this.state.currentTurn;
         console.log(`[game-loop] Compel triggered: "${character.definition.trouble}" on ${resolution.outcome} — ${character.definition.name} now at ${character.state.fatePoints} FP`);
         this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
-        resolution.narration += `\n\n*${character.definition.name}'s trouble — "${character.definition.trouble}" — catches up with them. Fate point earned.*`;
+        const compelFirst = getFirstName(character.definition.name);
+        const compelTrouble = character.definition.trouble;
+        const compelVariants = [
+          `${compelFirst} feels the pull of old habits — "${compelTrouble}" — and the universe grants a small mercy in return.`,
+          `But "${compelTrouble}" rears its head, complicating everything — though fate offers ${compelFirst} a consolation.`,
+          `"${compelTrouble}" — the words could be ${compelFirst}'s epitaph. But fate is generous to those it torments.`,
+          `The shadow of "${compelTrouble}" falls across ${compelFirst}'s path once more, and with it comes a glimmer of fate's favor.`,
+          `${compelFirst}'s "${compelTrouble}" makes itself known at precisely the wrong moment — as it always does.`,
+        ];
+        resolution.narration += `\n\n${compelVariants[(this.state.currentTurn ?? 0) % compelVariants.length]}`;
         affectedCharIds.add(characterId);
       }
     }
