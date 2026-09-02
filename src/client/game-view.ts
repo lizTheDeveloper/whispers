@@ -143,6 +143,23 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       if (msg.trustHint) parts.push(msg.trustHint);
       (moodEl as HTMLElement).textContent = parts.join(' ');
     }
+    const existingSuggestions = whisperArea.querySelector('.whisper-suggestions');
+    if (existingSuggestions) existingSuggestions.remove();
+    if (msg.suggestions && msg.suggestions.length > 0) {
+      const sugDiv = document.createElement('div');
+      sugDiv.className = 'whisper-suggestions';
+      for (const sug of msg.suggestions) {
+        const btn = document.createElement('button');
+        btn.className = 'suggestion-btn';
+        btn.textContent = sug;
+        btn.addEventListener('click', () => {
+          whisperInput.value = sug;
+          whisperInput.focus();
+        });
+        sugDiv.appendChild(btn);
+      }
+      whisperArea.insertBefore(sugDiv, whisperInput);
+    }
     let remaining = 15;
     whisperBtn.textContent = `Whisper (${remaining}s)`;
     if (whisperTimer) clearInterval(whisperTimer);

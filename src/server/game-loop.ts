@@ -330,9 +330,10 @@ export class GameLoop {
     this.state.awaitingWhisper = true;
     const mood = this.buildCharacterMood(character, memories);
     const trustHint = this.buildTrustHint(character);
-    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint });
+    const suggestions = this.buildWhisperSuggestions(character, proposals.actions.map(a => a.description), sceneNarration);
+    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions });
 
-    const whisper = await this.waitForWhisper(15_000);
+    const whisper = await this.waitForWhisper(30_000);
     this.state.awaitingWhisper = false;
 
     if (whisper) {
@@ -1090,6 +1091,35 @@ export class GameLoop {
 
     if (parts.length === 0) parts.push('focused and alert');
     return `${name} is ${parts.join(', ')}.`;
+  }
+
+  private buildWhisperSuggestions(character: { definition: CharacterDefinition; state: CharacterState }, actions: string[], narration: string): string[] {
+    const suggestions: string[] = [];
+    const firstName = character.definition.name.split(' ')[0]!;
+    const narLower = narration.toLowerCase();
+
+    const hasDanger = /\b(danger|threat|attack|wound|dark|scream|blood|hostile|ambush)\b/.test(narLower);
+    const hasNpc = /\b(said|spoke|asked|replied|warned|whispered|shouted)\b/.test(narLower);
+    const hasClue = /\b(notice|found|discover|clue|track|sign|letter|note|strange)\b/.test(narLower);
+
+    if (character.state.whisperTrust >= 0.6) {
+      if (hasDanger) suggestions.push("Be careful — something feels wrong here.");
+      if (hasNpc) suggestions.push("Don't trust them. Watch their hands.");
+      if (hasClue) suggestions.push("That detail matters. Follow it.");
+      suggestions.push(`Remember your trouble — "${character.definition.trouble.split(' ').slice(0, 5).join(' ')}..."`);
+    } else {
+      if (hasDanger) suggestions.push("You've survived worse. Trust your instincts.");
+      if (hasNpc) suggestions.push("Give them a chance. Listen first.");
+      if (hasClue) suggestions.push("This could change everything. Look closer.");
+      suggestions.push("I'm trying to help you. Please listen.");
+    }
+
+    if (actions.length > 0) {
+      const boldAction = actions.find(a => /\b(confront|charge|demand|fight|challenge|steal|break)\b/i.test(a));
+      if (boldAction) suggestions.push(`Do it — ${boldAction.split(' ').slice(0, 6).join(' ').toLowerCase()}.`);
+    }
+
+    return suggestions.slice(0, 3);
   }
 
   private buildTrustHint(character: { state: CharacterState }): string {

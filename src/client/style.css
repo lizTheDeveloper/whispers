@@ -694,6 +694,32 @@ button:disabled {
   opacity: 0.85;
   line-height: 1.35;
 }
+.whisper-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  width: 100%;
+  margin-bottom: 0.35rem;
+}
+.suggestion-btn {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  background: rgba(0, 212, 255, 0.08);
+  color: var(--signal);
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  transition: background var(--transition), border-color var(--transition);
+}
+.suggestion-btn:hover {
+  background: rgba(0, 212, 255, 0.15);
+  border-color: rgba(0, 212, 255, 0.4);
+  transform: none;
+  box-shadow: none;
+}
 
 /* ─── DM Question Panel ─── */
 
