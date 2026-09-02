@@ -102,11 +102,11 @@ export class CharacterAgent {
 
     return callLlm({
       messages: [
-        { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown.' },
+        { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.' },
         { role: 'user', content: userMessage },
       ],
       schema: ActionProposalSchema,
-      maxTokens: 1024,
+      maxTokens: 1536,
     });
   }
 
@@ -191,11 +191,11 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
 
     return callLlm({
       messages: [
-        { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown.' },
+        { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.' },
         { role: 'user', content: decisionMessage },
       ],
       schema: ActionDecisionSchema,
-      maxTokens: 1024,
+      maxTokens: 1536,
     });
   }
 

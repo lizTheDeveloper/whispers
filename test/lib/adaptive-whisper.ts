@@ -2,7 +2,7 @@ import type { ServerMessage } from '../../src/shared/protocol.js';
 
 export type PlayerStyle = 'mentor' | 'chaos' | 'strategist' | 'antagonist';
 
-interface GameState {
+export interface GameState {
   round: number;
   sceneCount: number;
   narrations: string[];
