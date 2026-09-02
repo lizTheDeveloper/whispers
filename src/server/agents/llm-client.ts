@@ -147,8 +147,9 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
         const validated = schema.parse(parsed);
         return validated as CallLlmResult<S>;
       } catch (zodErr: any) {
-        console.error('[llm-client] JSON parsed but Zod rejected:', JSON.stringify(parsed).slice(0, 300));
-        lastBadResponse = repaired;
+        const zodIssues = zodErr.issues?.map((i: any) => `${i.path.join('.')}: ${i.message}`).join('; ') ?? '';
+        console.error('[llm-client] JSON parsed but Zod rejected:', zodIssues || JSON.stringify(parsed).slice(0, 300));
+        lastBadResponse = `${repaired}\n\nValidation errors: ${zodIssues}`;
         if (attempt >= maxAttempts - 1) throw zodErr;
         continue;
       }

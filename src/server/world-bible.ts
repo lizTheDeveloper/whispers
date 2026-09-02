@@ -181,7 +181,7 @@ export class WorldBible {
       parts.push('Unclaimed items: ' + unusedItems.map((i: any) => i.name).join(', '));
     }
 
-    return parts.join('\n\n') || 'No world knowledge yet.';
+    return parts.join('\n') || 'No world knowledge yet.';
   }
 
   getCompactSummary(campaignId: string, locationId?: string): string {
