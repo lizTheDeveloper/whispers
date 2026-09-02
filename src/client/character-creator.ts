@@ -3,6 +3,57 @@ import type { CharacterDefinition } from '../shared/types.js';
 import { parseOneCharacter, parseCharacters } from '../shared/markdown-parser.js';
 import { renderNegotiationChat } from './negotiation-chat.js';
 
+const FATE_SKILLS = [
+  'Athletics', 'Burglary', 'Contacts', 'Crafts', 'Deceive', 'Drive',
+  'Empathy', 'Fight', 'Investigate', 'Lore', 'Notice', 'Physique',
+  'Provoke', 'Rapport', 'Resources', 'Shoot', 'Stealth', 'Will',
+];
+
+const SKILL_PYRAMID = [
+  { rank: 4, label: 'Great (+4)', count: 1 },
+  { rank: 3, label: 'Good (+3)', count: 2 },
+  { rank: 2, label: 'Fair (+2)', count: 3 },
+  { rank: 1, label: 'Average (+1)', count: 4 },
+];
+
+function buildSkillOptions(selectedValue: string): string {
+  return `<option value="">—</option>` +
+    FATE_SKILLS.map(s => `<option value="${s}"${s === selectedValue ? ' selected' : ''}>${s}</option>`).join('');
+}
+
+function renderSkillPyramid(container: HTMLElement, defaults?: Record<string, number>): void {
+  container.innerHTML = '';
+  for (const tier of SKILL_PYRAMID) {
+    const row = document.createElement('div');
+    row.className = 'skill-tier';
+    const label = document.createElement('span');
+    label.className = 'tier-label';
+    label.textContent = tier.label;
+    row.appendChild(label);
+    const defaultsForRank = defaults
+      ? Object.entries(defaults).filter(([, v]) => v === tier.rank).map(([k]) => k)
+      : [];
+    for (let i = 0; i < tier.count; i++) {
+      const select = document.createElement('select');
+      select.className = 'skill-select';
+      select.dataset.rank = String(tier.rank);
+      select.innerHTML = buildSkillOptions(defaultsForRank[i] ?? '');
+      row.appendChild(select);
+    }
+    container.appendChild(row);
+  }
+}
+
+function readSkillPyramid(container: HTMLElement): Record<string, number> {
+  const skills: Record<string, number> = {};
+  for (const select of container.querySelectorAll<HTMLSelectElement>('.skill-select')) {
+    const name = select.value;
+    const rank = Number(select.dataset.rank);
+    if (name) skills[name] = rank;
+  }
+  return skills;
+}
+
 export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string, onApproved: () => void): void {
   root.innerHTML = `
     <div class="character-creator">
@@ -36,6 +87,10 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
           <label>Personality <textarea id="char-personality" rows="3">Cautious but impulsive when gold is involved.</textarea></label>
           <label>Backstory <textarea id="char-backstory" rows="5" placeholder="Write your character's story..."></textarea></label>
         </div>
+        <h3 class="skill-heading">Skills <span class="skill-hint">(FATE pyramid: 1×Great, 2×Good, 3×Fair, 4×Average)</span></h3>
+        <div class="skill-pyramid" id="skill-pyramid"></div>
+        <h3 class="skill-heading">Stunts</h3>
+        <textarea id="char-stunts" rows="3" placeholder="One stunt per line, e.g.: Quick Fingers: +2 to Stealth when picking locks"></textarea>
       </div>
 
       <div class="tab-panel hidden" id="panel-paste">
@@ -66,6 +121,9 @@ Born in the slums of Veridian...
       <div id="dm-feedback" class="feedback hidden"></div>
     </div>
   `;
+
+  const pyramidEl = root.querySelector('#skill-pyramid') as HTMLElement;
+  renderSkillPyramid(pyramidEl, { Burglary: 4, Stealth: 3, Notice: 3, Athletics: 2, Deceive: 2, Contacts: 2, Fight: 1, Rapport: 1, Investigate: 1, Will: 1 });
 
   const tabs = root.querySelectorAll<HTMLButtonElement>('.creator-tabs .tab');
   const formPanel = root.querySelector('#panel-form') as HTMLElement;
@@ -205,6 +263,14 @@ Born in the slums of Veridian...
         ? `Awaiting DM review (0/${chars.length})...`
         : 'Awaiting DM review...';
     } else {
+      const skills = readSkillPyramid(pyramidEl);
+      if (Object.keys(skills).length === 0) {
+        skills['Notice'] = 2;
+        skills['Fight'] = 1;
+        skills['Stealth'] = 1;
+      }
+      const stuntsRaw = (root.querySelector('#char-stunts') as HTMLTextAreaElement).value.trim();
+      const stunts = stuntsRaw ? stuntsRaw.split('\n').map(s => s.trim()).filter(Boolean) : [];
       const definition: CharacterDefinition = {
         name: (root.querySelector('#char-name') as HTMLInputElement).value.trim(),
         highConcept: (root.querySelector('#char-concept') as HTMLInputElement).value.trim(),
@@ -216,8 +282,8 @@ Born in the slums of Veridian...
         ].filter(Boolean),
         personality: (root.querySelector('#char-personality') as HTMLTextAreaElement).value.trim(),
         backstory: (root.querySelector('#char-backstory') as HTMLTextAreaElement).value.trim(),
-        skills: { Notice: 2, Fight: 1, Stealth: 1 },
-        stunts: ['Quick Fingers: +2 to Stealth when picking locks or pockets'],
+        skills,
+        stunts,
       };
       ws.send({ type: 'submit-character', definition });
       pendingCount = 1;

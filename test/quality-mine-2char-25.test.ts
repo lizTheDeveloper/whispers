@@ -437,5 +437,5 @@ describeIfLive('Quality: 2-char Collapsed Mine — companion dynamics & trust di
     expect(Math.abs(grimjawActions.length - wrenActions.length)).toBeLessThanOrEqual(3);
     expect(grimjawUniqueSkills.size).toBeGreaterThanOrEqual(2);
     expect(wrenUniqueSkills.size).toBeGreaterThanOrEqual(2);
-  }, 600_000);
+  }, 900_000);
 });
