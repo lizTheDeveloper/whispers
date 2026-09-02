@@ -161,16 +161,21 @@ export class GameLoop {
         this.locationTurnCount = 1;
         this.lastLocationName = narration.currentLocationName;
       }
-      const loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
-      if (loc) {
-        this.state.currentLocationId = loc.id;
-        this.worldBible.markLocationVisited(this.campaignId, loc.id);
-        if (narration.activeNpcs.length > 0) {
-          console.log(`[game-loop] Location: "${loc.name}" (${this.locationTurnCount} turns) — NPCs present: ${narration.activeNpcs.join(', ')}`);
-        }
-        for (const npcName of narration.activeNpcs) {
-          this.worldBible.updateEntityLocation(this.campaignId, npcName, loc.id);
-        }
+      let loc = this.worldBible.getLocationByName(this.campaignId, narration.currentLocationName);
+      if (!loc) {
+        const newId = randomBytes(16).toString('hex');
+        this.worldBible.addLocation({ id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null });
+        loc = { id: newId, campaignId: this.campaignId, name: narration.currentLocationName, description: null, terrain: null, connections: [], coords: null };
+        console.log(`[game-loop] Auto-created location "${narration.currentLocationName}" from DM narration`);
+      }
+      this.state.currentLocationId = loc.id;
+      this.worldBible.markLocationVisited(this.campaignId, loc.id);
+      if (narration.activeNpcs.length > 0) {
+        console.log(`[game-loop] Location: "${loc.name}" (${this.locationTurnCount} turns) — NPCs present: ${narration.activeNpcs.join(', ')}`);
+      }
+      for (const npcName of narration.activeNpcs) {
+        this.worldBible.updateEntityLocation(this.campaignId, npcName, loc.id);
+        this.worldBible.ensureEntity(this.campaignId, npcName, loc.id);
       }
 
       generateSceneImage(this.campaignId, narration.currentLocationName, narration.narration)

@@ -43,7 +43,7 @@ export const ActionProposalSchema = z.object({
   actions: z.array(z.object({
     description: z.string(),
     reasoning: z.string(),
-  })).min(2).max(4),
+  })).min(1).max(4),
 });
 export type ActionProposal = z.infer<typeof ActionProposalSchema>;
 

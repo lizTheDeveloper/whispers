@@ -238,6 +238,14 @@ export class WorldBible {
       .run(locationId, campaignId, entityName);
   }
 
+  ensureEntity(campaignId: string, name: string, locationId: string): void {
+    const existing = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name);
+    if (!existing) {
+      this.addEntity({ id: genId(), campaignId, type: 'npc', name, description: null, disposition: null, alive: true, locationId, metadata: {} });
+      console.log(`[world-bible] Auto-created NPC "${name}" from DM narration`);
+    }
+  }
+
   applyDiff(campaignId: string, diff: WorldBibleDiff): void {
     const tx = this.db.transaction(() => {
       for (const loc of diff.newLocations) {
