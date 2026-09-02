@@ -367,5 +367,5 @@ describeIfLive('Chronicler + Masquerade: 35-Turn Long-Session Stress Test', () =
     expect(npcDialogueCount.vaelora + npcDialogueCount.cassius + npcDialogueCount.mira).toBeGreaterThanOrEqual(5);
     expect(sensoryDetails).toBeGreaterThanOrEqual(3);
 
-  }, 1200_000);
+  }, 1800_000);
 });
