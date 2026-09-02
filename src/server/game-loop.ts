@@ -327,8 +327,8 @@ export class GameLoop {
       };
     }
 
-    if (decision.chosenAction.trim().length < 10) {
-      console.log(`[game-loop] Degenerate action detected (${decision.chosenAction.length} chars: "${decision.chosenAction}"), using proposal fallback`);
+    if (decision.chosenAction.trim().length < 20) {
+      console.log(`[game-loop] Degenerate action detected (${decision.chosenAction.trim().length} chars: "${decision.chosenAction.trim()}"), using proposal fallback`);
       decision.chosenAction = proposals.actions[0]?.description ?? 'Surveys the surroundings, weighing the options carefully';
     }
 

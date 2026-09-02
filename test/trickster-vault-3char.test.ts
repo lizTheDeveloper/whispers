@@ -119,7 +119,7 @@ afterAll(async () => {
 });
 
 describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => {
-  it('runs a 30-turn 3-character heist with phased whispers, stress management, and location progression', async () => {
+  it('runs a 3-character heist with phased whispers and companion dynamics', async () => {
     const findings: string[] = [];
 
     const host = await connectWs();
@@ -218,18 +218,10 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
     expect(startMsg.type === 'phase-change' && startMsg.phase).toBe('playing');
     console.log('[vault] Game started');
 
-    const narrations: string[] = [];
-    const actionsTaken: Array<{ char: string; action: string; turn: number }> = [];
-    const trustHistory: Record<string, number[]> = { 'Rook Blackthorn': [], 'Pip Gearsoul': [], 'Vivienne Lux': [] };
-    const locations = new Set<string>();
-    let sceneCount = 0;
-    let turnCount = 0;
-    let stressEvents = 0;
-    let compelCount = 0;
-    let invokeCount = 0;
-
-    const TARGET_TURNS = 30;
-
+    // ---- Game loop: event-driven whispers, flow tracked on p1 ----
+    // Whisper plan keyed by sequential character-turn number.
+    // With 3 chars, turns 1-3 = round 1, turns 4-6 = round 2, etc.
+    // Each entry maps character name → whisper text.
     const whisperPlan: Record<number, Record<string, string>> = {
       1: { 'Rook Blackthorn': 'Check the blueprint for trap locations before proceeding' },
       2: { 'Pip Gearsoul': 'That gear mechanism looks important — examine it closely' },
@@ -247,137 +239,136 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
       28: { 'Pip Gearsoul': 'Break the Orrery rather than let anyone have it', 'Rook Blackthorn': 'Protect the team — let the Orrery go' },
     };
 
-    let gameEnded = false;
-    const allMessages: ServerMessage[] = [];
-    const msgQueue: ServerMessage[] = [];
-    let resolveNext: ((msg: ServerMessage) => void) | null = null;
+    const narrations: string[] = [];
+    const actionsTaken: Array<{ char: string; action: string; turn: number; influence: string }> = [];
+    const locations = new Set<string>();
+    let sceneCount = 0;
+    let turnsCompleted = 0;
+    let stressEvents = 0;
+    let compelCount = 0;
+    let invokeCount = 0;
+    let sessionEnded = false;
 
-    host.on('message', (data: Buffer) => {
-      const msg: ServerMessage = JSON.parse(data.toString());
-      allMessages.push(msg);
-      if (resolveNext) {
-        const r = resolveNext;
-        resolveNext = null;
-        r(msg);
-      } else {
-        msgQueue.push(msg);
-      }
+    const TARGET_TURNS = 30;
+
+    const allMsgs: ServerMessage[] = [];
+    const msgCollector = (data: Buffer) => {
+      try { allMsgs.push(JSON.parse(data.toString())); } catch {}
+    };
+    p1.on('message', msgCollector);
+
+    const endedPromise = new Promise<void>((resolve) => {
+      const handler = (data: Buffer) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'phase-change' && msg.phase === 'ended') {
+            sessionEnded = true;
+            p1.off('message', handler);
+            resolve();
+          }
+        } catch {}
+      };
+      p1.on('message', handler);
     });
 
-    function nextMsg(timeoutMs = 120_000): Promise<ServerMessage> {
-      if (msgQueue.length > 0) return Promise.resolve(msgQueue.shift()!);
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { resolveNext = null; reject(new Error(`nextMsg timeout after ${timeoutMs}ms`)); }, timeoutMs);
-        resolveNext = (msg) => { clearTimeout(timer); resolve(msg); };
-      });
-    }
-
-    async function drainUntil(types: string[], timeoutMs = 120_000): Promise<ServerMessage> {
-      const deadline = Date.now() + timeoutMs;
-      while (true) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) throw new Error(`drainUntil timeout for [${types.join(',')}]`);
-        const msg = await nextMsg(remaining);
-        if (types.includes(msg.type)) return msg;
-        if (msg.type === 'narration') narrations.push(msg.text);
-        if (msg.type === 'resolution') {
-          const text = msg.text ?? '';
-          narrations.push(text);
-          if (text.includes('invoke') || text.includes('draws on') || text.includes('channels')) invokeCount++;
-          if (text.includes('stress') || text.includes('Stress')) stressEvents++;
-        }
-        if (msg.type === 'character-state-update') {
-          const st = (msg as any).state;
-          const cn = (msg as any).characterName ?? '';
-          if (st?.whisperTrust !== undefined) {
-            for (const [name, hist] of Object.entries(trustHistory)) {
-              if (cn.includes(name.split(' ')[0]!)) hist.push(st.whisperTrust);
-            }
-          }
-        }
-        if (msg.type === 'phase-change' && (msg as any).phase === 'ended') {
-          gameEnded = true;
-          return msg;
-        }
+    for (let turn = 0; turn < TARGET_TURNS; turn++) {
+      if (sessionEnded) {
+        console.log(`[vault] Session ended naturally at turn ${turn + 1}`);
+        break;
       }
-    }
 
-    for (let turn = 1; turn <= TARGET_TURNS && !gameEnded; turn++) {
+      const turnNum = turn + 1;
+      const roundNum = Math.floor(turn / 3) + 1;
+      const charInRound = (turn % 3) + 1;
+      console.log(`\n[vault] === Turn ${turnNum} (Round ${roundNum}, char ${charInRound}/3) ===`);
+
       try {
-        const roundStart = await drainUntil(['narration', 'phase-change', 'scene-end']);
-        if (gameEnded) break;
-        if (roundStart.type === 'scene-end') {
-          sceneCount++;
-          console.log(`[vault] Scene ${sceneCount} ended at turn ${turn}: ${(roundStart as any).summary?.slice(0, 80)}`);
-          turn--;
-          continue;
-        }
-        if (roundStart.type !== 'narration') continue;
-
-        if ((roundStart as any).locationName) locations.add((roundStart as any).locationName);
-        if (roundStart.text.includes('Compel:') || roundStart.text.includes('trouble')) compelCount++;
-
-        const sceneOrAction = await drainUntil(['action-proposals', 'scene-end', 'phase-change']);
-        if (gameEnded) break;
-        if (sceneOrAction.type === 'scene-end') {
-          sceneCount++;
-          console.log(`[vault] Scene ${sceneCount} ended at turn ${turn}: ${(sceneOrAction as any).summary?.slice(0, 80)}`);
-          continue;
-        }
-        if (sceneOrAction.type !== 'action-proposals') continue;
-
-        let charIdx = 0;
-        let currentProposals = sceneOrAction;
-
-        while (currentProposals.type === 'action-proposals') {
-          charIdx++;
-          turnCount = turn + charIdx - 1;
-          const charName = (currentProposals as any).characterName as string;
-          const whisperForChar = whisperPlan[turnCount]?.[charName];
-
-          await drainUntil(['whisper-prompt']);
-
-          if (whisperForChar) {
-            sendMsg(host, { type: 'whisper', text: whisperForChar });
-            console.log(`[vault] T${turnCount} whispered to ${charName.split(' ')[0]}: "${whisperForChar.slice(0, 50)}"`);
-          }
-
-          const actionMsg = await drainUntil(['action-taken']);
-          if (actionMsg.type === 'action-taken') {
-            actionsTaken.push({ char: (actionMsg as any).characterName, action: (actionMsg as any).action, turn: turnCount });
-            const inf = (actionMsg as any).whisperInfluence;
-            if (whisperForChar && inf) {
-              console.log(`[vault] T${turnCount} ${charName.split(' ')[0]}: ${inf} — "${(actionMsg as any).action.slice(0, 60)}"`);
+        let whisperSentForTurn = false;
+        const whisperHandler = (data: Buffer) => {
+          try {
+            const msg: ServerMessage = JSON.parse(data.toString());
+            if (msg.type === 'whisper-prompt' && !whisperSentForTurn) {
+              whisperSentForTurn = true;
+              const charName = msg.characterName;
+              const whisperText = whisperPlan[turnNum]?.[charName];
+              if (whisperText) {
+                console.log(`[vault]   Whisper → ${charName.split(' ')[0]}: "${whisperText.slice(0, 60)}"`);
+                sendMsg(host, { type: 'whisper', text: whisperText });
+              } else {
+                console.log(`[vault]   No whisper for ${charName}`);
+              }
             }
-          }
+          } catch {}
+        };
+        host.on('message', whisperHandler);
 
-          const next = await drainUntil(['action-proposals', 'narration', 'scene-end', 'phase-change']);
-          if (gameEnded) break;
-          if (next.type === 'scene-end') {
+        const nextEvent = await waitForAnyMsg(p1, ['action-proposals', 'narration', 'scene-end'], 120_000);
+
+        if (nextEvent.type === 'scene-end') {
+          sceneCount++;
+          console.log(`[vault]   Scene ${sceneCount} ended: "${(nextEvent as any).summary?.slice(0, 80)}..."`);
+          host.off('message', whisperHandler);
+          await waitForMsg(p1, 'narration', 120_000);
+          turnsCompleted++;
+          continue;
+        }
+
+        if (nextEvent.type === 'narration') {
+          narrations.push(nextEvent.text);
+          if ((nextEvent as any).locationName) locations.add((nextEvent as any).locationName);
+          if (nextEvent.text.includes('Compel:') || nextEvent.text.includes('trouble')) compelCount++;
+          console.log(`[vault]   Narration: "${nextEvent.text.slice(0, 100)}..."`);
+
+          const afterNarration = await waitForAnyMsg(p1, ['action-proposals', 'scene-end'], 120_000);
+          if (afterNarration.type === 'scene-end') {
             sceneCount++;
-            console.log(`[vault] Scene ${sceneCount} ended at turn ${turnCount}`);
-            break;
+            console.log(`[vault]   Scene ${sceneCount} ended after narration`);
+            host.off('message', whisperHandler);
+            await waitForMsg(p1, 'narration', 120_000);
+            turnsCompleted++;
+            continue;
           }
-          if (next.type === 'action-proposals') {
-            currentProposals = next;
-          } else {
-            break;
+          if (afterNarration.type === 'action-proposals') {
+            const ap = afterNarration as any;
+            console.log(`[vault]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
           }
+        } else if (nextEvent.type === 'action-proposals') {
+          const ap = nextEvent as any;
+          console.log(`[vault]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
         }
 
-        turn = turnCount;
-        if (turn % 5 === 0) {
-          console.log(`[vault] Turn ${turn} complete — ${sceneCount} scenes, ${locations.size} locations, ${compelCount} compels, ${invokeCount} invokes`);
+        const actionTaken = await waitForMsg(p1, 'action-taken', 120_000);
+        if (actionTaken.type === 'action-taken') {
+          const inf = actionTaken.whisperInfluence;
+          actionsTaken.push({ char: actionTaken.characterName, action: actionTaken.action, turn: turnNum, influence: inf });
+          console.log(`[vault]   ${actionTaken.characterName.split(' ')[0]} [${inf}]: "${actionTaken.action.slice(0, 80)}"`);
+          console.log(`[vault]   Inner thought: "${actionTaken.innerThought.slice(0, 100)}"`);
+          if (actionTaken.action.includes('invoke') || actionTaken.action.includes('draws on')) invokeCount++;
         }
-      } catch (e) {
-        console.error(`[vault] Turn ${turn} error:`, (e as Error).message);
-        findings.push(`Turn ${turn} error: ${(e as Error).message}`);
-        if (turn < 5) throw e;
+
+        await waitForMsg(p1, 'dice-roll', 120_000);
+        const resolution = await waitForMsg(p1, 'resolution', 120_000);
+        if (resolution.type === 'resolution') {
+          narrations.push(resolution.text);
+          if (resolution.text.includes('stress') || resolution.text.includes('Stress')) stressEvents++;
+          if (resolution.text.includes('invoke') || resolution.text.includes('draws on') || resolution.text.includes('channels')) invokeCount++;
+          if (resolution.text.includes('Compel:') || resolution.text.includes('trouble')) compelCount++;
+        }
+
+        host.off('message', whisperHandler);
+        turnsCompleted++;
+
+      } catch (e: any) {
+        console.error(`[vault] Turn ${turnNum} error:`, e.message);
+        findings.push(`Turn ${turnNum} error: ${e.message}`);
+        if (turnNum <= 5) throw e;
+        break;
       }
     }
 
+    // ---- Results ----
     console.log(`\n[vault] === PLAYTEST RESULTS ===`);
-    console.log(`[vault] Turns: ${turnCount}/${TARGET_TURNS}`);
+    console.log(`[vault] Turns: ${turnsCompleted}/${TARGET_TURNS}`);
     console.log(`[vault] Scenes: ${sceneCount}`);
     console.log(`[vault] Locations: ${[...locations].join(', ')}`);
     console.log(`[vault] Actions: ${actionsTaken.length}`);
@@ -385,18 +376,34 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
     console.log(`[vault] Invokes: ${invokeCount}`);
     console.log(`[vault] Stress events: ${stressEvents}`);
 
-    const npcMentions = {
+    const npcMentions: Record<string, number> = {
       sparks: 0, vex: 0, ashworth: 0, cogsworth: 0, guildmaster: 0, orrery: 0,
     };
     const allText = narrations.join(' ').toLowerCase();
-    for (const key of Object.keys(npcMentions) as Array<keyof typeof npcMentions>) {
+    for (const key of Object.keys(npcMentions)) {
       npcMentions[key] = (allText.match(new RegExp(key, 'gi')) ?? []).length;
     }
     console.log(`[vault] NPC mentions: ${JSON.stringify(npcMentions)}`);
 
-    for (const [name, hist] of Object.entries(trustHistory)) {
-      if (hist.length > 0) {
-        console.log(`[vault] Trust ${name.split(' ')[0]}: ${hist.map(t => t.toFixed(2)).join(' → ')}`);
+    const charActions: Record<string, number> = {};
+    for (const a of actionsTaken) {
+      const first = a.char.split(' ')[0]!;
+      charActions[first] = (charActions[first] ?? 0) + 1;
+    }
+    console.log(`[vault] Actions per character: ${JSON.stringify(charActions)}`);
+
+    const whisperResults = actionsTaken.filter(a => a.influence !== 'none');
+    const followed = whisperResults.filter(a => a.influence === 'followed').length;
+    const partial = whisperResults.filter(a => a.influence === 'partially-followed').length;
+    const ignored = whisperResults.filter(a => a.influence === 'ignored').length;
+    console.log(`[vault] Whisper influence: ${followed} followed, ${partial} partial, ${ignored} ignored (${whisperResults.length} total)`);
+
+    const conflictTurns = [10, 15, 28];
+    const conflictActions = actionsTaken.filter(a => conflictTurns.includes(a.turn));
+    if (conflictActions.length > 0) {
+      console.log(`[vault] Conflict turns:`);
+      for (const a of conflictActions) {
+        console.log(`[vault]   T${a.turn} ${a.char.split(' ')[0]} [${a.influence}]: "${a.action.slice(0, 60)}"`);
       }
     }
 
@@ -404,16 +411,19 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
       console.log(`[vault] Findings: ${findings.join('; ')}`);
     }
 
-    expect(turnCount).toBeGreaterThanOrEqual(10);
+    expect(turnsCompleted).toBeGreaterThanOrEqual(10);
     expect(sceneCount).toBeGreaterThanOrEqual(2);
 
     const scenarioNpcs = ['sparks', 'vex', 'guildmaster', 'ashworth', 'cogsworth', 'orrery'];
-    const referencedNpcs = scenarioNpcs.filter(n => npcMentions[n as keyof typeof npcMentions] > 0);
+    const referencedNpcs = scenarioNpcs.filter(n => (npcMentions[n] ?? 0) > 0);
     console.log(`[vault] NPCs referenced: ${referencedNpcs.join(', ')} (${referencedNpcs.length}/${scenarioNpcs.length})`);
     expect(referencedNpcs.length).toBeGreaterThanOrEqual(2);
 
     expect(locations.size).toBeGreaterThanOrEqual(2);
     expect(actionsTaken.length).toBeGreaterThanOrEqual(8);
+
+    const chars = Object.keys(charActions);
+    expect(chars.length).toBeGreaterThanOrEqual(3);
 
   }, 1_200_000);
 });
