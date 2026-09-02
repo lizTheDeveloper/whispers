@@ -200,6 +200,28 @@ export class WorldBible {
         return label;
       }).join('; '));
     }
+    if (locationId) {
+      const otherNpcs = this.db.prepare('SELECT name, disposition FROM entities WHERE campaign_id = ? AND alive = 1 AND (location_id IS NULL OR location_id != ?) LIMIT 5').all(campaignId, locationId) as any[];
+      if (otherNpcs.length > 0) {
+        parts.push('People you\'ve met elsewhere: ' + otherNpcs.map((n: any) => n.name).join(', '));
+      }
+    }
+    const allLocs = this.db.prepare('SELECT name, visited FROM locations WHERE campaign_id = ? ORDER BY visited ASC LIMIT 8').all(campaignId) as any[];
+    if (allLocs.length > 1) {
+      const otherLocs = allLocs.filter((l: any) => {
+        if (!locationId) return true;
+        const currentLoc = this.db.prepare('SELECT name FROM locations WHERE id = ?').get(locationId) as any;
+        return !currentLoc || l.name !== currentLoc.name;
+      });
+      if (otherLocs.length > 0) {
+        const unvisited = otherLocs.filter((l: any) => !l.visited);
+        const visited = otherLocs.filter((l: any) => l.visited);
+        const locParts: string[] = [];
+        if (unvisited.length > 0) locParts.push(`unexplored: ${unvisited.map((l: any) => l.name).join(', ')}`);
+        if (visited.length > 0) locParts.push(`visited: ${visited.map((l: any) => l.name).join(', ')}`);
+        parts.push('Known locations: ' + locParts.join(' | '));
+      }
+    }
     const unclaimedItems = locationId
       ? this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND (location_id = ? OR location_id IS NULL) LIMIT 5').all(campaignId, locationId) as any[]
       : this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL LIMIT 5').all(campaignId) as any[];
