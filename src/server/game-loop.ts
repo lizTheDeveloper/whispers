@@ -296,7 +296,9 @@ export class GameLoop {
     const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     const charRelationships = this.worldBible.getCharacterRelationships(this.campaignId, characterId, character.definition.name);
     const fullCharContext = [charWorldContext, charRelationships].filter(Boolean).join('\n');
-    const sceneNarration = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
+    const sessionRecap = this.transcript.find(m => m.role === 'system' && m.content.startsWith('[Session recap]'))?.content ?? '';
+    const recentDm = this.transcript.filter(m => m.role === 'dm').slice(-3).map(m => m.content).join('\n');
+    const sceneNarration = sessionRecap ? `${sessionRecap}\n${recentDm}` : recentDm;
 
     const recallContext = [sceneNarration, fullCharContext].filter(Boolean).join('\n');
     const memories = this.memoryStore.recall(characterId, 8, recallContext);
@@ -1162,31 +1164,54 @@ export class GameLoop {
 
   private buildWhisperSuggestions(character: { definition: CharacterDefinition; state: CharacterState }, actions: string[], narration: string): string[] {
     const suggestions: string[] = [];
-    const firstName = character.definition.name.split(' ')[0]!;
     const narLower = narration.toLowerCase();
 
-    const hasDanger = /\b(danger|threat|attack|wound|dark|scream|blood|hostile|ambush)\b/.test(narLower);
-    const hasNpc = /\b(said|spoke|asked|replied|warned|whispered|shouted)\b/.test(narLower);
-    const hasClue = /\b(notice|found|discover|clue|track|sign|letter|note|strange)\b/.test(narLower);
+    const npcNames = this.extractNpcNamesFromNarration(narration);
+    const firstNpc = npcNames[0];
+
+    const hasDanger = /\b(danger|threat|attack|wound|dark|scream|blood|hostile|ambush|trap|collapse)\b/.test(narLower);
+    const hasNpc = firstNpc != null || /\b(said|spoke|asked|replied|warned|whispered|shouted)\b/.test(narLower);
+    const hasClue = /\b(notice|found|discover|clue|track|sign|letter|note|strange|hidden|secret)\b/.test(narLower);
+    const itemMatch = narLower.match(/\b(key|map|note|letter|vial|scroll|ring|pendant|blade|lantern|coin|book|journal|dagger|pouch|flask|seal|badge|mask)\b/);
 
     if (character.state.whisperTrust >= 0.6) {
-      if (hasDanger) suggestions.push("Be careful — something feels wrong here.");
-      if (hasNpc) suggestions.push("Don't trust them. Watch their hands.");
-      if (hasClue) suggestions.push("That detail matters. Follow it.");
-      suggestions.push(`Remember your trouble — "${character.definition.trouble.split(' ').slice(0, 5).join(' ')}..."`);
+      if (hasDanger) suggestions.push("Fall back. Find cover before it's too late.");
+      if (hasNpc && firstNpc) suggestions.push(`Ask ${firstNpc} what they're hiding.`);
+      else if (hasNpc) suggestions.push("Press them — they know more than they're saying.");
+      if (itemMatch) suggestions.push(`Take the ${itemMatch[0]} before someone else does.`);
+      else if (hasClue) suggestions.push("That detail matters. Follow it before someone else does.");
     } else {
-      if (hasDanger) suggestions.push("You've survived worse. Trust your instincts.");
-      if (hasNpc) suggestions.push("Give them a chance. Listen first.");
-      if (hasClue) suggestions.push("This could change everything. Look closer.");
-      suggestions.push("I'm trying to help you. Please listen.");
+      if (hasDanger) suggestions.push("You've survived worse. Trust your gut.");
+      if (hasNpc && firstNpc) suggestions.push(`${firstNpc} might be an ally. Hear them out.`);
+      else if (hasNpc) suggestions.push("Give them a chance. Listen first.");
+      if (itemMatch) suggestions.push(`Look at the ${itemMatch[0]}. It could change everything.`);
+      else if (hasClue) suggestions.push("Look closer — this could change everything.");
+      if (suggestions.length === 0) suggestions.push("I'm trying to help. Please listen.");
+    }
+
+    if (character.state.stress >= 2) {
+      suggestions.push("You're hurt. Don't be a hero — survive first.");
     }
 
     if (actions.length > 0) {
-      const boldAction = actions.find(a => /\b(confront|charge|demand|fight|challenge|steal|break)\b/i.test(a));
-      if (boldAction) suggestions.push(`Do it — ${boldAction.split(' ').slice(0, 6).join(' ').toLowerCase()}.`);
+      const boldAction = actions.find(a => /\b(confront|charge|demand|fight|challenge|steal|break|threaten)\b/i.test(a));
+      if (boldAction) {
+        const shortAction = boldAction.split(' ').slice(0, 6).join(' ').toLowerCase();
+        suggestions.push(`Do it — ${shortAction}.`);
+      }
     }
 
     return suggestions.slice(0, 3);
+  }
+
+  private extractNpcNamesFromNarration(narration: string): string[] {
+    const npcs = this.db.prepare(
+      'SELECT name FROM entities WHERE campaign_id = ? AND type = ? AND alive = 1'
+    ).all(this.campaignId, 'npc') as Array<{ name: string }>;
+    const narLower = narration.toLowerCase();
+    return npcs
+      .filter(n => narLower.includes(getFirstName(n.name).toLowerCase()))
+      .map(n => getFirstName(n.name));
   }
 
   private buildTrustHint(character: { state: CharacterState }): string {
