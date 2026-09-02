@@ -37,7 +37,8 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   const locationBar = root.querySelector('#location-bar') as HTMLElement;
   ws.on('narration', (msg) => {
     if (msg.type !== 'narration') return;
-    const cls = msg.text.startsWith('[Compel:') ? 'compel'
+    const cls = (msg as any).isEpilogue ? 'epilogue'
+      : msg.text.startsWith('[Compel:') ? 'compel'
       : msg.text.includes('TAKEN OUT') ? 'taken-out'
       : 'dm';
     appendLog(msg.text, cls);
@@ -136,7 +137,9 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   ws.on('character-state-update', (msg) => {
     if (msg.type !== 'character-state-update') return;
     const s = msg.state as { stress: number; consequences: string[]; fatePoints: number; whisperTrust: number; inventory?: string[] };
-    const parts = [`Stress: ${s.stress}/3`, `FP: ${s.fatePoints}`];
+    const trustPct = Math.round(s.whisperTrust * 100);
+    const trustLabel = trustPct >= 70 ? 'trusting' : trustPct >= 40 ? 'uncertain' : 'wary';
+    const parts = [`Trust: ${trustPct}% (${trustLabel})`, `Stress: ${s.stress}/3`, `FP: ${s.fatePoints}`];
     if (s.consequences.length > 0) parts.push(`Wounds: ${s.consequences.join(', ')}`);
     if (s.inventory && s.inventory.length > 0) parts.push(`Items: ${s.inventory.join(', ')}`);
     const existing = root.querySelector('#char-status') as HTMLElement;

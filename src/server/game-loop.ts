@@ -882,7 +882,7 @@ export class GameLoop {
       });
       const text = epilogue.trim();
       if (text && text.length > 20) {
-        this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene });
+        this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
         console.log(`[game-loop] Epilogue generated (${text.length} chars)`);
       }
     } catch (e) {
