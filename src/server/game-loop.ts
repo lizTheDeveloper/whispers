@@ -38,6 +38,7 @@ export class GameLoop {
   private sceneTurnCount = 0;
   private locationTurnCount = 0;
   private lastLocationName = '';
+  private sceneWhisperStats = new Map<string, { name: string; followed: number; partial: number; ignored: number; trustStart: number; trustEnd: number }>();
 
   constructor(
     private db: Database.Database,
@@ -454,6 +455,17 @@ export class GameLoop {
       console.log(`[game-loop] Low-trust recovery boost: ${character.definition.name} trust ${currentTrust.toFixed(2)} → ${character.state.whisperTrust.toFixed(2)} (+${effectiveDelta.toFixed(2)}, cap raised to 0.12)`);
     }
 
+    if (whisper) {
+      if (!this.sceneWhisperStats.has(characterId)) {
+        this.sceneWhisperStats.set(characterId, { name: character.definition.name, followed: 0, partial: 0, ignored: 0, trustStart: currentTrust, trustEnd: character.state.whisperTrust });
+      }
+      const stats = this.sceneWhisperStats.get(characterId)!;
+      stats.trustEnd = character.state.whisperTrust;
+      if (decision.whisperedInfluence === 'followed') stats.followed++;
+      else if (decision.whisperedInfluence === 'partially-followed') stats.partial++;
+      else stats.ignored++;
+    }
+
     const diceResult = rollDice(this.getSystemDefaultDice(campaign.system_id));
     this.addTranscript('dice', diceResult.description);
     this.broadcastFn({ type: 'dice-roll', result: diceResult, context: decision.chosenAction });
@@ -791,7 +803,14 @@ export class GameLoop {
       console.error('[game-loop] Scene summary failed:', e);
       summary = 'The scene draws to a close.';
     }
-    this.broadcastFn({ type: 'scene-end', summary, sceneNumber: this.state.currentScene });
+    const whisperStats = Array.from(this.sceneWhisperStats.values()).map(s => ({
+      name: s.name,
+      followed: s.followed,
+      partial: s.partial,
+      ignored: s.ignored,
+      trustDelta: Math.round((s.trustEnd - s.trustStart) * 100) / 100,
+    }));
+    this.broadcastFn({ type: 'scene-end', summary, sceneNumber: this.state.currentScene, whisperStats: whisperStats.length > 0 ? whisperStats : undefined });
 
     this.db.prepare('INSERT INTO scenes (id, campaign_id, scene_number, transcript, summary) VALUES (?, ?, ?, ?, ?)')
       .run(randomBytes(16).toString('hex'), this.campaignId, this.state.currentScene, JSON.stringify(this.transcript), summary);
@@ -854,6 +873,7 @@ export class GameLoop {
     this.sceneTurnCount = 0;
     this.locationTurnCount = 0;
     this.lastLocationName = '';
+    this.sceneWhisperStats.clear();
     this.state.currentScene++;
     clearCampaignImageCache(this.campaignId);
   }
@@ -898,11 +918,58 @@ export class GameLoop {
       });
       const text = epilogue.trim();
       if (text && text.length > 20) {
-        this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene });
+        this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
         console.log(`[game-loop] Epilogue generated (${text.length} chars)`);
       }
     } catch (e) {
       console.error('[game-loop] Epilogue generation failed:', e);
+    }
+
+    await this.generateCharacterClosingReflections(scenes);
+  }
+
+  private async generateCharacterClosingReflections(scenes: Array<{ scene_number: number; summary: string }>): Promise<void> {
+    const sceneSummaries = scenes.map(s => s.summary).join(' ');
+    for (const [charId, char] of this.characters) {
+      const memories = this.memoryStore.recall(charId, 6);
+      if (memories.length === 0) continue;
+      const memText = memories.map(m => `- ${m.content}`).join('\n');
+      const trustPct = Math.round(char.state.whisperTrust * 100);
+      const trustArc = trustPct >= 70 ? 'You trusted the voice. It guided you well — or perhaps you simply chose to believe it did.'
+        : trustPct >= 40 ? 'The voice was there, always. You never fully trusted it, never fully ignored it. An uneasy partnership.'
+        : 'You learned to distrust the whisper. Whatever it wanted, it wasn\'t always what you needed.';
+
+      try {
+        const reflection = await callLlm({
+          messages: [
+            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
+            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nWhat happened: ${sceneSummaries.slice(0, 500)}\n\nWrite your final words and thought. Be specific — name a person, place, or moment. One line each.` },
+          ],
+          maxTokens: 200,
+          temperature: 0.7,
+        });
+
+        const text = reflection.trim();
+        const spokenMatch = text.match(/SPOKEN:\s*"?([^"]+)"?/i);
+        const thoughtMatch = text.match(/THOUGHT:\s*(.+)/i);
+        const spoken = spokenMatch?.[1]?.trim();
+        const thought = thoughtMatch?.[1]?.trim();
+
+        if (spoken || thought) {
+          this.broadcastFn({
+            type: 'action-taken',
+            characterId: charId,
+            characterName: char.definition.name,
+            action: thought ? `[Final reflection] ${thought}` : '[Reflects quietly]',
+            spokenWords: spoken ?? null,
+            innerThought: thought ?? 'The journey ends.',
+            whisperInfluence: 'none',
+          });
+          console.log(`[game-loop] ${char.definition.name} closing reflection generated`);
+        }
+      } catch (e) {
+        console.error(`[game-loop] ${char.definition.name} closing reflection failed:`, e);
+      }
     }
   }
 
@@ -1104,7 +1171,10 @@ export class GameLoop {
     if (neglected.length === 0) return null;
 
     const names = neglected.slice(0, 3).map(n => n.name).join(', ');
-    return `NPC ROTATION: ${names} ha${neglected.length === 1 ? 's' : 've'} not appeared yet — introduce or mention ${neglected.length === 1 ? 'them' : 'one of them'} in this narration. Every NPC should get screen time.`;
+    const top = neglected[0]!;
+    const topEntity = this.db.prepare('SELECT description FROM entities WHERE campaign_id = ? AND name = ?').get(this.campaignId, top.name) as { description: string } | undefined;
+    const detail = topEntity?.description ? ` (${topEntity.description.split('[')[0]!.trim()})` : '';
+    return `MANDATORY NPC APPEARANCE: ${top.name}${detail} has NOT appeared in the story yet while other NPCs have ${maxCount}+ mentions. You MUST include ${top.name} in this narration — have them speak, act, or visibly interact with the scene.${neglected.length > 1 ? ` Also neglected: ${neglected.slice(1).map(n => n.name).join(', ')}.` : ''}`;
   }
 
   private getWhisperTensionHint(): string | null {

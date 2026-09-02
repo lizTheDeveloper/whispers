@@ -292,6 +292,47 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.skill-heading {
+  font-size: 1rem;
+  color: var(--star-white);
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.skill-hint {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.skill-pyramid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.skill-tier {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.tier-label {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ember);
+  min-width: 5.5rem;
+  text-align: right;
+}
+.skill-select {
+  flex: 1;
+  min-width: 7rem;
+  max-width: 10rem;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.6rem;
+}
+#char-stunts {
+  margin-bottom: 0.5rem;
+}
+
 .feedback {
   padding: 1rem 1.15rem;
   border-radius: var(--radius);
@@ -534,6 +575,15 @@ button:disabled {
   color: var(--text-dim);
   font-style: italic;
   margin-top: 0.2rem;
+}
+.narration-entry.whisper-recap {
+  color: var(--signal);
+  border-left: 2px solid rgba(0, 212, 255, 0.3);
+  padding-left: 0.75rem;
+  font-style: italic;
+  white-space: pre-line;
+  margin: 0.5rem 0;
+  font-size: 0.88rem;
 }
 .whisper-context {
   width: 100%;

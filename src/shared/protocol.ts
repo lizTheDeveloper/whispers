@@ -38,7 +38,7 @@ export type ServerMessage =
   | { type: 'dice-roll'; result: DiceResult; context: string }
   | { type: 'resolution'; text: string }
   | { type: 'dm-question'; question: string }
-  | { type: 'scene-end'; summary: string; sceneNumber: number }
+  | { type: 'scene-end'; summary: string; sceneNumber: number; whisperStats?: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
   | { type: 'character-state-update'; characterId: string; state: CharacterState }
   | { type: 'dm-settings'; presetName: string; presetPrompt: string; dmCustomPrompt: string | null; dmInstructions: string | null; materials: import('./types.js').CampaignMaterial[]; uploadToken: string }
   | { type: 'dm-chat-reply'; text: string; done: boolean }

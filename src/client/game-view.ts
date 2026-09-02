@@ -51,6 +51,14 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   ws.on('scene-end', (msg) => {
     if (msg.type === 'scene-end') {
       appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system');
+      if ((msg as any).whisperStats && (msg as any).whisperStats.length > 0) {
+        const statsLines = (msg as any).whisperStats.map((s: any) => {
+          const total = s.followed + s.partial + s.ignored;
+          const deltaSign = s.trustDelta >= 0 ? '+' : '';
+          return `${s.name}: ${s.followed}/${total} whispers heeded (trust ${deltaSign}${(s.trustDelta * 100).toFixed(0)}%)`;
+        });
+        appendLog(`Your influence this scene:\n${statsLines.join('\n')}`, 'whisper-recap');
+      }
       const sceneImage = root.querySelector('#scene-image') as HTMLElement;
       sceneImage.style.display = 'none';
     }
