@@ -190,9 +190,13 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     const { systemPrompt, criticalReminder, narrationHint } = this.buildSystemPrompt(ctx);
     const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
 
+    const recentTranscript = ctx.transcript.slice(-6).map(m => `[${m.role}] ${m.content}`).join('\n');
+
     const userMessage = [
       charBlock ? `<character>\n${charBlock.trim()}\n</character>` : '',
       `\n<action>\n${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n</action>`,
+      ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',
+      `\n<context>\n${recentTranscript}\n</context>`,
       `\n<rules>\n${ruleContext}\n</rules>`,
       `\n<task>`,
       `Resolve ${characterInfo ? characterInfo.name + "'s" : 'this'} action using the FATE steps above. A wounded character (high stress, existing consequences) should face HIGHER difficulty (+1 per consequence). Apply meaningful state changes:`,
@@ -216,7 +220,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
         { role: 'user', content: userMessage },
       ],
       schema: DmResolutionSchema,
-      maxTokens: 1024,
+      maxTokens: 1536,
     });
   }
 
