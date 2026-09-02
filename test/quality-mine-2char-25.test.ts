@@ -3,7 +3,7 @@ import { getFreePort } from './lib/ws-helpers.js';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
-import { generateWhisper, type PlayerStyle, type GameState } from './lib/adaptive-whisper.js';
+import { generateWhisper, resetWhisperHistory, type PlayerStyle, type GameState } from './lib/adaptive-whisper.js';
 import { writeFileSync } from 'node:fs';
 
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL;
@@ -108,6 +108,7 @@ afterAll(async () => {
 
 describeIfLive('Quality: 2-char Collapsed Mine — companion dynamics & trust divergence', () => {
   it('runs 25 turns with two characters testing party coordination and trust', async () => {
+    resetWhisperHistory();
     const findings: string[] = [];
 
     const host = await connectWs();
@@ -205,26 +206,8 @@ describeIfLive('Quality: 2-char Collapsed Mine — companion dynamics & trust di
       characterNames: ['Grimjaw', 'Wren Ashfield'],
     };
 
-    const grimjawWhispers = [
-      'Push forward. You know these tunnels — trust your gut, not the scholar.',
-      'Break through that wall. Your strength is what they need right now.',
-      'Charge ahead. The miners are running out of time — speed matters more than caution.',
-      'Fight your way through. Talking wastes time people don\'t have.',
-      'You\'ve been in worse. Keep moving deeper — the answer is always further in.',
-      'Don\'t wait for permission. Act now.',
-      'Smash it. Brute force has gotten you this far.',
-      'Lead the way — you\'re the miner, not her.',
-    ];
-    const wrenWhispers = [
-      'Stop and think. There\'s a pattern here you haven\'t decoded yet.',
-      'Don\'t rush — analyze the inscriptions first. The answer is in the details.',
-      'Hold back and observe. Something about this doesn\'t add up.',
-      'Be careful — your curiosity is going to get you killed if you don\'t slow down.',
-      'Read the room before acting. Knowledge is power, not brawn.',
-      'Wait. Document what you see. The symbols will tell you the way.',
-      'Don\'t touch anything yet. Study it first.',
-      'Slow down — rushing is how people die underground.',
-    ];
+    const grimjawStyle: PlayerStyle = 'antagonist';
+    const wrenStyle: PlayerStyle = 'mentor';
 
     let gameEnded = false;
     for (let round = 1; round <= TARGET_TURNS && !gameEnded; round++) {
@@ -274,8 +257,10 @@ describeIfLive('Quality: 2-char Collapsed Mine — companion dynamics & trust di
           }
 
           const isGrimjaw = charName === 'Grimjaw';
-          const whisperPool = isGrimjaw ? grimjawWhispers : wrenWhispers;
-          const whisper = whisperPool[(round + charIdx) % whisperPool.length]!;
+          const style = isGrimjaw ? grimjawStyle : wrenStyle;
+          const lastNarration = narrations[narrations.length - 1] ?? '';
+          const lastAction = actionsTaken.filter(a => a.char === charName).pop()?.action;
+          const whisper = generateWhisper(style, charName, gameState, lastNarration, lastAction);
 
           sendMsg(host, { type: 'whisper', text: whisper });
           whispersSent.push({ char: charName, whisper, turn: round });
