@@ -1185,7 +1185,21 @@ export class GameLoop {
     return `${name} is ${parts.join(', ')}.`;
   }
 
-  private buildWhisperSuggestions(character: { definition: CharacterDefinition; state: CharacterState }, actions: string[], narration: string): string[] {
+  private getCompanionLastAction(excludeCharId: string): { name: string; action: string; spokenWords?: string } | null {
+    for (const [id, c] of this.characters) {
+      if (id === excludeCharId) continue;
+      const prefix = `${c.definition.name}: `;
+      const last = this.transcript.filter(m => m.role === 'character' && m.content.startsWith(prefix)).slice(-1)[0];
+      if (last) {
+        const action = last.content.slice(prefix.length);
+        const quoteMatch = action.match(/— "(.+?)"/);
+        return { name: getFirstName(c.definition.name), action, spokenWords: quoteMatch?.[1] };
+      }
+    }
+    return null;
+  }
+
+  private buildWhisperSuggestions(character: { definition: CharacterDefinition; state: CharacterState }, actions: string[], narration: string, companionAction?: { name: string; action: string; spokenWords?: string } | null): string[] {
     const suggestions: string[] = [];
 
     if (actions.length >= 2) {
@@ -1231,6 +1245,16 @@ export class GameLoop {
       }
       if (character.state.stress >= 2 && suggestions.length < 3) {
         suggestions.push("You're hurt. Don't be a hero — survive first.");
+      }
+    }
+
+    if (companionAction && suggestions.length < 3) {
+      if (companionAction.spokenWords) {
+        suggestions.push(`${companionAction.name} just spoke to you — respond.`);
+      } else if (/\b(protect|cover|help|defend|save|guard)\b/i.test(companionAction.action)) {
+        suggestions.push(`${companionAction.name} has your back. Push forward.`);
+      } else if (/\b(alone|split|separate|leave)\b/i.test(companionAction.action)) {
+        suggestions.push(`Don't let ${companionAction.name} go alone.`);
       }
     }
 
