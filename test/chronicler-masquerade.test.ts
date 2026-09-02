@@ -261,6 +261,7 @@ describeIfLive('Chronicler + Haunted Masquerade: Memory Continuity & Social Intr
     const allInnerThoughts: string[] = [];
     const trustHistory: Record<string, number[]> = { diplomat: [], spy: [] };
     const turnLog: Array<{ turn: number; char: string; action: string; influence: string; trust: number }> = [];
+    let dialogueCount = 0;
     let turnsCompleted = 0;
     let scenesCompleted = 0;
     let sessionEnded = false;
@@ -359,6 +360,10 @@ describeIfLive('Chronicler + Haunted Masquerade: Memory Continuity & Social Intr
         if (actionTaken.type === 'action-taken') {
           const charLabel = actionTaken.characterName === 'Ambassador Elara Thorne' ? 'diplomat' : 'spy';
           console.log(`[chronicler]   ${charLabel} [${actionTaken.whisperInfluence}]: "${actionTaken.action.slice(0, 80)}"`);
+          if (actionTaken.spokenWords) {
+            console.log(`[chronicler]   Dialogue: "${actionTaken.spokenWords.slice(0, 100)}"`);
+            dialogueCount++;
+          }
           console.log(`[chronicler]   Inner thought: "${actionTaken.innerThought.slice(0, 100)}"`);
           allInnerThoughts.push(`${charLabel}: ${actionTaken.innerThought}`);
         }
@@ -466,6 +471,12 @@ describeIfLive('Chronicler + Haunted Masquerade: Memory Continuity & Social Intr
       console.log(`  Turn ${entry.turn}: ${entry.char} [${entry.influence}] trust=${entry.trust.toFixed(3)} — ${entry.action}`);
     }
 
+    // V8: Characters produce spoken dialogue
+    const dialoguePct = turnsCompleted > 0 ? dialogueCount / turnsCompleted : 0;
+    if (dialoguePct < 0.3) {
+      findings.push(`ISSUE: Only ${Math.round(dialoguePct * 100)}% of turns had spoken dialogue (expect ≥30%)`);
+    }
+
     // ---- Summary ----
     const compactionLogs = allServerLogs.filter(l => l.includes('compaction') || l.includes('Mid-scene fact'));
     console.log('\n=== PLAYTEST SUMMARY ===');
@@ -475,6 +486,7 @@ describeIfLive('Chronicler + Haunted Masquerade: Memory Continuity & Social Intr
     console.log(`Fact extractions: ${factLogs.length}`);
     console.log(`Compaction events: ${compactionLogs.length}`);
     console.log(`Diplomat turns: ${turnLog.filter(t => t.char === 'diplomat').length}, Spy turns: ${turnLog.filter(t => t.char === 'spy').length}`);
+    console.log(`Dialogue turns: ${dialogueCount}/${turnsCompleted} (${turnsCompleted > 0 ? Math.round(dialogueCount / turnsCompleted * 100) : 0}%)`);
     console.log(`Findings: ${findings.length === 0 ? 'None!' : ''}`);
     findings.forEach(f => console.log(`  - ${f}`));
 
