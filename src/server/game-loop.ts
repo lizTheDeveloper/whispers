@@ -106,6 +106,12 @@ export class GameLoop {
     }
   }
 
+  async endGame(): Promise<void> {
+    this.stop();
+    await this.generateEpilogue();
+    this.broadcastFn({ type: 'phase-change', phase: 'ended' });
+  }
+
   private async runScene(campaign: any): Promise<void> {
     if (this.stopped) return;
     const partySize = this.characters.size || 1;

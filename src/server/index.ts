@@ -343,12 +343,19 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'end-game' && currentJoinCode && currentPlayer?.isHost) {
-      const loop = gameLoops.get(currentJoinCode);
+      const jc = currentJoinCode;
+      const loop = gameLoops.get(jc);
       if (loop) {
-        loop.stop();
-        gameLoops.delete(currentJoinCode);
+        loop.endGame().then(() => {
+          gameLoops.delete(jc);
+        }).catch(e => {
+          console.error('[server] endGame failed:', e);
+          broadcast(jc, { type: 'phase-change', phase: 'ended' });
+          gameLoops.delete(jc);
+        });
+      } else {
+        broadcast(jc, { type: 'phase-change', phase: 'ended' });
       }
-      broadcast(currentJoinCode, { type: 'phase-change', phase: 'ended' });
     }
   });
 
