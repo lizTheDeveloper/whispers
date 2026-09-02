@@ -292,6 +292,15 @@ export class GameLoop {
     this.sceneTurnCount++;
     this.state.activeCharacterId = characterId;
 
+    const TRUST_BASELINE = 0.50;
+    const TRUST_DRIFT_RATE = 0.06;
+    const preDrift = character.state.whisperTrust;
+    const drift = (TRUST_BASELINE - preDrift) * TRUST_DRIFT_RATE;
+    if (Math.abs(drift) > 0.001) {
+      character.state.whisperTrust = Math.max(0.10, Math.min(0.95, preDrift + drift));
+      console.log(`[game-loop] Trust drift: ${character.definition.name} ${preDrift.toFixed(3)} → ${character.state.whisperTrust.toFixed(3)} (${drift > 0 ? '+' : ''}${drift.toFixed(3)})`);
+    }
+
     const worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
     const charRelationships = this.worldBible.getCharacterRelationships(this.campaignId, characterId, character.definition.name);
@@ -453,13 +462,13 @@ export class GameLoop {
           : character.state.whisperTrust < 0.75 ? 0.02
           : 0;
       } else {
-        effectiveDelta = character.state.whisperTrust < 0.50 ? 0.08 : 0.05;
+        effectiveDelta = character.state.whisperTrust < 0.50 ? 0.08
+          : character.state.whisperTrust < 0.70 ? 0.05
+          : character.state.whisperTrust < 0.85 ? 0.03
+          : 0.015;
       }
     }
     const currentTrust = character.state.whisperTrust;
-    if (currentTrust > 0.85 && effectiveDelta > 0) {
-      effectiveDelta *= 0.5;
-    }
     const recoveryCap = currentTrust < 0.40 && effectiveDelta > 0 ? 0.12 : 0.08;
     if (effectiveDelta > recoveryCap) effectiveDelta = recoveryCap;
     character.state.whisperTrust = Math.max(0.10, Math.min(0.95, currentTrust + effectiveDelta));
@@ -1141,7 +1150,7 @@ export class GameLoop {
   }
 
   private buildCharacterMood(character: { definition: CharacterDefinition; state: CharacterState; id: string }, memories: Array<{ content: string; type: string; emotionalValence: number }>): string {
-    const name = character.definition.name.split(' ')[0]!;
+    const name = getFirstName(character.definition.name);
     const parts: string[] = [];
 
     const recentMem = memories.slice(0, 3);
@@ -1164,40 +1173,50 @@ export class GameLoop {
 
   private buildWhisperSuggestions(character: { definition: CharacterDefinition; state: CharacterState }, actions: string[], narration: string): string[] {
     const suggestions: string[] = [];
-    const narLower = narration.toLowerCase();
 
-    const npcNames = this.extractNpcNamesFromNarration(narration);
-    const firstNpc = npcNames[0];
+    if (actions.length >= 2) {
+      const shorten = (a: string) => a.replace(/^I\s+/i, '').replace(/^(try|attempt|decide|choose|want) to\s+/i, '').split(/[.!]/)[0]!.trim().slice(0, 50);
+      const isBold = (a: string) => /\b(confront|charge|demand|fight|challenge|steal|break|threaten|accuse|attack|grab|rush)\b/i.test(a);
+      const isCautious = (a: string) => /\b(observe|watch|wait|hide|sneak|listen|study|examine|scout|retreat)\b/i.test(a);
+      const isSocial = (a: string) => /\b(talk|ask|persuade|approach|greet|question|negotiate|whisper to|speak|confide)\b/i.test(a);
 
-    const hasDanger = /\b(danger|threat|attack|wound|dark|scream|blood|hostile|ambush|trap|collapse)\b/.test(narLower);
-    const hasNpc = firstNpc != null || /\b(said|spoke|asked|replied|warned|whispered|shouted)\b/.test(narLower);
-    const hasClue = /\b(notice|found|discover|clue|track|sign|letter|note|strange|hidden|secret)\b/.test(narLower);
-    const itemMatch = narLower.match(/\b(key|map|note|letter|vial|scroll|ring|pendant|blade|lantern|coin|book|journal|dagger|pouch|flask|seal|badge|mask)\b/);
+      const boldIdx = actions.findIndex(a => isBold(a));
+      const cautiousIdx = actions.findIndex(a => isCautious(a));
+      const socialIdx = actions.findIndex(a => isSocial(a));
 
-    if (character.state.whisperTrust >= 0.6) {
-      if (hasDanger) suggestions.push("Fall back. Find cover before it's too late.");
-      if (hasNpc && firstNpc) suggestions.push(`Ask ${firstNpc} what they're hiding.`);
-      else if (hasNpc) suggestions.push("Press them — they know more than they're saying.");
-      if (itemMatch) suggestions.push(`Take the ${itemMatch[0]} before someone else does.`);
-      else if (hasClue) suggestions.push("That detail matters. Follow it before someone else does.");
-    } else {
-      if (hasDanger) suggestions.push("You've survived worse. Trust your gut.");
-      if (hasNpc && firstNpc) suggestions.push(`${firstNpc} might be an ally. Hear them out.`);
-      else if (hasNpc) suggestions.push("Give them a chance. Listen first.");
-      if (itemMatch) suggestions.push(`Look at the ${itemMatch[0]}. It could change everything.`);
-      else if (hasClue) suggestions.push("Look closer — this could change everything.");
-      if (suggestions.length === 0) suggestions.push("I'm trying to help. Please listen.");
+      if (boldIdx >= 0) {
+        suggestions.push(`Do it — ${shorten(actions[boldIdx]!).toLowerCase()}.`);
+      }
+      if (cautiousIdx >= 0 && cautiousIdx !== boldIdx) {
+        suggestions.push(`Be careful. ${shorten(actions[cautiousIdx]!).charAt(0).toUpperCase()}${shorten(actions[cautiousIdx]!).slice(1)}.`);
+      }
+      if (socialIdx >= 0 && socialIdx !== boldIdx && socialIdx !== cautiousIdx) {
+        suggestions.push(`Talk first — ${shorten(actions[socialIdx]!).toLowerCase()}.`);
+      }
     }
 
-    if (character.state.stress >= 2) {
-      suggestions.push("You're hurt. Don't be a hero — survive first.");
-    }
+    if (suggestions.length < 3) {
+      const npcNames = this.extractNpcNamesFromNarration(narration);
+      const firstNpc = npcNames[0];
+      const narLower = narration.toLowerCase();
+      const hasDanger = /\b(danger|threat|attack|wound|dark|scream|blood|hostile|ambush|trap|collapse)\b/.test(narLower);
+      const itemMatch = narLower.match(/\b(key|map|note|letter|vial|scroll|ring|pendant|blade|lantern|coin|book|journal|dagger|pouch|flask|seal|badge|mask)\b/);
 
-    if (actions.length > 0) {
-      const boldAction = actions.find(a => /\b(confront|charge|demand|fight|challenge|steal|break|threaten)\b/i.test(a));
-      if (boldAction) {
-        const shortAction = boldAction.split(' ').slice(0, 6).join(' ').toLowerCase();
-        suggestions.push(`Do it — ${shortAction}.`);
+      if (firstNpc && suggestions.length < 3) {
+        suggestions.push(character.state.whisperTrust >= 0.6
+          ? `Ask ${firstNpc} what they're hiding.`
+          : `${firstNpc} might be an ally. Hear them out.`);
+      }
+      if (hasDanger && suggestions.length < 3) {
+        suggestions.push(character.state.whisperTrust >= 0.6
+          ? "Fall back. Find cover before it's too late."
+          : "You've survived worse. Trust your gut.");
+      }
+      if (itemMatch && suggestions.length < 3) {
+        suggestions.push(`The ${itemMatch[0]} — grab it.`);
+      }
+      if (character.state.stress >= 2 && suggestions.length < 3) {
+        suggestions.push("You're hurt. Don't be a hero — survive first.");
       }
     }
 
@@ -1248,7 +1267,7 @@ export class GameLoop {
         if (recentActions.length >= 3) {
           const cautious = /\b(look|observe|wait|cautious|careful|hide|watch|listen|stay)\b/i;
           const social = /\b(talk|speak|ask|persuade|convince|argue|negotiate|confront|shout)\b/i;
-          const otherNames = charIds.filter(id => id !== c.id).map(id => this.characters.get(id)!.definition.name.split(' ')[0]!.toLowerCase());
+          const otherNames = charIds.filter(id => id !== c.id).map(id => getFirstName(this.characters.get(id)!.definition.name).toLowerCase());
           const cautiousCount = recentActions.filter(a => cautious.test(a)).length;
           const socialCount = recentActions.filter(a => social.test(a)).length;
           const companionMentions = otherNames.length > 0 ? recentActions.filter(a => otherNames.some(n => a.toLowerCase().includes(n))).length : 0;
@@ -1303,7 +1322,7 @@ export class GameLoop {
     const hints: string[] = [];
     for (const [, char] of this.characters) {
       const trust = char.state.whisperTrust;
-      const name = char.definition.name.split(' ')[0]!;
+      const name = getFirstName(char.definition.name);
       if (trust >= 0.85) {
         hints.push(`WHISPER COMPLACENCY — ${name} trusts the voice almost completely (${trust.toFixed(2)}). This is DANGEROUS — create a situation where following the voice's likely advice would hurt an innocent or betray an ally. Force the player to choose between easy guidance and hard morality. The voice should feel like a crutch that needs questioning.`);
       } else if (trust >= 0.65 && trust <= 0.75) {
@@ -1316,7 +1335,7 @@ export class GameLoop {
     }
     if (this.characters.size >= 2) {
       const trusts = Array.from(this.characters.values()).map(c => ({
-        name: c.definition.name.split(' ')[0]!,
+        name: getFirstName(c.definition.name),
         trust: c.state.whisperTrust,
       }));
       trusts.sort((a, b) => b.trust - a.trust);
