@@ -253,7 +253,7 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
           if (resMsg.type === 'narration' || resMsg.type === 'resolution') {
             const text = resMsg.text ?? '';
             narrations.push(text);
-            if (/\([^)]*\+\d+[^)]*vs[^)]*\+\d+[^)]*\)/.test(text)) teachingAsides++;
+            if (/\+\d+.*?vs.*?\+\d+.*?shift/i.test(text)) teachingAsides++;
             const itemNames = ['lantern', 'map', 'crystal', 'shard', 'journal', 'blueprint'];
             if (itemNames.some(n => text.toLowerCase().includes(n))) itemMentions++;
           }

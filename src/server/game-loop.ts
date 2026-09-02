@@ -130,7 +130,9 @@ export class GameLoop {
       return;
     }
 
-    const worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    let worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    const npcHint = this.getNpcEngagementHint();
+    if (npcHint) worldSummary += '\n' + npcHint;
     let narration;
     try {
       narration = await this.dm.narrate({
@@ -363,11 +365,11 @@ export class GameLoop {
       if (rawMemory) {
         const memIdx = Math.floor(character.state.stress + character.state.fatePoints + (this.state.currentTurn ?? 0)) % 4;
         if (/^I\s/i.test(rawMemory)) {
-          const verb = fixPronouns(rawMemory.replace(/^I\s+/i, '').toLowerCase());
-          const starters = [`The memory of when I ${verb} steadies me`, `I recall ${verb}`, `Having ${verb} before, I know what to do`, `Drawing on when I ${verb}`];
+          const verb = fixPronouns(rawMemory.replace(/^I\s+/i, ''));
+          const starters = [`The memory of when I ${verb} steadies me`, `I remember — I ${verb}`, `Having ${verb} before, I know what to do`, `Drawing on when I ${verb}`];
           memoryPhrase = starters[memIdx]!;
         } else {
-          const starters = [`I recall ${fixPronouns(rawMemory.toLowerCase())}`, `The thought of ${fixPronouns(rawMemory.toLowerCase())} lingers`, `Remembering ${fixPronouns(rawMemory.toLowerCase())}`, `${fixPronouns(rawMemory)} echoes in my mind`];
+          const starters = [`I recall ${fixPronouns(rawMemory)}`, `The thought of ${fixPronouns(rawMemory)} lingers`, `Remembering ${fixPronouns(rawMemory)}`, `${fixPronouns(rawMemory)} echoes in my mind`];
           memoryPhrase = starters[memIdx]!;
         }
       }
@@ -962,6 +964,30 @@ export class GameLoop {
         return line;
       })
       .join('\n');
+  }
+
+  private getNpcEngagementHint(): string | null {
+    const npcs = this.db.prepare(
+      'SELECT name FROM entities WHERE campaign_id = ? AND type = ? AND alive = 1'
+    ).all(this.campaignId, 'npc') as Array<{ name: string }>;
+    if (npcs.length < 2) return null;
+
+    const allText = this.transcript.map(m => m.content).join(' ').toLowerCase();
+    const charNames = new Set(Array.from(this.characters.values()).map(c => c.definition.name.toLowerCase()));
+
+    const counts: Array<{ name: string; count: number }> = npcs
+      .filter(n => !charNames.has(n.name.toLowerCase()))
+      .map(n => ({
+        name: n.name,
+        count: (allText.match(new RegExp(n.name.toLowerCase().split(/\s+/)[0]!, 'g')) ?? []).length,
+      }));
+
+    const maxCount = Math.max(...counts.map(c => c.count), 0);
+    const neglected = counts.filter(c => c.count === 0 && maxCount >= 2);
+    if (neglected.length === 0) return null;
+
+    const names = neglected.slice(0, 3).map(n => n.name).join(', ');
+    return `NPC ROTATION: ${names} ha${neglected.length === 1 ? 's' : 've'} not appeared yet — introduce or mention ${neglected.length === 1 ? 'them' : 'one of them'} in this narration. Every NPC should get screen time.`;
   }
 
   private addTranscript(role: TranscriptMessage['role'], content: string, characterId?: string): void {
