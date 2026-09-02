@@ -269,13 +269,17 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
             break;
           }
 
-          // Check if next char's action-proposals follows, or if we're at end of round
+          // Wait for next char's action-proposals, skipping character-state-update/dice-roll messages
           if (charIdx < 1) {
-            currentProposals = await waitForAnyMsg(host, ['action-proposals', 'narration', 'scene-end', 'phase-change', 'character-state-update'], 30_000).catch(() => null);
-            if (!currentProposals || currentProposals.type !== 'action-proposals') {
-              // Not another character's turn — drain and move to next round
-              currentProposals = null;
+            let found = false;
+            for (let drain = 0; drain < 5 && !found; drain++) {
+              const peek = await waitForAnyMsg(host, ['action-proposals', 'narration', 'scene-end', 'phase-change', 'character-state-update', 'dice-roll'], 30_000).catch(() => null);
+              if (!peek) { currentProposals = null; break; }
+              if (peek.type === 'action-proposals') { currentProposals = peek; found = true; }
+              else if (peek.type === 'character-state-update' || peek.type === 'dice-roll') { continue; }
+              else { currentProposals = null; break; }
             }
+            if (!found) currentProposals = null;
           }
         }
 
