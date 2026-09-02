@@ -400,17 +400,19 @@ export class GameLoop {
     let effectiveDelta = decision.trustDelta;
     if (whisper && effectiveDelta === 0) {
       if (decision.whisperedInfluence === 'ignored') {
-        effectiveDelta = -0.05;
+        effectiveDelta = -0.08;
+      } else if (decision.whisperedInfluence === 'partially-followed') {
+        effectiveDelta = 0.03;
       } else {
-        effectiveDelta = character.state.whisperTrust < 0.50 ? 0.06 : 0.03;
+        effectiveDelta = character.state.whisperTrust < 0.50 ? 0.08 : 0.05;
       }
     }
     const currentTrust = character.state.whisperTrust;
-    const recoveryCap = currentTrust < 0.50 && effectiveDelta > 0 ? 0.08 : 0.05;
+    const recoveryCap = currentTrust < 0.40 && effectiveDelta > 0 ? 0.12 : 0.08;
     if (effectiveDelta > recoveryCap) effectiveDelta = recoveryCap;
     character.state.whisperTrust = Math.max(0, Math.min(0.95, currentTrust + effectiveDelta));
-    if (recoveryCap === 0.08 && effectiveDelta > 0) {
-      console.log(`[game-loop] Low-trust recovery boost: ${character.definition.name} trust ${currentTrust.toFixed(2)} → ${character.state.whisperTrust.toFixed(2)} (+${effectiveDelta.toFixed(2)}, cap raised to 0.08)`);
+    if (recoveryCap === 0.12 && effectiveDelta > 0) {
+      console.log(`[game-loop] Low-trust recovery boost: ${character.definition.name} trust ${currentTrust.toFixed(2)} → ${character.state.whisperTrust.toFixed(2)} (+${effectiveDelta.toFixed(2)}, cap raised to 0.12)`);
     }
 
     const diceResult = rollDice(this.getSystemDefaultDice(campaign.system_id));
