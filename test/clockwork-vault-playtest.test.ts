@@ -5,7 +5,7 @@ import type { ClientMessage, ServerMessage } from '../src/shared/protocol.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
 
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL;
-const describeIfLive = LLM_PROXY_URL ? describe.skip : describe.skip;
+const describeIfLive = LLM_PROXY_URL ? describe : describe.skip;
 
 let serverProcess: ReturnType<typeof import('node:child_process').fork> | null = null;
 let port: number;
