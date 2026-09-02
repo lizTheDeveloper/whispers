@@ -203,17 +203,17 @@ export class GameLoop {
 
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
     const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
-    const baseHardCap = partySize >= 3 ? Math.max(4, 7 - partySize) : partySize === 2 ? 5 : Math.max(4, 8 - partySize);
-    const hardCap = isFinale ? Math.min(baseHardCap, 5) : baseHardCap;
+    const baseHardCap = partySize >= 3 ? Math.max(6, 10 - partySize) : partySize === 2 ? 8 : 10;
+    const hardCap = isFinale ? Math.min(baseHardCap, 6) : baseHardCap;
     const forceSceneEnd = roundCount >= hardCap;
     if (forceSceneEnd) {
       console.log(`[game-loop] Forcing scene end at round ${roundCount} (${isFinale ? 'finale' : 'hard'} cap)`);
     }
 
     const minRounds = this.state.currentScene <= 1
-      ? (partySize >= 3 ? 3 : partySize === 2 ? 3 : 4)
-      : this.state.currentScene >= 5 ? 2
-      : (partySize >= 3 ? 2 : partySize === 2 ? 2 : 3);
+      ? (partySize >= 3 ? 4 : partySize === 2 ? 4 : 5)
+      : this.state.currentScene >= 5 ? 3
+      : (partySize >= 3 ? 3 : partySize === 2 ? 3 : 4);
     const allowSceneEnd = roundCount >= minRounds || forceSceneEnd;
     if ((narration.isSceneEnd && allowSceneEnd) || forceSceneEnd) {
       await this.endScene();

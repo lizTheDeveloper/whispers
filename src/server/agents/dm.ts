@@ -79,8 +79,8 @@ export class DmAgent {
       }
     }
 
-    const developThreshold = partySize <= 1 ? 2 : 2;
-    const escalateThreshold = partySize <= 1 ? 5 : Math.max(2, 4 - partySize);
+    const developThreshold = partySize <= 1 ? 3 : 3;
+    const escalateThreshold = partySize <= 1 ? 6 : Math.max(4, 7 - partySize);
 
     const hasPreviousScene = sceneNum > 1;
     const pacingHint = roundCount === 0
