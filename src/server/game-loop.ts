@@ -336,6 +336,10 @@ export class GameLoop {
       proposals = { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }, { description: 'Press forward despite the uncertainty', reasoning: 'Fallback bold option' }] };
     }
 
+    for (const a of proposals.actions) {
+      a.description = a.description.replace(/\*+/g, '').replace(/_+/g, '').replace(/^#+\s*/, '').trim();
+    }
+
     this.broadcastFn({
       type: 'action-proposals',
       characterId,
@@ -349,7 +353,8 @@ export class GameLoop {
     this.state.awaitingWhisper = true;
     const mood = this.buildCharacterMood(character, memories);
     const trustHint = this.buildTrustHint(character);
-    const suggestions = this.buildWhisperSuggestions(character, proposals.actions.map(a => a.description), sceneNarration);
+    const companionLastAction = this.getCompanionLastAction(characterId);
+    const suggestions = this.buildWhisperSuggestions(character, proposals.actions.map(a => a.description), sceneNarration, companionLastAction);
     const goals = this.characterAgent.deriveGoals(memories);
     this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined });
 
@@ -371,10 +376,16 @@ export class GameLoop {
       const fallbackAction = proposals.actions[0]?.description ?? 'Waits and observes';
       decision = {
         chosenAction: fallbackAction,
+        spokenWords: null as string | null,
         innerThought: `I should ${fallbackAction.toLowerCase()} — the situation demands action, even if I'm uncertain.`,
         whisperedInfluence: 'ignored' as const,
         trustDelta: 0,
       };
+    }
+
+    decision.chosenAction = decision.chosenAction.replace(/\*+/g, '').replace(/_+/g, '').replace(/^#+\s*/, '').trim();
+    if ('spokenWords' in decision && decision.spokenWords) {
+      decision.spokenWords = decision.spokenWords.replace(/\*+/g, '').replace(/_+/g, '').trim();
     }
 
     if (decision.chosenAction.trim().length < 20) {
@@ -469,6 +480,9 @@ export class GameLoop {
       }
     }
     const currentTrust = character.state.whisperTrust;
+    if (currentTrust >= 0.80 && effectiveDelta > 0) {
+      effectiveDelta *= currentTrust >= 0.90 ? 0.25 : 0.5;
+    }
     const recoveryCap = currentTrust < 0.40 && effectiveDelta > 0 ? 0.12 : 0.08;
     if (effectiveDelta > recoveryCap) effectiveDelta = recoveryCap;
     character.state.whisperTrust = Math.max(0.10, Math.min(0.95, currentTrust + effectiveDelta));

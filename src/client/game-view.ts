@@ -321,4 +321,14 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       ws.send({ type: 'end-game' });
     });
   }
+
+  const connBanner = document.createElement('div');
+  connBanner.className = 'connection-banner';
+  connBanner.style.display = 'none';
+  connBanner.textContent = 'Connection lost — reconnecting…';
+  root.querySelector('.game-view')?.prepend(connBanner);
+  ws.onStatus((connected) => {
+    connBanner.style.display = connected ? 'none' : 'block';
+    if (connected) appendLog('[Reconnected]', 'system');
+  });
 }

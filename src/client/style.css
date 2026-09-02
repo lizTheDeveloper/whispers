@@ -1224,6 +1224,23 @@ button:disabled {
   justify-content: flex-end;
 }
 
+.connection-banner {
+  background: linear-gradient(90deg, var(--gene-pink), var(--ember));
+  color: var(--star-white);
+  text-align: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  animation: pulse-banner 2s ease-in-out infinite;
+}
+@keyframes pulse-banner {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 ::selection {
   background: rgba(255, 107, 53, 0.25);
   color: var(--star-white);

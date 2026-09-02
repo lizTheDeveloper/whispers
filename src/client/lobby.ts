@@ -25,6 +25,7 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
             <option value="collapsed-mine">The Collapsed Mine — dungeon crawl (beginner)</option>
             <option value="haunted-masquerade">The Haunted Masquerade — social intrigue (intermediate)</option>
             <option value="clockwork-vault">The Clockwork Vault — heist (intermediate)</option>
+            <option value="frontier-outpost">The Frontier Outpost — frontier diplomacy (intermediate)</option>
           </select>
           <button id="create-btn">Create Game</button>
         </div>
@@ -56,7 +57,10 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
   });
 
   ws.on('room-joined', (msg) => {
-    if (msg.type === 'room-joined') onJoined(msg.campaignId, msg.joinCode, msg.isHost);
+    if (msg.type === 'room-joined') {
+      ws.setRejoinInfo(msg.joinCode, msg.isHost ? 'Host' : (root.querySelector('#player-name') as HTMLInputElement)?.value.trim() || 'Adventurer');
+      onJoined(msg.campaignId, msg.joinCode, msg.isHost);
+    }
   });
 
   ws.on('error', (msg) => {

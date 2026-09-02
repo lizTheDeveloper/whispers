@@ -12,9 +12,14 @@ export class WsClient {
   private reconnectDelay = 1000;
   private maxReconnectDelay = 10000;
   private intentionallyClosed = false;
+  private rejoinInfo: { joinCode: string; playerName: string } | null = null;
 
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  setRejoinInfo(joinCode: string, playerName: string): void {
+    this.rejoinInfo = { joinCode, playerName };
   }
 
   connect(): Promise<void> {
@@ -26,6 +31,9 @@ export class WsClient {
       this.ws.onopen = () => {
         this.reconnectDelay = 1000;
         this.notifyStatus(true);
+        if (this.rejoinInfo) {
+          this.send({ type: 'rejoin', joinCode: this.rejoinInfo.joinCode, playerName: this.rejoinInfo.playerName });
+        }
         resolve();
       };
       this.ws.onerror = () => reject(new Error('WebSocket connection failed'));

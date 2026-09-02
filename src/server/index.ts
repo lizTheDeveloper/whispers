@@ -185,6 +185,30 @@ wss.on('connection', (ws) => {
       broadcast(msg.joinCode, { type: 'player-joined', playerName: msg.playerName, characterId: null });
     }
 
+    if (msg.type === 'rejoin') {
+      const campaign = joinRoom(db, msg.joinCode);
+      if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
+      currentJoinCode = msg.joinCode;
+      const players = rooms.get(msg.joinCode);
+      if (players) {
+        const existing = players.find(p => p.playerName === msg.playerName);
+        if (existing) {
+          existing.ws = ws;
+          currentPlayer = existing;
+          console.log(`[server] Player "${msg.playerName}" reconnected to room ${msg.joinCode}`);
+        } else {
+          currentPlayer = { ws, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
+          players.push(currentPlayer);
+        }
+      } else {
+        currentPlayer = { ws, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
+        rooms.set(msg.joinCode, [currentPlayer]);
+      }
+      send(ws, { type: 'room-joined', campaignId: campaign.id, joinCode: msg.joinCode, isHost: currentPlayer.isHost });
+      const phase = ((campaign as any).phase as import('../shared/types.js').GamePhase) ?? 'lobby';
+      send(ws, { type: 'phase-change', phase });
+    }
+
     if (msg.type === 'submit-character' && currentJoinCode) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
@@ -366,9 +390,16 @@ wss.on('connection', (ws) => {
       const idx = players.indexOf(currentPlayer);
       if (idx >= 0) players.splice(idx, 1);
       if (players.length === 0) {
-        rooms.delete(currentJoinCode);
-        const loop = gameLoops.get(currentJoinCode);
-        if (loop) { loop.stop(); gameLoops.delete(currentJoinCode); }
+        const jc = currentJoinCode;
+        setTimeout(() => {
+          const stillEmpty = rooms.get(jc);
+          if (!stillEmpty || stillEmpty.length === 0) {
+            rooms.delete(jc);
+            const loop = gameLoops.get(jc);
+            if (loop) { loop.stop(); gameLoops.delete(jc); }
+            console.log(`[server] Room ${jc} cleaned up after reconnect grace period`);
+          }
+        }, 30_000);
       } else {
         broadcast(currentJoinCode, { type: 'player-left', playerName: currentPlayer.playerName });
       }
