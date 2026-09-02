@@ -258,9 +258,9 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     const worldHint = worldState
       ? `\n\nThe world bible already tracks these facts (do NOT repeat them — focus on narrative, character emotions, and unresolved tension instead):\n${worldState}`
       : '';
-    const hasRecap = transcript.some(m => m.content.startsWith('[Session recap]'));
+    const hasRecap = transcript.some(m => m.content.startsWith('[Session recap]') || m.content.startsWith('[Previous scene]'));
     const compactionHint = hasRecap
-      ? '\nIMPORTANT: The transcript begins with a prior recap. Preserve ALL named characters, NPCs, locations, and plot threads from that recap. Add new developments from recent events. Do not lose earlier details.'
+      ? '\nIMPORTANT: The transcript begins with a prior recap or scene summary. Preserve ALL named characters, NPCs, locations, and plot threads from it. Add new developments from recent events. Do not lose earlier details.'
       : '';
     try {
       const result = await callLlm({
