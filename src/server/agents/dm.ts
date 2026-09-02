@@ -331,11 +331,14 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
     const compactionHint = hasRecap
       ? '\nIMPORTANT: The transcript begins with a prior recap or scene summary. Preserve ALL named characters, NPCs, locations, and plot threads from it. Add new developments from recent events. Do not lose earlier details.'
       : '';
+
+    const whisperHint = this.buildWhisperSummaryHint(transcript);
+
     try {
       const result = await callLlm({
         messages: [
           { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
-          { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint}${compactionHint}${worldHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
+          { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint}${compactionHint}${whisperHint}${worldHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
         ],
         schema: SceneSummarySchema,
       });
@@ -350,6 +353,33 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
       });
       return plainText.trim() || 'The scene draws to a close.';
     }
+  }
+
+  private buildWhisperSummaryHint(transcript: TranscriptMessage[]): string {
+    const whisperMsgs = transcript.filter(m => m.role === 'system' && /\b(heeded|resisted|partially heeded) the whisper\b/.test(m.content));
+    if (whisperMsgs.length === 0) return '';
+
+    const stats = new Map<string, { followed: number; partial: number; ignored: number; lastTrust: number }>();
+    for (const m of whisperMsgs) {
+      const nameMatch = m.content.match(/^(?:\[)?(\S+)/);
+      const name = nameMatch?.[1] ?? 'unknown';
+      const trustMatch = m.content.match(/trust:\s*([\d.]+)/);
+      const trust = trustMatch ? parseFloat(trustMatch[1]!) : 0.5;
+      if (!stats.has(name)) stats.set(name, { followed: 0, partial: 0, ignored: 0, lastTrust: trust });
+      const s = stats.get(name)!;
+      s.lastTrust = trust;
+      if (m.content.includes('heeded the whisper') && !m.content.includes('partially')) s.followed++;
+      else if (m.content.includes('partially heeded')) s.partial++;
+      else if (m.content.includes('resisted the whisper')) s.ignored++;
+    }
+
+    const lines: string[] = [];
+    for (const [name, s] of stats) {
+      const total = s.followed + s.partial + s.ignored;
+      const trustWord = s.lastTrust >= 0.7 ? 'trusting' : s.lastTrust >= 0.4 ? 'wary' : 'distrustful';
+      lines.push(`${name}: ${s.followed}/${total} whispers followed, ${trustWord} (trust ${s.lastTrust.toFixed(2)})`);
+    }
+    return `\nWhisper influence (preserve this): ${lines.join('; ')}.`;
   }
 
   private buildSystemPrompt(ctx: DmContext): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
