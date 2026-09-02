@@ -241,14 +241,31 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `</task>`,
     ].filter(Boolean).join('\n');
 
-    return callLlm({
-      messages: [
-        { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.' },
-        { role: 'user', content: decisionMessage },
-      ],
-      schema: ActionDecisionSchema,
-      maxTokens: 1536,
-    });
+    const forbiddenKeywords = dominant
+      ? CharacterAgent.SKILL_KEYWORDS[dominant]?.slice(0, 8) ?? []
+      : [];
+
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.' },
+      { role: 'user', content: decisionMessage },
+    ];
+
+    const result = await callLlm({ messages, schema: ActionDecisionSchema, maxTokens: 1536 });
+
+    if (forbiddenKeywords.length > 0) {
+      const actionLower = result.chosenAction.toLowerCase();
+      const violated = forbiddenKeywords.filter(kw => actionLower.includes(kw));
+      if (violated.length > 0) {
+        console.log(`[character] Skill rotation ENFORCED: "${result.chosenAction.slice(0, 60)}" contains forbidden [${violated.join(', ')}] — retrying`);
+        messages.push(
+          { role: 'assistant', content: JSON.stringify(result) },
+          { role: 'user', content: `REJECTED: Your action uses ${dominant} (contains: ${violated.join(', ')}). You MUST choose a completely different approach that does NOT involve ${dominant?.toLowerCase()}. Try a different skill entirely.` },
+        );
+        return callLlm({ messages, schema: ActionDecisionSchema, maxTokens: 1536 });
+      }
+    }
+
+    return result;
   }
 
   private buildCharacterPrompt(ctx: CharacterContext): string {
