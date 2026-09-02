@@ -317,7 +317,7 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
         if (nextEvent.type === 'narration') {
           narrations.push(nextEvent.text);
           if ((nextEvent as any).locationName) locations.add((nextEvent as any).locationName);
-          if (nextEvent.text.includes('Compel:') || nextEvent.text.includes('trouble')) compelCount++;
+          if (/old habits|rears its head|epitaph|glimmer of fate|the wrong moment/i.test(nextEvent.text)) compelCount++;
           console.log(`[vault]   Narration: "${nextEvent.text.slice(0, 100)}..."`);
 
           const afterNarration = await waitForAnyMsg(p1, ['action-proposals', 'scene-end'], 120_000);
@@ -344,7 +344,6 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
           actionsTaken.push({ char: actionTaken.characterName, action: actionTaken.action, turn: turnNum, influence: inf });
           console.log(`[vault]   ${actionTaken.characterName.split(' ')[0]} [${inf}]: "${actionTaken.action.slice(0, 80)}"`);
           console.log(`[vault]   Inner thought: "${actionTaken.innerThought.slice(0, 100)}"`);
-          if (actionTaken.action.includes('invoke') || actionTaken.action.includes('draws on')) invokeCount++;
         }
 
         await waitForMsg(p1, 'dice-roll', 120_000);
@@ -352,8 +351,8 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
         if (resolution.type === 'resolution') {
           narrations.push(resolution.text);
           if (resolution.text.includes('stress') || resolution.text.includes('Stress')) stressEvents++;
-          if (resolution.text.includes('invoke') || resolution.text.includes('draws on') || resolution.text.includes('channels')) invokeCount++;
-          if (resolution.text.includes('Compel:') || resolution.text.includes('trouble')) compelCount++;
+          if (/draws on|channels|Something shifts|tide turns/i.test(resolution.text)) invokeCount++;
+          if (/old habits|rears its head|epitaph|glimmer of fate|the wrong moment/i.test(resolution.text)) compelCount++;
         }
 
         host.off('message', whisperHandler);

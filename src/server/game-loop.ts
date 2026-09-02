@@ -96,8 +96,13 @@ export class GameLoop {
     this.broadcastFn({ type: 'phase-change', phase: 'playing' });
     const campaign = this.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(this.campaignId) as any;
 
-    if (campaign.scenario_id && !checkpoint) {
-      await this.seedScenario(campaign.scenario_id);
+    if (campaign.scenario_id) {
+      const existingLocs = this.worldBible.getAllLocationNames(this.campaignId);
+      if (existingLocs.length === 0) {
+        await this.seedScenario(campaign.scenario_id);
+      } else {
+        console.log(`[game-loop] Scenario already seeded (${existingLocs.length} locations exist)`);
+      }
     }
 
     await this.runScene(campaign);
@@ -156,7 +161,7 @@ export class GameLoop {
         currentLocationName: this.lastLocationName || undefined,
         knownLocationNames: this.worldBible.getAllLocationNames(this.campaignId),
         unvisitedLocationNames: this.worldBible.getUnvisitedLocationNames(this.campaignId),
-        isFinale: this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20,
+        isFinale: this.state.currentScene >= 4 && (this.state.currentTurn ?? 0) >= 18,
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
@@ -223,7 +228,7 @@ export class GameLoop {
     this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
 
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
-    const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
+    const isFinale = this.state.currentScene >= 4 && (this.state.currentTurn ?? 0) >= 18;
     const baseHardCap = partySize >= 3 ? Math.max(6, 10 - partySize) : partySize === 2 ? 8 : 10;
     const hardCap = isFinale ? Math.min(baseHardCap, 6) : baseHardCap;
     const forceSceneEnd = roundCount >= hardCap;

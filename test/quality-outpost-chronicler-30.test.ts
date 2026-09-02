@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { getFreePort } from './lib/ws-helpers.js';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
 import { generateWhisper, type PlayerStyle, type GameState } from './lib/adaptive-whisper.js';
-import { connectWs as _connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
+import { connectWs as _connectWs, sendMsg, MessageQueue, getFreePort } from './lib/ws-helpers.js';
 
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL;
 const describeIfLive = LLM_PROXY_URL ? describe : describe.skip;
