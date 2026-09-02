@@ -7,7 +7,7 @@ export const DmNarrationSchema = z.object({
     z.string(),
     z.object({ name: z.string() }).passthrough().transform(o => o.name),
   ])),
-  isSceneEnd: z.boolean(),
+  isSceneEnd: z.boolean().default(false),
 });
 export type DmNarration = z.infer<typeof DmNarrationSchema>;
 

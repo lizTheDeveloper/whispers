@@ -229,11 +229,15 @@ export class GameLoop {
       console.log(`[game-loop] Forcing scene end at round ${roundCount} (${isFinale ? 'finale' : 'hard'} cap)`);
     }
 
+    const escalateThreshold = partySize <= 1 ? 6 : Math.max(4, 7 - partySize);
     const minRounds = this.state.currentScene <= 1
       ? (partySize >= 3 ? 4 : partySize === 2 ? 4 : 5)
       : this.state.currentScene >= 5 ? 3
-      : (partySize >= 3 ? 3 : partySize === 2 ? 3 : 4);
+      : escalateThreshold;
     const allowSceneEnd = roundCount >= minRounds || forceSceneEnd;
+    if (narration.isSceneEnd && !allowSceneEnd) {
+      console.log(`[game-loop] DM requested scene end at round ${roundCount} but min is ${minRounds} — suppressed`);
+    }
     if ((narration.isSceneEnd && allowSceneEnd) || forceSceneEnd) {
       await this.endScene();
       if (isFinale) {
