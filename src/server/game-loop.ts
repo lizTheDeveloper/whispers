@@ -18,7 +18,7 @@ import type { ServerMessage } from '../shared/protocol.js';
 const BASE_COMPACTION_THRESHOLD = 35;
 const BASE_COMPACTION_KEEP_RECENT = 12;
 
-const TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief']);
+const TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor']);
 function getFirstName(fullName: string): string {
   const parts = fullName.split(/\s+/);
   return parts.find(p => !TITLES.has(p.toLowerCase())) ?? parts[0]!;

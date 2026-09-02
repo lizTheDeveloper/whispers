@@ -4,6 +4,12 @@ import type { ActionProposal, ActionDecision } from './schemas.js';
 import type { CharacterDefinition, CharacterState, TranscriptMessage } from '../../shared/types.js';
 import type { CharacterMemory } from '../character-memory.js';
 
+const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor']);
+function getFirstName(fullName: string): string {
+  const parts = fullName.split(/\s+/);
+  return parts.find(p => !NAME_TITLES.has(p.toLowerCase())) ?? parts[0]!;
+}
+
 interface CharacterContext {
   definition: CharacterDefinition;
   state: CharacterState;
@@ -112,7 +118,7 @@ export class CharacterAgent {
           .slice(-2)
           .map(m => m.content)
       : [];
-    const companionNames = (ctx.partyMembers ?? []).map(p => p.name.split(' ')[0]).join(', ');
+    const companionNames = (ctx.partyMembers ?? []).map(p => getFirstName(p.name)).join(', ');
     const companionBlock = companionActions.length > 0
       ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — complement them. At least one proposed action MUST reference ${companionNames} BY NAME — "I tell ${companionNames} to cover me while I..." or "I ask ${companionNames} what they think about..." or "I grab ${companionNames}'s arm and pull them toward...". Characters who never interact feel like strangers.`
       : '';
@@ -213,7 +219,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
           .slice(-1)
           .map(m => m.content)
       : [];
-    const decideCompanionNames = (ctx.partyMembers ?? []).map(p => p.name.split(' ')[0]).join(', ');
+    const decideCompanionNames = (ctx.partyMembers ?? []).map(p => getFirstName(p.name)).join(', ');
     const companionHint = companionRecent.length > 0
       ? `\nYour companion just acted: "${companionRecent[0]}". COMPLEMENT their action — and MENTION ${decideCompanionNames} BY NAME in your action if you're interacting with them. "I call out to ${decideCompanionNames}..." or "I move to cover ${decideCompanionNames}..." — parties that never speak to each other feel dead.`
       : '';
@@ -237,6 +243,11 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `Choose your action now.`,
       `IMPORTANT: Your innerThought must be SPECIFIC — name people, places, items, or events. Never write vague thoughts like "Something feels off" or "I need to be careful." Instead: "Cassius was near the wine cellar when the poison was placed — I should confront him" or "My bruised ankle means I can't outrun the Phantom, so I'll use the narrow passage as a chokepoint." Reference your memories, your state, and the current situation.${whisper ? ' Your FIRST sentence must address the whisper directly — explain WHY you chose to follow, partially follow, or resist it. "The voice urges caution, and my bruised ribs agree — I cannot afford another fight" (followed). "The voice wants me to steal the key, but Mirra trusted me with her secret — I will not betray that" (ignored). "The whisper has a point about the passage, though I will approach my own way" (partially-followed). The player who whispered needs to understand your reasoning.' : ''}`,
       `DIALOGUE: If your action involves talking, confronting, persuading, questioning, threatening, comforting, or arguing with ANYONE (NPC or companion), set "spokenWords" to your ACTUAL WORDS — not a description of speaking, but the words themselves. "Where did you hide the note, Cassius?" not "I ask Cassius about the note." If your action is purely physical (fighting, sneaking, searching), set spokenWords to null. Characters who speak feel alive; characters who only act feel like puppets.`,
+      `whisperedInfluence DEFINITIONS — pick the one that MATCHES your action:`,
+      `- "followed": Your action DIRECTLY does what the whisper suggested (same target, same approach). The voice said "confront the merchant" and you confront the merchant.`,
+      `- "partially-followed": The whisper SHAPED your thinking but you adapted it. The voice said "confront the merchant" and you investigated the merchant instead, or confronted someone else.`,
+      `- "ignored": You did something UNRELATED to the whisper's suggestion. The voice said "confront the merchant" and you explored a tunnel instead. Also use "ignored" when you actively REJECT the advice.`,
+      `Do NOT default to "partially-followed" — it is not a safe middle ground. Ask yourself: does my action do what the voice asked? YES = followed. SORT OF = partial. NO = ignored.`,
       `Respond as JSON: { "chosenAction": "what you do (under 30 words)", "spokenWords": "your actual dialogue or null", "innerThought": "your internal reasoning referencing specific details (2 sentences)", "whisperedInfluence": "followed|partially-followed|ignored", "trustDelta": <number> }`,
       `</task>`,
     ].filter(Boolean).join('\n');
