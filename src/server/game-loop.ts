@@ -156,6 +156,7 @@ export class GameLoop {
         currentLocationName: this.lastLocationName || undefined,
         knownLocationNames: this.worldBible.getAllLocationNames(this.campaignId),
         unvisitedLocationNames: this.worldBible.getUnvisitedLocationNames(this.campaignId),
+        isFinale: this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20,
       });
     } catch (e) {
       console.error('[game-loop] narration failed:', e);
@@ -163,7 +164,6 @@ export class GameLoop {
     }
 
     this.addTranscript('dm', narration.narration);
-    this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
 
     if (narration.currentLocationName) {
       if (narration.currentLocationName === this.lastLocationName) {
@@ -219,6 +219,8 @@ export class GameLoop {
         })
         .catch(() => {});
     }
+
+    this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
 
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
     const isFinale = this.state.currentScene >= 5 && (this.state.currentTurn ?? 0) >= 20;
@@ -584,6 +586,7 @@ export class GameLoop {
       }
     }
 
+    const preResolutionStress = character.state.stress;
     const affectedCharIds = new Set<string>();
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
@@ -632,6 +635,24 @@ export class GameLoop {
         ];
         resolution.narration += `\n\n${compelVariants[(this.state.currentTurn ?? 0) % compelVariants.length]}`;
         affectedCharIds.add(characterId);
+      }
+    }
+
+    if (whisper && decision.whisperedInfluence !== 'ignored') {
+      const preTrust = character.state.whisperTrust;
+      let outcomeDelta = 0;
+      if (resolution.outcome === 'failure') {
+        outcomeDelta = -0.06;
+      } else if (resolution.outcome === 'success-with-cost') {
+        outcomeDelta = -0.03;
+      }
+      const gainedStress = character.state.stress > preResolutionStress;
+      if (gainedStress && outcomeDelta === 0) {
+        outcomeDelta = -0.02;
+      }
+      if (outcomeDelta !== 0) {
+        character.state.whisperTrust = Math.max(0, Math.min(0.95, preTrust + outcomeDelta));
+        console.log(`[game-loop] Post-resolution trust: ${character.definition.name} ${resolution.outcome}${gainedStress ? '+stress' : ''} after following whisper — trust ${preTrust.toFixed(2)} → ${character.state.whisperTrust.toFixed(2)} (${outcomeDelta > 0 ? '+' : ''}${outcomeDelta.toFixed(2)})`);
       }
     }
 
