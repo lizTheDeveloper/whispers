@@ -1,5 +1,17 @@
+import { createServer } from 'node:net';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../../src/shared/protocol.js';
+
+export function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, () => {
+      const port = (srv.address() as { port: number }).port;
+      srv.close(() => resolve(port));
+    });
+    srv.on('error', reject);
+  });
+}
 
 export function connectWs(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {

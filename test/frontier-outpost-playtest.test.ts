@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
-import { connectWs as _connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
+import { connectWs as _connectWs, sendMsg, MessageQueue, getFreePort } from './lib/ws-helpers.js';
 
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL;
 const describeIfLive = LLM_PROXY_URL ? describe : describe.skip;
@@ -47,7 +47,7 @@ beforeAll(async () => {
   if (!LLM_PROXY_URL) return;
   const { fork } = await import('node:child_process');
   const { resolve } = await import('node:path');
-  port = 4300 + Math.floor(Math.random() * 50);
+  port = await getFreePort();
   serverProcess = fork(
     resolve(import.meta.dirname, '../node_modules/.bin/tsx'),
     [resolve(import.meta.dirname, '../src/server/index.ts')],

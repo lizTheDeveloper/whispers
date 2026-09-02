@@ -86,7 +86,7 @@ async function completeDmSetup(ws: WebSocket): Promise<void> {
   await waitForMsg(ws, 'dm-chat-reply');
 
   const followUps = [
-    'Use FATE Core. A collapsed mine rescue scenario with two characters — a dwarven miner and a surface medic. No house rules.',
+    'Use FATE Core. A heist scenario — breaking into a clockwork vault. Two players. No house rules.',
     'Yes, everything is decided. Start the game now. We are ready.',
     'Confirmed. Lock it in. Done.',
   ];
@@ -101,68 +101,69 @@ async function completeDmSetup(ws: WebSocket): Promise<void> {
 }
 
 // ---- Character definitions ----
-const grimjawDef: CharacterDefinition = {
-  name: 'Grimjaw',
-  highConcept: 'Last of the Deepdelvers',
-  trouble: "Can't Leave Anyone Behind",
-  aspects: ['Stone Speaks to Me', 'Scarred Hands Tell Stories'],
-  personality: 'Gruff, protective, speaks in short sentences',
-  backstory: 'The last survivor of the Deepdelver clan mining guild',
-  skills: { Athletics: 4, Fight: 3, Crafts: 3, Notice: 2, Will: 2, Physique: 1 },
-  stunts: ['Tunnel Sense: +2 to Notice when underground'],
+const rookDef: CharacterDefinition = {
+  name: 'Rook Nightfall',
+  highConcept: 'Master Thief with a Code',
+  trouble: "Can't Resist Shiny Things",
+  aspects: ['Quick Fingers', 'Eyes in the Dark', 'Trust Nobody'],
+  personality: 'Cool under pressure, methodical, always casing the room. Has a moral code — steals from the powerful, never the poor.',
+  backstory: 'Rook grew up on the streets, learning to pick pockets before learning to read. A mentor taught discipline and a code of honor among thieves. Now the best in the business.',
+  skills: { Burglary: 4, Stealth: 3, Athletics: 2, Notice: 2, Fight: 1 },
+  stunts: ['Infiltrator: +2 to Stealth in urban environments'],
 };
 
-const lumenDef: CharacterDefinition = {
-  name: 'Lumen',
-  highConcept: 'Field Surgeon from the Bright Lands',
-  trouble: "Haunted by the Ones I Couldn't Save",
-  aspects: ['Healing Hands Never Rest', 'Eyes That See Too Much'],
-  personality: 'Compassionate but clinical, always analyzing',
-  backstory: 'A field surgeon who came underground seeking rare medicinal fungi',
-  skills: { Empathy: 4, Will: 3, Investigate: 3, Lore: 2, Notice: 2, Rapport: 1 },
-  stunts: ['Triage Expert: +2 to Empathy when assessing injuries'],
+const silkDef: CharacterDefinition = {
+  name: 'Silk Maren',
+  highConcept: 'Silver-Tongued Con Artist',
+  trouble: 'Owes Everyone a Favor',
+  aspects: ['A Friend in Every Port', 'Always Has a Plan B', "The Devil's Own Charm"],
+  personality: 'Charismatic and quick-witted, always working an angle. Genuinely cares about people but has trouble showing it without a scheme attached.',
+  backstory: 'Silk was born into minor nobility and learned to talk her way into and out of anything. A scandal cost her family everything, and now she uses her silver tongue to survive.',
+  skills: { Deceive: 4, Rapport: 3, Empathy: 2, Provoke: 2, Resources: 1 },
+  stunts: ['Fast Talk: +2 to Deceive when improvising a cover story'],
 };
 
 // ---- Whisper lists ----
-const mineWhispers = [
-  // Scene 1: Approach and entry
-  'Ask Tobias what he saw in the dark before the tremor.',
-  'Check the old mine entrance for signs of what caused the collapse.',
-  'The ventilation shaft may still be passable. Look for it in the treeline.',
-  'Elder Maren is holding something back. Press her gently.',
-  'Foreman Greaves has burns on his hands. That is not from mining.',
-  // Scene 2: Upper tunnels
-  'The cart tracks lead deeper. Follow them but watch for unstable ground.',
-  'Listen at the collapse zone wall. Can you hear the trapped miners?',
-  'Use Tobias\'s map to find the side passage around the collapse.',
-  'The water dripping from the ceiling tastes metallic. Something is wrong down here.',
-  'Shore up the tunnel supports before going deeper. Crafts would help.',
-  // Scene 3: Deep excavation
-  'The carved symbols on the walls predate the mine by centuries. Study them.',
-  'Something is glowing deeper in the tunnel. Approach carefully.',
-  'The freshly dug tunnel slopes down sharply. Greaves was looking for something specific.',
-  'You can feel vibrations in the stone. The crystals are reacting to your presence.',
-  'One of the trapped miners is injured. Time is running out.',
-  // Scene 4-5: Crystal chamber and rescue
-  'The crystals hum louder when you speak. Keep your voice low.',
-  'The Pale Woman is watching. Do not run. She is a guardian, not a threat.',
-  'The crystal shard vibrates near the cavern walls. It could guide you to the miners.',
-  'Greaves\'s journal has a sketch of this chamber. He knew what was down here.',
-  'The miners are behind a thin wall of crystal. Break through carefully — the vibrations could cause another collapse.',
+const heistWhispers = [
+  // Scene 1: Gala phase — social, reconnaissance
+  'Study the gala guests. One of them knows the vault schedule.',
+  'Charm the doorman — he might know the service entrance.',
+  'The blueprint Sparks gave you is incomplete. Ask about the second floor.',
+  'Lady Ashworth is watching you. Approach her before she approaches you.',
+  'Guildmaster Vex just left through a side door. Follow discreetly.',
+  // Scene 2: Infiltration — getting into the vault
+  'The maintenance corridor is unguarded right now. Go quickly.',
+  'Use the clockwork lockpick on the rotating tumbler.',
+  'Cogsworth patrols every 90 seconds. Count the clicks.',
+  'The pressure plates have a pattern. Watch the dust.',
+  'Someone else is in the vault. You are not alone tonight.',
+  // Scene 3: Deeper vault — traps and complications
+  'The shifting floor has a rhythm. Move with the gears, not against them.',
+  'Lady Ashworth has a counter-offer. Listen to what she says.',
+  'The sentries have a blind spot near the east wall.',
+  'Trust your partner here. You cannot do this alone.',
+  'The combination changes on the hour. You have minutes left.',
+  // Scene 4-5: Orrery Chamber and escape
+  'The Orrery shows something the Guild does not want seen. Look closely.',
+  'This is not just a heist any more. The Orrery reveals the truth.',
+  'Vex is closing in. You need to move now or fight.',
+  'The escape route Sparks mentioned — the steam vents behind the chamber.',
+  'Take the Orrery and run. Do not look back.',
   // Extra / recovery whispers
-  'Trust your instincts. The stone speaks to those who listen.',
-  'Your partner needs medical attention. Check on them.',
-  'The air is getting thinner. Find the ventilation passage quickly.',
-  'Remember what Elder Maren said about the old tunnels. There was a warning.',
-  'The lantern is flickering. Conserve the oil.',
-  'Those carvings match something from an old legend. Think.',
-  'The tremor was not natural. Something woke up down here.',
-  'Work together to move the rubble. Neither of you can do this alone.',
-  'The crystal chamber has another exit. Look for air currents.',
-  'Get the miners out first. The mystery of the deep tunnels can wait.',
+  'Remember the blueprint. There was a detail you missed.',
+  'Your partner needs help. Cover them.',
+  'The automaton is damaged. Exploit the cracked voicebox.',
+  'Think about why your employer wants the Orrery. Something does not add up.',
+  'Sparks warned you about a failsafe. Look for tripwires.',
+  'Bluff your way past. You have done harder cons than this.',
+  'The gala guests are oblivious. Use the noise as cover.',
+  'Vex designed this vault with pride. Pride leaves blind spots.',
+  'The midnight bell is close. Move faster.',
+  'Together or not at all. Rally your partner for the final push.',
 ];
 
 beforeAll(async () => {
+  if (!LLM_PROXY_URL) return;
   const { fork } = await import('node:child_process');
   const { resolve } = await import('node:path');
 
@@ -201,13 +202,13 @@ afterAll(async () => {
     });
   }
   if (allServerLogs.length > 0) {
-    console.log('\n=== FULL SERVER LOGS (last 150) ===');
-    allServerLogs.slice(-150).forEach(l => console.log(l));
+    console.log('\n=== FULL SERVER LOGS (last 100) ===');
+    allServerLogs.slice(-100).forEach(l => console.log(l));
   }
 });
 
-describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () => {
-  it('runs a full 30-turn rescue through the collapsed-mine scenario', async () => {
+describeIfLive('Clockwork Vault Playtest: 30-Turn Heist with 2 Characters', () => {
+  it('runs a full 30-turn heist through the clockwork vault scenario', async () => {
     const findings: string[] = [];
     const timings: Record<string, number> = {};
 
@@ -217,34 +218,34 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
 
     const roomPromise = waitForMsg(host, 'room-joined');
     sendMsg(host, {
-      type: 'create', name: 'Collapsed Mine Rescue',
-      dmPreset: 'chronicler', scenarioId: 'collapsed-mine', systemId: 'fate-core', houseRules: null,
+      type: 'create', name: 'Clockwork Vault Heist',
+      dmPreset: 'chronicler', scenarioId: 'clockwork-vault', systemId: 'fate-core', houseRules: null,
     });
     const roomMsg = await roomPromise;
     timings['room-create'] = Date.now() - t0;
     if (roomMsg.type !== 'room-joined') throw new Error('Expected room-joined');
     const joinCode = roomMsg.joinCode;
-    console.log(`[mine] Room created (${timings['room-create']}ms), join code: ${joinCode}`);
+    console.log(`[vault] Room created (${timings['room-create']}ms), join code: ${joinCode}`);
 
     t0 = Date.now();
     await completeDmSetup(host);
     timings['dm-setup'] = Date.now() - t0;
-    console.log(`[mine] DM setup complete (${timings['dm-setup']}ms)`);
+    console.log(`[vault] DM setup complete (${timings['dm-setup']}ms)`);
 
     // ---- Phase 2: Two players join ----
     const p1 = await connectWs();
     const p2 = await connectWs();
     const p1Join = waitForMsg(p1, 'room-joined');
     const p2Join = waitForMsg(p2, 'room-joined');
-    sendMsg(p1, { type: 'join', joinCode, playerName: 'Miner' });
-    sendMsg(p2, { type: 'join', joinCode, playerName: 'Medic' });
+    sendMsg(p1, { type: 'join', joinCode, playerName: 'Thief' });
+    sendMsg(p2, { type: 'join', joinCode, playerName: 'Grifter' });
     await Promise.all([p1Join, p2Join]);
-    console.log('[mine] Both players joined');
+    console.log('[vault] Both players joined');
 
     // ---- Phase 3: Submit characters sequentially ----
     const charIds: Record<string, string> = {};
 
-    for (const [player, def, label] of [[p1, grimjawDef, 'grimjaw'], [p2, lumenDef, 'lumen']] as const) {
+    for (const [player, def, label] of [[p1, rookDef, 'rook'], [p2, silkDef, 'silk']] as const) {
       let approved = false;
       let charId = '';
       for (let attempt = 0; attempt < 3 && !approved; attempt++) {
@@ -254,15 +255,15 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
         if (valMsg.type === 'character-validated' && valMsg.approved) {
           charId = valMsg.characterId;
           approved = true;
-          console.log(`[mine] ${label} AI-approved: ${charId}`);
+          console.log(`[vault] ${label} AI-approved: ${charId}`);
         } else {
-          console.log(`[mine] ${label} validation attempt ${attempt + 1} failed`);
+          console.log(`[vault] ${label} validation attempt ${attempt + 1} failed`);
           await new Promise(r => setTimeout(r, 2000));
         }
       }
       if (!approved) {
         findings.push(`BUG: ${label} never approved after 3 attempts`);
-        console.log('[mine] FINDINGS:', findings);
+        console.log('[vault] FINDINGS:', findings);
         host.close(); p1.close(); p2.close();
         return;
       }
@@ -270,7 +271,7 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
       await waitForMsg(host, 'negotiation-opened', 30_000);
       await waitForMsg(host, 'negotiation-message', 90_000);
       sendMsg(host, { type: 'host-approve-character', characterId: charId });
-      console.log(`[mine] Host approved ${label}`);
+      console.log(`[vault] Host approved ${label}`);
       charIds[label] = charId;
       await new Promise(r => setTimeout(r, 1000));
     }
@@ -284,13 +285,13 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
     if (phaseChange.type === 'phase-change') {
       expect(phaseChange.phase).toBe('playing');
     }
-    console.log('[mine] Game started');
+    console.log('[vault] Game started');
 
     const firstNarration = await waitForMsg(p1, 'narration', 120_000);
     timings['first-narration'] = Date.now() - t0;
     if (firstNarration.type === 'narration') {
-      console.log(`[mine] Opening narration (${timings['first-narration']}ms, scene ${firstNarration.sceneNumber}): "${firstNarration.text.slice(0, 120)}..."`);
-      if (firstNarration.locationName) console.log(`[mine]   Location: ${firstNarration.locationName}`);
+      console.log(`[vault] Opening narration (${timings['first-narration']}ms, scene ${firstNarration.sceneNumber}): "${firstNarration.text.slice(0, 120)}..."`);
+      if (firstNarration.locationName) console.log(`[vault]   Location: ${firstNarration.locationName}`);
     }
 
     // ---- Phase 5: 30-turn game loop ----
@@ -299,7 +300,6 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
     const TOTAL_TURNS = 30;
     let turnsCompleted = 0;
     let scenesCompleted = 0;
-    let maxSceneNumber = 1;
     let gameEndedNaturally = false;
 
     // Tracking
@@ -307,17 +307,12 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
     const resolutions: Array<{ turn: number; text: string }> = [];
     const sceneTransitions: Array<{ sceneNum: number; summary: string }> = [];
     const turnLog: Array<{ turn: number; char: string; action: string; influence: string; innerThought: string }> = [];
-    const trustHistory: Record<string, number[]> = { grimjaw: [], lumen: [] };
+    const trustHistory: Record<string, number[]> = { rook: [], silk: [] };
     const locationVisits: string[] = [];
-    const npcMentions: Record<string, number> = { 'Elder Maren': 0, Maren: 0, Tobias: 0, 'Foreman Greaves': 0, Greaves: 0, 'Pale Woman': 0 };
-    const itemMentions: Record<string, number> = { 'Miner\'s Lantern': 0, Lantern: 0, 'Tobias\'s Map': 0, 'Crystal Shard': 0, 'Greaves\'s Journal': 0 };
+    const npcMentions: Record<string, number> = { Sparks: 0, 'Guildmaster Vex': 0, Vex: 0, 'Lady Ashworth': 0, Ashworth: 0, Cogsworth: 0 };
+    const itemMentions: Record<string, number> = { Blueprint: 0, 'Gala Invitation': 0, 'Clockwork Lockpick': 0, Lockpick: 0 };
     const errors: string[] = [];
     const turnTimings: number[] = [];
-
-    // Compel tracking
-    const compelNarrations: Array<{ turn: number; text: string; isNarrative: boolean; hasBracketFormat: boolean }> = [];
-    // FP economy tracking
-    const fpSnapshots: Array<{ turn: number; char: string; fp: number }> = [];
 
     // State update collector
     const allMsgs: ServerMessage[] = [];
@@ -336,35 +331,22 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
       }
     }
 
-    // Helper: check if text contains a compel and whether it's narrative
-    function checkForCompel(text: string, turn: number) {
-      const lowerText = text.toLowerCase();
-      if (lowerText.includes('compel') || lowerText.includes('fate point') || lowerText.includes('catches up')) {
-        const isNarrative = text.includes('*') || text.includes('catches up');
-        const hasBracketFormat = /\[Compel[:\s]/i.test(text);
-        compelNarrations.push({ turn, text: text.slice(0, 200), isNarrative, hasBracketFormat });
-        if (hasBracketFormat) {
-          findings.push(`BUG: Turn ${turn} has bracket-format compel "[Compel: ...]" instead of narrative prose`);
-        }
-      }
-    }
-
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
       const turnStart = Date.now();
-      console.log(`\n[mine] ========== Turn ${turn + 1} ==========`);
+      console.log(`\n[vault] ========== Turn ${turn + 1} ==========`);
 
       try {
         // Auto-whisper handler
-        const whisperText = mineWhispers[turn % mineWhispers.length]!;
+        const whisperText = heistWhispers[turn % heistWhispers.length]!;
         let whisperSent = false;
         const autoWhisper = (data: Buffer) => {
           try {
             const msg: ServerMessage = JSON.parse(data.toString());
             if (msg.type === 'whisper-prompt' && !whisperSent) {
               whisperSent = true;
-              console.log(`[mine]   Whisper prompt for ${(msg as any).characterName}`);
+              console.log(`[vault]   Whisper prompt for ${(msg as any).characterName}`);
               sendMsg(host, { type: 'whisper', text: whisperText });
-              console.log(`[mine]   Whispered: "${whisperText}"`);
+              console.log(`[vault]   Whispered: "${whisperText}"`);
             }
           } catch {}
         };
@@ -375,7 +357,7 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
 
         if (nextEvent.type === 'phase-change' && (nextEvent as any).phase === 'ended') {
           host.off('message', autoWhisper);
-          console.log(`[mine]   Game ended naturally at turn ${turn + 1}`);
+          console.log(`[vault]   Game ended naturally at turn ${turn + 1}`);
           gameEndedNaturally = true;
           break;
         }
@@ -383,27 +365,22 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
         if (nextEvent.type === 'scene-end') {
           scenesCompleted++;
           const summary = (nextEvent as any).summary ?? '';
-          const sceneNum = (nextEvent as any).sceneNumber ?? scenesCompleted;
-          sceneTransitions.push({ sceneNum, summary });
-          console.log(`[mine]   Scene ${sceneNum} ended: "${summary.slice(0, 100)}..."`);
+          sceneTransitions.push({ sceneNum: scenesCompleted, summary });
+          console.log(`[vault]   Scene ${scenesCompleted} ended: "${summary.slice(0, 100)}..."`);
           scanMentions(summary);
-          checkForCompel(summary, turn + 1);
           host.off('message', autoWhisper);
           const nextOrEnd = await q.nextAny(['narration', 'phase-change'], 120_000);
           if (nextOrEnd.type === 'phase-change' && (nextOrEnd as any).phase === 'ended') {
-            console.log(`[mine]   Game ended after scene transition`);
+            console.log(`[vault]   Game ended after scene transition`);
             gameEndedNaturally = true;
             break;
           }
           if (nextOrEnd.type === 'narration') {
             const loc = (nextOrEnd as any).locationName ?? '';
-            const sn = (nextOrEnd as any).sceneNumber ?? 0;
-            if (sn > maxSceneNumber) maxSceneNumber = sn;
             if (loc) locationVisits.push(loc);
-            console.log(`[mine]   New scene ${sn} narration: "${nextOrEnd.text.slice(0, 100)}..." [location: ${loc || 'none'}]`);
+            console.log(`[vault]   New scene narration: "${nextOrEnd.text.slice(0, 100)}..." [location: ${loc || 'none'}]`);
             scanMentions(nextOrEnd.text);
-            checkForCompel(nextOrEnd.text, turn + 1);
-            narrations.push({ turn: turn + 1, scene: sn, text: nextOrEnd.text, location: loc || undefined });
+            narrations.push({ turn: turn + 1, scene: scenesCompleted + 1, text: nextOrEnd.text, location: loc || undefined });
           }
           turnsCompleted++;
           turnTimings.push(Date.now() - turnStart);
@@ -412,13 +389,10 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
 
         if (nextEvent.type === 'narration') {
           const loc = (nextEvent as any).locationName ?? '';
-          const sn = (nextEvent as any).sceneNumber ?? 0;
-          if (sn > maxSceneNumber) maxSceneNumber = sn;
           if (loc) locationVisits.push(loc);
-          console.log(`[mine]   Narration (scene ${sn}): "${nextEvent.text.slice(0, 100)}..." [location: ${loc || 'none'}]`);
+          console.log(`[vault]   Narration (scene ${(nextEvent as any).sceneNumber}): "${nextEvent.text.slice(0, 100)}..." [location: ${loc || 'none'}]`);
           scanMentions(nextEvent.text);
-          checkForCompel(nextEvent.text, turn + 1);
-          narrations.push({ turn: turn + 1, scene: sn, text: nextEvent.text, location: loc || undefined });
+          narrations.push({ turn: turn + 1, scene: (nextEvent as any).sceneNumber ?? 0, text: nextEvent.text, location: loc || undefined });
 
           const afterNarration = await q.nextAny(['action-proposals', 'scene-end', 'phase-change'], 120_000);
           if (afterNarration.type === 'phase-change' && (afterNarration as any).phase === 'ended') {
@@ -429,11 +403,9 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
           if (afterNarration.type === 'scene-end') {
             scenesCompleted++;
             const summary = (afterNarration as any).summary ?? '';
-            const sceneNumEnd = (afterNarration as any).sceneNumber ?? scenesCompleted;
-            sceneTransitions.push({ sceneNum: sceneNumEnd, summary });
-            console.log(`[mine]   Scene ${sceneNumEnd} ended after narration: "${summary.slice(0, 100)}..."`);
+            sceneTransitions.push({ sceneNum: scenesCompleted, summary });
+            console.log(`[vault]   Scene ${scenesCompleted} ended after narration: "${summary.slice(0, 100)}..."`);
             scanMentions(summary);
-            checkForCompel(summary, turn + 1);
             host.off('message', autoWhisper);
             const nextOrEnd2 = await q.nextAny(['narration', 'phase-change'], 120_000);
             if (nextOrEnd2.type === 'phase-change' && (nextOrEnd2 as any).phase === 'ended') {
@@ -442,11 +414,8 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
             }
             if (nextOrEnd2.type === 'narration') {
               const loc2 = (nextOrEnd2 as any).locationName ?? '';
-              const sn2 = (nextOrEnd2 as any).sceneNumber ?? 0;
-              if (sn2 > maxSceneNumber) maxSceneNumber = sn2;
               if (loc2) locationVisits.push(loc2);
-              narrations.push({ turn: turn + 1, scene: sn2, text: nextOrEnd2.text, location: loc2 || undefined });
-              checkForCompel(nextOrEnd2.text, turn + 1);
+              narrations.push({ turn: turn + 1, scene: scenesCompleted + 1, text: nextOrEnd2.text, location: loc2 || undefined });
             }
             turnsCompleted++;
             turnTimings.push(Date.now() - turnStart);
@@ -454,25 +423,23 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
           }
           if (afterNarration.type === 'action-proposals') {
             const ap = afterNarration as any;
-            console.log(`[mine]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
-            ap.actions?.forEach((a: string, i: number) => console.log(`[mine]     ${i + 1}. ${a.slice(0, 80)}`));
+            console.log(`[vault]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
+            ap.actions?.forEach((a: string, i: number) => console.log(`[vault]     ${i + 1}. ${a.slice(0, 80)}`));
           }
         } else if (nextEvent.type === 'action-proposals') {
           const ap = nextEvent as any;
-          console.log(`[mine]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
-          ap.actions?.forEach((a: string, i: number) => console.log(`[mine]     ${i + 1}. ${a.slice(0, 80)}`));
+          console.log(`[vault]   Proposals for ${ap.characterName} (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
+          ap.actions?.forEach((a: string, i: number) => console.log(`[vault]     ${i + 1}. ${a.slice(0, 80)}`));
         }
 
         // Wait for action-taken
         const actionTaken = await q.next('action-taken', 120_000);
         if (actionTaken.type === 'action-taken') {
-          const charLabel = actionTaken.characterName === 'Grimjaw' ? 'grimjaw' : 'lumen';
-          console.log(`[mine]   ${charLabel} [${actionTaken.whisperInfluence}]: "${actionTaken.action.slice(0, 100)}"`);
-          console.log(`[mine]   Inner thought: "${actionTaken.innerThought.slice(0, 100)}"`);
+          const charLabel = actionTaken.characterName === 'Rook Nightfall' ? 'rook' : 'silk';
+          console.log(`[vault]   ${charLabel} [${actionTaken.whisperInfluence}]: "${actionTaken.action.slice(0, 100)}"`);
+          console.log(`[vault]   Inner thought: "${actionTaken.innerThought.slice(0, 100)}"`);
           scanMentions(actionTaken.action);
           scanMentions(actionTaken.innerThought);
-          checkForCompel(actionTaken.action, turn + 1);
-          checkForCompel(actionTaken.innerThought, turn + 1);
           turnLog.push({
             turn: turn + 1,
             char: charLabel,
@@ -485,25 +452,23 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
         // Wait for dice roll
         const diceMsg = await q.next('dice-roll', 90_000);
         if (diceMsg.type === 'dice-roll') {
-          console.log(`[mine]   Dice: ${diceMsg.result.description} (total: ${diceMsg.result.total})`);
+          console.log(`[vault]   Dice: ${diceMsg.result.description} (total: ${diceMsg.result.total})`);
         }
 
         // Wait for resolution
         const resolution = await q.next('resolution', 120_000);
         if (resolution.type === 'resolution') {
-          console.log(`[mine]   Resolution: "${resolution.text.slice(0, 120)}..."`);
+          console.log(`[vault]   Resolution: "${resolution.text.slice(0, 120)}..."`);
           scanMentions(resolution.text);
-          checkForCompel(resolution.text, turn + 1);
           resolutions.push({ turn: turn + 1, text: resolution.text });
         }
 
-        // Track trust and FP from state updates
+        // Track trust from state updates
         const stateUpdates = allMsgs.filter(m => m.type === 'character-state-update');
         for (const su of stateUpdates) {
           if (su.type !== 'character-state-update') continue;
-          const label = su.characterId === charIds.grimjaw ? 'grimjaw' : 'lumen';
+          const label = su.characterId === charIds.rook ? 'rook' : 'silk';
           trustHistory[label].push(su.state.whisperTrust);
-          fpSnapshots.push({ turn: turn + 1, char: label, fp: su.state.fatePoints });
         }
         allMsgs.length = 0;
 
@@ -511,10 +476,10 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
         turnsCompleted++;
         const turnTime = Date.now() - turnStart;
         turnTimings.push(turnTime);
-        console.log(`[mine]   Turn ${turn + 1} complete (${turnTime}ms)`);
+        console.log(`[vault]   Turn ${turn + 1} complete (${turnTime}ms)`);
 
       } catch (e: any) {
-        console.error(`[mine]   Turn ${turn + 1} FAILED: ${e.message}`);
+        console.error(`[vault]   Turn ${turn + 1} FAILED: ${e.message}`);
         errors.push(`Turn ${turn + 1}: ${e.message}`);
         findings.push(`BUG: Turn ${turn + 1} failed: ${e.message}`);
         break;
@@ -528,9 +493,9 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
       sendMsg(host, { type: 'end-game' });
       try {
         await waitForMsg(p1, 'phase-change', 30_000);
-        console.log('[mine] Game ended via command');
+        console.log('[vault] Game ended via command');
       } catch {
-        console.log('[mine] Game end phase-change not received (may already be ended)');
+        console.log('[vault] Game end phase-change not received (may already be ended)');
       }
     }
 
@@ -541,7 +506,7 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
     const memoryLogs = allServerLogs.filter(l => l.includes('[memory]'));
     const factLogs = allServerLogs.filter(l => l.includes('Fact extraction'));
     const aspectInvokeLogs = allServerLogs.filter(l => l.includes('Aspect invocation') || l.includes('Auto-invoke'));
-    const compelLogs = allServerLogs.filter(l => l.includes('Compel triggered') || l.includes('compel'));
+    const compelLogs = allServerLogs.filter(l => l.includes('Compel triggered'));
     const recoveryLogs = allServerLogs.filter(l => l.includes('Scene recovery'));
     const locationLogs = allServerLogs.filter(l => l.includes('Location:'));
     const scenarioSeedLogs = allServerLogs.filter(l => l.includes('Seeded scenario'));
@@ -549,42 +514,18 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
 
     console.log('\n');
     console.log('='.repeat(80));
-    console.log('  COLLAPSED MINE PLAYTEST REPORT');
+    console.log('  CLOCKWORK VAULT PLAYTEST REPORT');
     console.log('='.repeat(80));
 
     console.log('\n--- OVERVIEW ---');
     console.log(`Turns completed: ${turnsCompleted}/${TOTAL_TURNS}`);
     console.log(`Scene transitions: ${scenesCompleted}`);
-    console.log(`Max scene number reached: ${maxSceneNumber}`);
     console.log(`Game ended naturally: ${gameEndedNaturally}`);
     console.log(`Errors encountered: ${errors.length}`);
 
-    console.log('\n--- SCENE PACING (TARGET: 5+ SCENES) ---');
-    if (maxSceneNumber >= 5) {
-      console.log(`  PASS: Reached scene ${maxSceneNumber} (target was 5+)`);
-    } else {
-      findings.push(`PACING: Only reached scene ${maxSceneNumber}, needed 5+ to confirm pacing fix`);
-      console.log(`  FAIL: Only reached scene ${maxSceneNumber} (target was 5+)`);
-    }
-
     console.log('\n--- SCENARIO SEEDING ---');
     scenarioSeedLogs.forEach(l => console.log(`  ${l}`));
-    if (scenarioSeedLogs.length === 0) findings.push('ISSUE: No scenario seeding log — collapsed-mine may not have loaded');
-
-    console.log('\n--- COMPEL NARRATION QUALITY ---');
-    console.log(`Total compel-related narrations detected: ${compelNarrations.length}`);
-    const narrativeCompels = compelNarrations.filter(c => c.isNarrative);
-    const bracketCompels = compelNarrations.filter(c => c.hasBracketFormat);
-    console.log(`  Narrative prose compels (with * or "catches up"): ${narrativeCompels.length}`);
-    console.log(`  Bracket-format compels [Compel: ...] (BAD): ${bracketCompels.length}`);
-    for (const c of compelNarrations) {
-      console.log(`  Turn ${c.turn}: narrative=${c.isNarrative}, bracket=${c.hasBracketFormat} — "${c.text.slice(0, 120)}..."`);
-    }
-    if (bracketCompels.length > 0) {
-      findings.push(`BUG: ${bracketCompels.length} compel(s) used bracket format instead of narrative prose`);
-    }
-    console.log(`Server-side compel triggers: ${compelLogs.length}`);
-    compelLogs.slice(0, 10).forEach(l => console.log(`  ${l.slice(0, 150)}`));
+    if (scenarioSeedLogs.length === 0) findings.push('ISSUE: No scenario seeding log — clockwork-vault may not have loaded');
 
     console.log('\n--- NARRATION QUALITY ---');
     console.log(`Total narrations: ${narrations.length}`);
@@ -607,32 +548,32 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
     console.log(`Locations visited: ${uniqueLocations.join(', ') || 'none tracked'}`);
     locationLogs.forEach(l => console.log(`  ${l.slice(0, 120)}`));
 
-    const expectedLocations = ['Thornhaven', 'Ventilation Shaft', 'Upper Tunnels', 'Collapse Zone', 'Deep Excavation', 'Crystal Chamber'];
-    const visitedExpected = expectedLocations.filter(el => uniqueLocations.some(ul => ul.toLowerCase().includes(el.toLowerCase())));
+    const expectedLocations = ['Exhibition Hall', 'Maintenance Corridor', 'Vault Floor One', 'Vault Floor Two', 'Orrery Chamber'];
+    const visitedExpected = expectedLocations.filter(el => uniqueLocations.some(ul => ul.includes(el)));
     console.log(`Expected locations visited: ${visitedExpected.length}/${expectedLocations.length} (${visitedExpected.join(', ') || 'none'})`);
-    if (visitedExpected.length === 0) findings.push('ISSUE: No expected mine locations were visited');
-    if (visitedExpected.length < 3 && turnsCompleted >= 20) findings.push(`ISSUE: Only ${visitedExpected.length} mine locations visited in ${turnsCompleted} turns`);
+    if (visitedExpected.length === 0) findings.push('ISSUE: No expected vault locations were visited');
+    if (visitedExpected.length < 3 && turnsCompleted >= 20) findings.push(`ISSUE: Only ${visitedExpected.length} vault locations visited in ${turnsCompleted} turns`);
 
     console.log('\n--- SCENARIO ITEMS ---');
     for (const [item, count] of Object.entries(itemMentions)) {
       console.log(`  ${item}: mentioned ${count} times`);
     }
     const anyItemUsed = Object.values(itemMentions).some(c => c > 0);
-    if (!anyItemUsed) findings.push('ISSUE: No scenario items (Lantern, Map, Crystal Shard, Journal) were mentioned');
+    if (!anyItemUsed) findings.push('ISSUE: No scenario items (Blueprint, Gala Invitation, Clockwork Lockpick) were mentioned');
 
     console.log('\n--- NPC INTERACTIONS ---');
     for (const [npc, count] of Object.entries(npcMentions)) {
       console.log(`  ${npc}: mentioned ${count} times`);
     }
     const anyNpcMentioned = Object.values(npcMentions).some(c => c > 0);
-    if (!anyNpcMentioned) findings.push('ISSUE: No scenario NPCs (Elder Maren, Tobias, Greaves, Pale Woman) were mentioned');
+    if (!anyNpcMentioned) findings.push('ISSUE: No scenario NPCs (Sparks, Vex, Ashworth, Cogsworth) were mentioned');
 
     console.log('\n--- CHARACTER DYNAMICS ---');
-    const grimjawTurns = turnLog.filter(t => t.char === 'grimjaw');
-    const lumenTurns = turnLog.filter(t => t.char === 'lumen');
-    console.log(`Grimjaw turns: ${grimjawTurns.length}, Lumen turns: ${lumenTurns.length}`);
-    if (grimjawTurns.length === 0) findings.push('BUG: Grimjaw never got a turn');
-    if (lumenTurns.length === 0) findings.push('BUG: Lumen never got a turn');
+    const rookTurns = turnLog.filter(t => t.char === 'rook');
+    const silkTurns = turnLog.filter(t => t.char === 'silk');
+    console.log(`Rook turns: ${rookTurns.length}, Silk turns: ${silkTurns.length}`);
+    if (rookTurns.length === 0) findings.push('BUG: Rook Nightfall never got a turn');
+    if (silkTurns.length === 0) findings.push('BUG: Silk Maren never got a turn');
 
     // Whisper influence breakdown
     const influences = turnLog.map(t => t.influence);
@@ -651,30 +592,12 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
     }
 
     console.log('\n--- FATE POINT ECONOMY ---');
-    console.log(`Aspect invocations (server logs): ${aspectInvokeLogs.length}`);
+    console.log(`Aspect invocations: ${aspectInvokeLogs.length}`);
     aspectInvokeLogs.slice(0, 10).forEach(l => console.log(`  ${l.slice(0, 150)}`));
-    console.log(`Compels (server logs): ${compelLogs.length}`);
+    console.log(`Compels: ${compelLogs.length}`);
     compelLogs.slice(0, 10).forEach(l => console.log(`  ${l.slice(0, 150)}`));
     if (aspectInvokeLogs.length === 0 && turnsCompleted >= 15) findings.push('ISSUE: No aspect invocations in 15+ turns');
     if (compelLogs.length === 0 && turnsCompleted >= 15) findings.push('ISSUE: No compels in 15+ turns');
-
-    // FP snapshot timeline
-    console.log(`FP snapshots collected: ${fpSnapshots.length}`);
-    for (const snap of fpSnapshots) {
-      console.log(`  Turn ${snap.turn}: ${snap.char} FP=${snap.fp}`);
-    }
-    const grimjawFP = fpSnapshots.filter(s => s.char === 'grimjaw');
-    const lumenFP = fpSnapshots.filter(s => s.char === 'lumen');
-    if (grimjawFP.length > 0) {
-      const fpStart = grimjawFP[0]!.fp;
-      const fpEnd = grimjawFP[grimjawFP.length - 1]!.fp;
-      console.log(`  Grimjaw FP: start=${fpStart}, end=${fpEnd}, delta=${fpEnd - fpStart}`);
-    }
-    if (lumenFP.length > 0) {
-      const fpStart = lumenFP[0]!.fp;
-      const fpEnd = lumenFP[lumenFP.length - 1]!.fp;
-      console.log(`  Lumen FP: start=${fpStart}, end=${fpEnd}, delta=${fpEnd - fpStart}`);
-    }
 
     console.log('\n--- FATE OUTCOME CORRECTIONS ---');
     fateOutcomeLogs.forEach(l => console.log(`  ${l.slice(0, 150)}`));
@@ -683,7 +606,7 @@ describeIfLive('Collapsed Mine Playtest: 30-Turn Rescue with 2 Characters', () =
     console.log(`Compaction events: ${compactionLogs.length}`);
     compactionLogs.forEach(l => console.log(`  ${l.slice(0, 150)}`));
     if (compactionLogs.length === 0 && turnsCompleted >= 15) {
-      findings.push('ISSUE: No transcript compaction occurred despite 15+ turns');
+      findings.push('ISSUE: No transcript compaction occurred despite 15+ turns (expected around turn 17-18 with 2 chars)');
     }
 
     console.log('\n--- SCENE RECOVERY ---');

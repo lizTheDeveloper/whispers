@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { getFreePort } from './lib/ws-helpers.js';
 import { WebSocket } from 'ws';
 import { createServer, type Server } from 'node:http';
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol.js';
@@ -97,7 +98,7 @@ beforeAll(async () => {
   const { fork } = await import('node:child_process');
   const { resolve } = await import('node:path');
 
-  port = 3900 + Math.floor(Math.random() * 100);
+  port = await getFreePort();
 
   serverProcess = fork(
     resolve(import.meta.dirname, '../node_modules/.bin/tsx'),

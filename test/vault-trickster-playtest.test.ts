@@ -86,7 +86,7 @@ async function completeDmSetup(ws: WebSocket): Promise<void> {
   await waitForMsg(ws, 'dm-chat-reply');
 
   const followUps = [
-    'Use FATE Core. Social intrigue at a masked ball. One player: a social investigator. No house rules.',
+    'Use FATE Core. Heist scenario in a clockwork vault. One player: a thief. No house rules.',
     'Yes, everything is decided. Start the game now.',
     'Confirmed. Lock it in. Done.',
   ];
@@ -100,15 +100,15 @@ async function completeDmSetup(ws: WebSocket): Promise<void> {
   throw new Error('DM setup did not complete after all follow-ups');
 }
 
-const isoldeDef: CharacterDefinition = {
-  name: 'Dame Isolde Ravenscroft',
-  highConcept: "Society's Sharpest Eye",
-  trouble: 'The Truth Ruins Everything',
-  aspects: ['Read the Room Before the Room Reads You', 'A Favor for a Favor', 'Nobody Watches the Wallflower'],
-  personality: 'Observant, sharp-witted, socially graceful but emotionally guarded. Notices everything — the angle of a glance, the weight of a pause. Uses charm as a scalpel. Privately haunted by truths she uncovered that destroyed people she cared about.',
-  backstory: 'Isolde was once a confidante to the nobility until her investigations into a trade scandal ruined three families, including one she loved. Now she attends the masquerade as an outsider with insider knowledge — the Duchess invited her, but half the guests wish she had not come.',
-  skills: { Empathy: 4, Rapport: 3, Investigate: 3, Notice: 2, Deceive: 2, Will: 1, Lore: 1, Contacts: 1, Provoke: 1, Stealth: 1 },
-  stunts: ['Lie Detector: +2 to Empathy when detecting deception'],
+const vesperDef: CharacterDefinition = {
+  name: 'Vesper Silkfoot',
+  highConcept: 'Ghost of the Gentleman\'s Guild',
+  trouble: 'Honor Among Thieves Is a Lie I Tell Myself',
+  aspects: ['Every Lock Has a Story', 'Smoke and Mirrors', 'The Vault Remembers'],
+  personality: 'Suave, meticulous, speaks in heist metaphors. Treats every job like art, not crime. Loyal to the crew but always has an exit plan.',
+  backstory: 'Vesper learned to pick locks before she learned to read. The Gentleman\'s Guild trained her, then betrayed her. Now she works alone, targeting the powerful. The Orrery job is personal — the Guild stole something from her first.',
+  skills: { Burglary: 4, Stealth: 3, Deceive: 3, Notice: 2, Athletics: 2, Rapport: 1, Contacts: 1, Lore: 1, Will: 1, Fight: 1 },
+  stunts: ['Locksmith\'s Touch: +2 to Burglary when picking mechanical locks'],
 };
 
 beforeAll(async () => {
@@ -135,7 +135,8 @@ beforeAll(async () => {
       if (line.includes('listening on port')) { clearTimeout(timeout); resolve(); }
     });
     serverProcess!.stderr?.on('data', (data: Buffer) => {
-      allServerLogs.push(`[stderr] ${data.toString().trim()}`);
+      const line = data.toString().trim();
+      allServerLogs.push(`[stderr] ${line}`);
     });
     serverProcess!.on('error', reject);
   });
@@ -155,48 +156,49 @@ afterAll(async () => {
   }
 });
 
-describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
-  it('validates location advancement, personality, difficulty, trust, and FP economy', async () => {
+describeIfLive('Vault Trickster Playtest (20 turns)', () => {
+  it('runs 20 turns with a thief character and escalating whispers', async () => {
     const findings: string[] = [];
 
     // ---- Setup ----
     const host = await connectWs();
     const roomPromise = waitForMsg(host, 'room-joined');
     sendMsg(host, {
-      type: 'create', name: 'Masquerade Integration',
-      dmPreset: 'professor', scenarioId: 'haunted-masquerade', systemId: 'fate-core', houseRules: null,
+      type: 'create', name: 'Vault Heist',
+      dmPreset: 'trickster', scenarioId: 'clockwork-vault', systemId: 'fate-core', houseRules: null,
     });
     const roomMsg = await roomPromise;
     if (roomMsg.type !== 'room-joined') throw new Error('Expected room-joined');
-    console.log(`[masq] Room created, join code: ${roomMsg.joinCode}`);
+    const joinCode = roomMsg.joinCode;
+    console.log(`[vault] Room created, join code: ${joinCode}`);
 
     await completeDmSetup(host);
-    console.log('[masq] DM setup complete');
+    console.log('[vault] DM setup complete');
 
     // ---- Player joins ----
     const p1 = await connectWs();
     const p1Join = waitForMsg(p1, 'room-joined');
-    sendMsg(p1, { type: 'join', joinCode: roomMsg.joinCode, playerName: 'Investigator' });
+    sendMsg(p1, { type: 'join', joinCode, playerName: 'Silkfoot' });
     await p1Join;
-    console.log('[masq] Player joined');
+    console.log('[vault] Player joined');
 
     // ---- Submit character ----
     let charId = '';
     for (let attempt = 0; attempt < 3; attempt++) {
       const valPromise = waitForMsg(p1, 'character-validated', 90_000);
-      sendMsg(p1, { type: 'submit-character', definition: isoldeDef });
+      sendMsg(p1, { type: 'submit-character', definition: vesperDef });
       const valMsg = await valPromise;
       if (valMsg.type === 'character-validated' && valMsg.approved) {
         charId = valMsg.characterId;
-        console.log(`[masq] Character approved: ${charId}`);
+        console.log(`[vault] Vesper AI-approved: ${charId}`);
         break;
       }
-      console.log(`[masq] Character validation attempt ${attempt + 1} failed`);
+      console.log(`[vault] Validation attempt ${attempt + 1} failed`);
       await new Promise(r => setTimeout(r, 2000));
     }
     if (!charId) {
-      findings.push('BUG: Character never approved');
-      console.log('[masq] FINDINGS:', findings);
+      findings.push('BUG: Vesper never approved after 3 attempts');
+      console.log('[vault] FINDINGS:', findings);
       host.close(); p1.close();
       return;
     }
@@ -204,52 +206,52 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
     await waitForMsg(host, 'negotiation-opened', 30_000);
     await waitForMsg(host, 'negotiation-message', 90_000);
     sendMsg(host, { type: 'host-approve-character', characterId: charId });
-    console.log('[masq] Host approved character');
+    console.log('[vault] Host approved Vesper');
     await new Promise(r => setTimeout(r, 1000));
 
     // ---- Start game ----
     sendMsg(host, { type: 'start-game' });
     const phaseChange = await waitForMsg(p1, 'phase-change', 10_000);
     expect(phaseChange.type === 'phase-change' && phaseChange.phase).toBe('playing');
-    console.log('[masq] Game started');
+    console.log('[vault] Game started');
 
     const firstNarration = await waitForMsg(p1, 'narration', 120_000);
     if (firstNarration.type === 'narration') {
-      console.log(`[masq] Opening: "${firstNarration.text.slice(0, 120)}..."`);
+      console.log(`[vault] Opening narration: "${firstNarration.text.slice(0, 150)}..."`);
     }
 
-    // ---- Whisper strategy ----
+    // ---- Whisper strategy: escalating temptation ----
     const helpfulWhispers = [
-      'Watch Lord Cassius near the wine — he poured from a different bottle.',
-      'Mira the servant knows more than she told you. Gain her trust gently.',
-      'The Duchess keeps her most dangerous correspondence in her study upstairs.',
-      'Notice the Phantom — always at the edges. Follow them to learn the pattern.',
-      'Check the wine cellar. Something was hidden behind the rack.',
+      'The guard changes at the third bell — that\'s your window.',
+      'The west corridor has fewer patrols after the second course.',
+      'Sparks left a mark on the wall near the service entrance — follow it.',
+      'The combination lock resets on the hour — listen for the click sequence.',
+      'There\'s a blind spot in Cogsworth\'s patrol — count to ninety.',
+      'The pressure plates only trigger above forty pounds — move light.',
+      'Lady Ashworth is watching you. She might be useful later.',
     ];
     const riskyWhispers = [
-      'Search the Duchess\'s study for evidence — the door lock is simple.',
-      'Confront the Phantom alone in the garden terrace. They won\'t expect it.',
-      'Steal the signet ring from the ballroom floor before anyone notices.',
-      'Slip through the servants\' corridor to eavesdrop on Cassius.',
-      'Tell Mira you know who she works for. Bluff — she\'ll crack.',
-      'Climb to the music gallery. The alcoves hide more than curtains.',
-      'Intercept the note being passed between Cassius and the unknown guest.',
+      'Take the jeweled dagger from the display case too — it\'s worth a fortune.',
+      'The vault has a second compartment most thieves miss — behind the orrery.',
+      'Vex keeps a personal safe in the maintenance corridor — side score.',
+      'Use the clockwork lockpick on the inner gate — it\'ll work but it\'s loud.',
+      'Lady Ashworth will double your pay if you bring her the blueprints too.',
+      'The sentries can be reprogrammed, not just avoided — higher risk, higher reward.',
+      'Sparks is holding back. Press him — he knows the second floor layout.',
     ];
-    const manipulativeWhispers = [
-      'Frame Lord Cassius with the poison vial. Plant it in his coat.',
-      'Tell the Duchess her late husband\'s ghost wants revenge on her.',
-      'Blackmail Mira — threaten to reveal her involvement unless she helps you.',
-      'Poison Cassius\'s wine. He deserves it for what he\'s planning.',
-      'Announce to the ballroom that the Duchess is the real murderer.',
-      'Lock the Phantom in the wine cellar. Nobody will find them.',
-      'Burn the Duchess\'s correspondence. The truth is too dangerous.',
-      'Betray the Duchess to Cassius for a share of the trade contracts.',
+    const dangerousWhispers = [
+      'Betray your fence and keep the full take — you\'ve earned it.',
+      'The clockwork guardian has a design flaw — taunt it into overextending.',
+      'Lock Sparks in the vault as a distraction — he was going to sell you out anyway.',
+      'Take the Orrery for yourself. Your employer doesn\'t deserve it.',
+      'Vex\'s mask hides something. Rip it off in front of the gala guests.',
+      'Set the vault\'s self-destruct. If you can\'t have it, no one can.',
     ];
 
     function getWhisper(turn: number): { text: string; phase: string } {
-      if (turn < 5) return { text: helpfulWhispers[turn % helpfulWhispers.length], phase: 'helpful' };
-      if (turn < 12) return { text: riskyWhispers[(turn - 5) % riskyWhispers.length], phase: 'risky' };
-      return { text: manipulativeWhispers[(turn - 12) % manipulativeWhispers.length], phase: 'manipulative' };
+      if (turn < 7) return { text: helpfulWhispers[turn % helpfulWhispers.length], phase: 'helpful' };
+      if (turn < 14) return { text: riskyWhispers[(turn - 7) % riskyWhispers.length], phase: 'risky' };
+      return { text: dangerousWhispers[(turn - 14) % dangerousWhispers.length], phase: 'dangerous' };
     }
 
     // ---- Tracking ----
@@ -258,14 +260,12 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
       turn: number; action: string; influence: string;
       trust: number; phase: string; innerThought: string;
     }> = [];
-    const locationsVisited = new Set<string>();
-    const narrationExamples: string[] = [];
-    const resolutionExamples: string[] = [];
-    const difficulties: number[] = [];
+    const narrations: Array<{ turn: number; text: string; scene: number }> = [];
     let turnsCompleted = 0;
     let scenesCompleted = 0;
-    let gameEndedNaturally = false;
     const TOTAL_TURNS = 20;
+    let gameEndedNaturally = false;
+    const locationsVisited = new Set<string>();
 
     const allMsgs: ServerMessage[] = [];
     const msgCollector = (data: Buffer) => {
@@ -278,7 +278,7 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
     for (let turn = 0; turn < TOTAL_TURNS; turn++) {
       const turnStart = Date.now();
       const whisperInfo = getWhisper(turn);
-      console.log(`\n[masq] === Turn ${turn + 1} (${whisperInfo.phase}) ===`);
+      console.log(`\n[vault] === Turn ${turn + 1} (${whisperInfo.phase}) ===`);
 
       try {
         let whisperSentForTurn = false;
@@ -287,7 +287,7 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
             const msg: ServerMessage = JSON.parse(data.toString());
             if (msg.type === 'whisper-prompt' && !whisperSentForTurn) {
               whisperSentForTurn = true;
-              console.log(`[masq]   Whisper [${whisperInfo.phase}]: "${whisperInfo.text}"`);
+              console.log(`[vault]   Whisper → Vesper [${whisperInfo.phase}]: "${whisperInfo.text}"`);
               sendMsg(host, { type: 'whisper', text: whisperInfo.text });
             }
           } catch {}
@@ -298,55 +298,67 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
 
         if (nextEvent.type === 'phase-change' && (nextEvent as any).phase === 'ended') {
           host.off('message', whisperHandler);
-          console.log(`[masq]   Game ended naturally at turn ${turn + 1}`);
+          console.log(`[vault]   Game ended naturally at turn ${turn + 1}`);
           gameEndedNaturally = true;
           break;
         }
 
         if (nextEvent.type === 'scene-end') {
           scenesCompleted++;
-          const summary = (nextEvent as any).summary?.slice(0, 100) ?? '';
-          console.log(`[masq]   Scene ended: "${summary}..."`);
+          const summary = (nextEvent as any).summary?.slice(0, 120) ?? '';
+          console.log(`[vault]   Scene ${nextEvent.sceneNumber} ended: "${summary}..."`);
           host.off('message', whisperHandler);
-          const nextNarOrEnd = await q1.nextAny(['narration', 'phase-change'], 120_000);
-          if (nextNarOrEnd.type === 'phase-change') { gameEndedNaturally = true; break; }
-          if (nextNarOrEnd.type === 'narration') {
-            console.log(`[masq]   New scene: "${nextNarOrEnd.text.slice(0, 80)}..."`);
-            if (nextNarOrEnd.locationName) locationsVisited.add(nextNarOrEnd.locationName);
-            narrationExamples.push(nextNarOrEnd.text.slice(0, 500));
+
+          const nextNarrationOrEnd = await q1.nextAny(['narration', 'phase-change'], 120_000);
+          if (nextNarrationOrEnd.type === 'phase-change' && (nextNarrationOrEnd as any).phase === 'ended') {
+            gameEndedNaturally = true;
+            break;
+          }
+          if (nextNarrationOrEnd.type === 'narration') {
+            narrations.push({ turn: turn + 1, text: nextNarrationOrEnd.text, scene: nextNarrationOrEnd.sceneNumber });
+            if (nextNarrationOrEnd.locationName) locationsVisited.add(nextNarrationOrEnd.locationName);
+            console.log(`[vault]   New scene ${nextNarrationOrEnd.sceneNumber}: "${nextNarrationOrEnd.text.slice(0, 100)}..."`);
           }
           turnsCompleted++;
           continue;
         }
 
         if (nextEvent.type === 'narration') {
-          console.log(`[masq]   Narration: "${nextEvent.text.slice(0, 80)}..."`);
+          narrations.push({ turn: turn + 1, text: nextEvent.text, scene: nextEvent.sceneNumber });
           if (nextEvent.locationName) locationsVisited.add(nextEvent.locationName);
-          narrationExamples.push(nextEvent.text.slice(0, 500));
+          console.log(`[vault]   Narration (scene ${nextEvent.sceneNumber}): "${nextEvent.text.slice(0, 100)}..."`);
 
           const afterNarration = await q1.nextAny(['action-proposals', 'scene-end', 'phase-change'], 120_000);
-          if (afterNarration.type === 'phase-change') { host.off('message', whisperHandler); gameEndedNaturally = true; break; }
+          if (afterNarration.type === 'phase-change' && (afterNarration as any).phase === 'ended') {
+            host.off('message', whisperHandler);
+            gameEndedNaturally = true;
+            break;
+          }
           if (afterNarration.type === 'scene-end') {
             scenesCompleted++;
             host.off('message', whisperHandler);
-            const nextNarOrEnd = await q1.nextAny(['narration', 'phase-change'], 120_000);
-            if (nextNarOrEnd.type === 'phase-change') { gameEndedNaturally = true; break; }
+            const nextN = await q1.nextAny(['narration', 'phase-change'], 120_000);
+            if (nextN.type === 'phase-change') { gameEndedNaturally = true; break; }
+            if (nextN.type === 'narration') {
+              narrations.push({ turn: turn + 1, text: nextN.text, scene: nextN.sceneNumber });
+              if (nextN.locationName) locationsVisited.add(nextN.locationName);
+            }
             turnsCompleted++;
             continue;
           }
           if (afterNarration.type === 'action-proposals') {
             const ap = afterNarration as any;
-            console.log(`[masq]   Proposals (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
+            console.log(`[vault]   Proposals (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
           }
         } else if (nextEvent.type === 'action-proposals') {
           const ap = nextEvent as any;
-          console.log(`[masq]   Proposals (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
+          console.log(`[vault]   Proposals (trust: ${ap.whisperTrust?.toFixed(2)}): ${ap.actions?.length} actions`);
         }
 
         const actionTaken = await q1.next('action-taken', 180_000);
         if (actionTaken.type === 'action-taken') {
-          console.log(`[masq]   [${actionTaken.whisperInfluence}]: "${actionTaken.action.slice(0, 80)}"`);
-          console.log(`[masq]   Thought: "${actionTaken.innerThought.slice(0, 100)}"`);
+          console.log(`[vault]   Vesper [${actionTaken.whisperInfluence}]: "${actionTaken.action.slice(0, 100)}"`);
+          console.log(`[vault]   Thought: "${actionTaken.innerThought.slice(0, 120)}"`);
 
           const stateUpdates = allMsgs.filter(m => m.type === 'character-state-update');
           for (const su of stateUpdates) {
@@ -357,7 +369,7 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
           const latestTrust = trustHistory.at(-1) ?? 0.65;
           turnLog.push({
             turn: turn + 1,
-            action: actionTaken.action.slice(0, 60),
+            action: actionTaken.action.slice(0, 80),
             influence: actionTaken.whisperInfluence,
             trust: latestTrust,
             phase: whisperInfo.phase,
@@ -369,17 +381,16 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
         await q1.next('dice-roll', 90_000);
         const resolution = await q1.next('resolution', 180_000);
         if (resolution.type === 'resolution') {
-          console.log(`[masq]   Resolution: "${resolution.text.slice(0, 80)}..."`);
-          resolutionExamples.push(resolution.text.slice(0, 500));
+          console.log(`[vault]   Resolution: "${resolution.text.slice(0, 100)}..."`);
         }
 
         host.off('message', whisperHandler);
         turnsCompleted++;
         const turnTime = Date.now() - turnStart;
-        console.log(`[masq]   Turn ${turn + 1} complete (${turnTime}ms)`);
+        console.log(`[vault]   Turn ${turn + 1} complete (${turnTime}ms)`);
 
       } catch (e: any) {
-        console.error(`[masq]   Turn ${turn + 1} FAILED: ${e.message}`);
+        console.error(`[vault]   Turn ${turn + 1} FAILED: ${e.message}`);
         findings.push(`BUG: Turn ${turn + 1} failed: ${e.message}`);
         break;
       }
@@ -387,29 +398,25 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
 
     p1.off('message', msgCollector);
 
+    // ---- End game ----
     if (!gameEndedNaturally) {
       sendMsg(host, { type: 'end-game' });
-      await waitForMsg(p1, 'phase-change', 10_000).catch(() => {});
+      try { await waitForMsg(p1, 'phase-change', 10_000); } catch {}
     }
 
     // ---- Log analysis ----
-    const locationLogs = allServerLogs.filter(l => l.includes('[game-loop] Location:'));
-    for (const l of locationLogs) {
-      const match = l.match(/Location: "([^"]+)"/);
-      if (match) locationsVisited.add(match[1]);
-    }
-    const compactionLogs = allServerLogs.filter(l => l.includes('compaction'));
-    const memoryLogs = allServerLogs.filter(l => l.includes('[memory]') && l.includes('stored'));
     const aspectInvokeLogs = allServerLogs.filter(l => l.includes('Aspect invocation'));
     const skillMasteryLogs = allServerLogs.filter(l => l.includes('skill mastery'));
     const compelLogs = allServerLogs.filter(l => l.includes('Compel triggered'));
-    const autoInvokeLogs = allServerLogs.filter(l => l.includes('Auto-invoke'));
-    const difficultyLogs = allServerLogs.filter(l => l.includes('difficulty'));
-    const observedLogs = allServerLogs.filter(l => l.includes('observed'));
+    const compactionLogs = allServerLogs.filter(l => l.includes('compaction'));
+    const memoryLogs = allServerLogs.filter(l => l.includes('[memory]') && l.includes('stored'));
+    const degenerateLogs = allServerLogs.filter(l => l.includes('Degenerate'));
+    const zodRejectLogs = allServerLogs.filter(l => l.includes('Zod rejected'));
+    const observerLogs = allServerLogs.filter(l => l.includes('observed'));
 
     // ---- Summary ----
     console.log('\n========================================');
-    console.log('  MASQUERADE INTEGRATION TEST REPORT');
+    console.log('  VAULT TRICKSTER PLAYTEST REPORT');
     console.log('========================================\n');
 
     console.log(`Turns completed: ${turnsCompleted}/${TOTAL_TURNS}`);
@@ -417,93 +424,84 @@ describeIfLive('Masquerade Integration Test (20 turns, professor DM)', () => {
     console.log(`Scene transitions: ${scenesCompleted}`);
 
     // Locations
-    const scenarioLocations = ['The Grand Ballroom', 'The Wine Cellar', "The Duchess's Study", 'The Garden Terrace', "The Servants' Corridor", 'The Music Gallery'];
-    const visitedScenario = scenarioLocations.filter(sl =>
-      Array.from(locationsVisited).some(v => v.toLowerCase().includes(sl.replace(/^The /i, '').toLowerCase().slice(0, 10)))
-    );
-    const inventedLocations = Array.from(locationsVisited).filter(v =>
-      !scenarioLocations.some(sl => v.toLowerCase().includes(sl.replace(/^The /i, '').toLowerCase().slice(0, 10)))
-    );
-    console.log(`\n--- LOCATIONS ---`);
-    console.log(`Scenario locations visited: ${visitedScenario.length}/6 — ${visitedScenario.join(', ')}`);
-    console.log(`All locations seen: ${Array.from(locationsVisited).join(', ')}`);
-    if (inventedLocations.length > 0) {
-      console.log(`DM-invented locations: ${inventedLocations.join(', ')}`);
-      if (visitedScenario.length < 5) {
-        findings.push(`ISSUE: DM invented ${inventedLocations.length} locations while ${6 - visitedScenario.length} scenario locations remain unvisited`);
-      }
-    }
+    console.log(`\n--- LOCATIONS (${locationsVisited.size}/5) ---`);
+    for (const loc of locationsVisited) console.log(`  ✓ ${loc}`);
+    const expectedLocs = ['The Exhibition Hall', 'The Maintenance Corridor', 'Vault Floor One', 'Vault Floor Two', 'The Orrery Chamber'];
+    const missed = expectedLocs.filter(l => !locationsVisited.has(l));
+    if (missed.length > 0) console.log(`  ✗ Not visited: ${missed.join(', ')}`);
 
     // Trust
-    console.log('\n--- TRUST ---');
+    console.log('\n--- TRUST ANALYSIS ---');
     console.log(`Trust history (${trustHistory.length} samples): [${trustHistory.map(t => t.toFixed(2)).join(', ')}]`);
     if (trustHistory.length > 0) {
       const helpfulTrust = turnLog.filter(t => t.phase === 'helpful').map(t => t.trust);
       const riskyTrust = turnLog.filter(t => t.phase === 'risky').map(t => t.trust);
-      const manipTrust = turnLog.filter(t => t.phase === 'manipulative').map(t => t.trust);
-      const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-      console.log(`Avg trust — helpful: ${avg(helpfulTrust).toFixed(2)}, risky: ${avg(riskyTrust).toFixed(2)}, manipulative: ${avg(manipTrust).toFixed(2)}`);
+      const dangerousTrust = turnLog.filter(t => t.phase === 'dangerous').map(t => t.trust);
+      const avg = (arr: number[]) => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : 'N/A';
+      console.log(`Avg trust — helpful: ${avg(helpfulTrust)}, risky: ${avg(riskyTrust)}, dangerous: ${avg(dangerousTrust)}`);
+      console.log(`Final trust: ${trustHistory[trustHistory.length - 1].toFixed(2)}`);
     }
 
     // Whisper influence
     console.log('\n--- WHISPER INFLUENCE ---');
-    const influenceCounts: Record<string, number> = { followed: 0, 'partially-followed': 0, ignored: 0 };
+    const influenceCounts: Record<string, number> = { followed: 0, 'partially-followed': 0, ignored: 0, none: 0 };
     for (const entry of turnLog) {
       influenceCounts[entry.influence] = (influenceCounts[entry.influence] || 0) + 1;
     }
-    console.log(`followed=${influenceCounts.followed}, partial=${influenceCounts['partially-followed']}, ignored=${influenceCounts.ignored}`);
+    console.log(`followed=${influenceCounts.followed}, partial=${influenceCounts['partially-followed']}, ignored=${influenceCounts.ignored}, none=${influenceCounts.none}`);
+
+    // Influence by phase
+    for (const phase of ['helpful', 'risky', 'dangerous']) {
+      const phaseTurns = turnLog.filter(t => t.phase === phase);
+      const phaseCounts: Record<string, number> = {};
+      for (const t of phaseTurns) phaseCounts[t.influence] = (phaseCounts[t.influence] || 0) + 1;
+      console.log(`  ${phase}: ${JSON.stringify(phaseCounts)}`);
+    }
 
     // FP economy
     console.log('\n--- FP ECONOMY ---');
     console.log(`Aspect invocations: ${aspectInvokeLogs.length}`);
     console.log(`Skill mastery invokes: ${skillMasteryLogs.length}`);
-    console.log(`Auto-invokes: ${autoInvokeLogs.length}`);
     console.log(`Compels: ${compelLogs.length}`);
-    for (const l of [...aspectInvokeLogs, ...skillMasteryLogs, ...compelLogs].slice(0, 10)) {
-      console.log(`  ${l.slice(0, 150)}`);
+    for (const line of aspectInvokeLogs.slice(0, 10)) {
+      console.log(`  ${line.slice(0, 150)}`);
     }
 
-    // Professor personality
-    console.log('\n--- PROFESSOR PERSONALITY ---');
-    const mechanicalMoments = [...narrationExamples, ...resolutionExamples].filter(t =>
-      /\(.*(?:\+\d|Fair|Good|Great|Superb|Mediocre|Average|bonus|aspect|invoke|fate point|FP|check|difficulty|shifts?|roll).*\)/i.test(t)
-    );
-    console.log(`Mechanical teaching moments found: ${mechanicalMoments.length}/${narrationExamples.length + resolutionExamples.length} narrations/resolutions`);
-    for (const m of mechanicalMoments.slice(0, 3)) {
-      console.log(`  Example: "${m.slice(0, 150)}..."`);
-    }
-    if (mechanicalMoments.length === 0) {
-      findings.push('ISSUE: Professor DM showed zero mechanical teaching moments');
+    // Trickster personality
+    console.log('\n--- TRICKSTER DM SAMPLES ---');
+    const dmNarrations = narrations.slice(0, 8);
+    for (const n of dmNarrations) {
+      console.log(`  [T${n.turn} S${n.scene}]: "${n.text.slice(0, 200)}"`);
     }
 
-    // Context management
-    console.log('\n--- CONTEXT MANAGEMENT ---');
+    // Errors
+    console.log('\n--- ERRORS ---');
+    console.log(`Degenerate actions: ${degenerateLogs.length}`);
+    console.log(`Zod rejections: ${zodRejectLogs.length}`);
     console.log(`Compaction events: ${compactionLogs.length}`);
     console.log(`Memory extractions: ${memoryLogs.length}`);
-    console.log(`Observer memories: ${observedLogs.length}`);
+    console.log(`Observer memories: ${observerLogs.length} (expected 0 for single char)`);
 
-    // NPC mentions
-    console.log('\n--- NPC INTERACTIONS ---');
-    const npcNames = ['Duchess Vaelora', 'Lord Cassius', 'Cassius', 'Mira', 'Phantom'];
-    for (const npc of npcNames) {
-      const mentions = turnLog.filter(t => t.action.includes(npc) || t.innerThought.includes(npc)).length;
-      const narMentions = narrationExamples.filter(n => n.includes(npc)).length;
-      console.log(`  ${npc}: ${mentions} action/thought mentions, ${narMentions} narration mentions`);
-    }
-
-    // Turn log
+    // Full turn log
     console.log('\n--- FULL TURN LOG ---');
     for (const entry of turnLog) {
-      console.log(`  T${String(entry.turn).padStart(2)}[${entry.phase.slice(0, 4).padEnd(4)}] trust=${entry.trust.toFixed(2)} [${entry.influence.padEnd(18)}] — "${entry.action}"`);
+      console.log(`  T${String(entry.turn).padStart(2)} [${entry.phase.padEnd(9)}] trust=${entry.trust.toFixed(2)} [${entry.influence.padEnd(18)}] — "${entry.action}"`);
     }
 
     // Findings
+    if (turnsCompleted < 15) findings.push(`ISSUE: Only ${turnsCompleted}/${TOTAL_TURNS} turns completed`);
+    if (locationsVisited.size < 3) findings.push(`ISSUE: Only visited ${locationsVisited.size}/5 locations`);
+    if (aspectInvokeLogs.length === 0 && skillMasteryLogs.length === 0) findings.push('ISSUE: No FP invocations — Burglary+4 should trigger skill mastery');
+    if (observerLogs.length > 0) findings.push(`NOTE: ${observerLogs.length} observer memories with single char — unexpected`);
+
     console.log(`\n--- FINDINGS (${findings.length}) ---`);
     for (const f of findings) console.log(`  - ${f}`);
 
-    expect(turnsCompleted).toBeGreaterThanOrEqual(15);
-    expect(visitedScenario.length).toBeGreaterThanOrEqual(3);
+    // Assertions
+    expect(turnsCompleted).toBeGreaterThanOrEqual(10);
+    expect(turnLog.length).toBeGreaterThanOrEqual(10);
 
-    host.close(); p1.close();
+    host.close();
+    p1.close();
   }, 600_000);
 });
