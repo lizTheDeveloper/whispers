@@ -157,6 +157,11 @@ function migrate(db: Database.Database): void {
   if (!colNames.has('dm_custom_prompt')) {
     db.exec('ALTER TABLE campaigns ADD COLUMN dm_custom_prompt TEXT');
   }
+
+  const cpCols = db.pragma('table_info(checkpoints)') as Array<{ name: string }>;
+  if (!cpCols.some(c => c.name === 'transcript')) {
+    db.exec('ALTER TABLE checkpoints ADD COLUMN transcript TEXT');
+  }
 }
 
 export function closeDb(): void {

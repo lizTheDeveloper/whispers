@@ -10,7 +10,7 @@ import { WorldBible } from './world-bible.js';
 import { CharacterMemoryStore } from './character-memory.js';
 import { callLlm } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
-import { saveCheckpoint, loadCheckpoint } from './checkpoint.js';
+import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import type { Character, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
@@ -71,14 +71,19 @@ export class GameLoop {
     this.loadCharacters();
 
     const checkpoint = loadCheckpoint(this.db, this.campaignId);
-    if (checkpoint && checkpoint.currentTurn > 0) {
-      this.state = { ...this.state, ...checkpoint, phase: 'playing' };
+    if (checkpoint && checkpoint.state.currentTurn > 0) {
+      this.state = { ...this.state, ...checkpoint.state, phase: 'playing' };
       this.state.initiativeOrder = Array.from(this.characters.keys());
-      this.sceneTurnCount = checkpoint.sceneTurnCount ?? 0;
+      this.sceneTurnCount = checkpoint.state.sceneTurnCount ?? 0;
 
-      const lastScene = this.db.prepare('SELECT summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 1').get(this.campaignId) as any;
-      if (lastScene?.summary) {
-        this.transcript = [{ role: 'system' as const, content: `[Resumed] ${lastScene.summary}`, timestamp: new Date().toISOString() }];
+      if (checkpoint.transcript && checkpoint.transcript.length > 0) {
+        this.transcript = checkpoint.transcript;
+        console.log(`[game-loop] Restored ${this.transcript.length} transcript messages from checkpoint`);
+      } else {
+        const lastScene = this.db.prepare('SELECT summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number DESC LIMIT 1').get(this.campaignId) as any;
+        if (lastScene?.summary) {
+          this.transcript = [{ role: 'system' as const, content: `[Resumed] ${lastScene.summary}`, timestamp: new Date().toISOString() }];
+        }
       }
       console.log(`[game-loop] Resuming from checkpoint: scene ${this.state.currentScene}, turn ${this.state.currentTurn}`);
     } else {
@@ -624,7 +629,7 @@ export class GameLoop {
     }
 
     this.state.sceneTurnCount = this.sceneTurnCount;
-    saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state);
+    saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state, this.transcript);
 
     await this.maybeCompactTranscript();
   }
