@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { getFreePort } from './lib/ws-helpers.js';
-import { WebSocket } from 'ws';
+import { getFreePort, connectWs as rawConnectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
+import type { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
 import { generateWhisper, type PlayerStyle, type GameState } from './lib/adaptive-whisper.js';
@@ -13,61 +13,22 @@ let serverProcess: ReturnType<typeof import('node:child_process').fork> | null =
 let port: number;
 const allServerLogs: string[] = [];
 
-function connectWs(): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://localhost:${port}/ws`);
-    ws.on('open', () => resolve(ws));
-    ws.on('error', reject);
-    setTimeout(() => reject(new Error('WS connect timeout')), 10_000);
-  });
+async function connectWsQ(): Promise<{ ws: WebSocket; q: MessageQueue }> {
+  const ws = await rawConnectWs(port);
+  return { ws, q: new MessageQueue(ws) };
 }
 
-function sendMsg(ws: WebSocket, msg: ClientMessage): void {
-  ws.send(JSON.stringify(msg));
-}
-
-function waitForMsg(ws: WebSocket, type: string, timeoutMs = 90_000): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${type} after ${timeoutMs}ms`)), timeoutMs);
-    const handler = (data: Buffer) => {
-      const msg: ServerMessage = JSON.parse(data.toString());
-      if (msg.type === type) {
-        clearTimeout(timer);
-        ws.off('message', handler);
-        resolve(msg);
-      }
-    };
-    ws.on('message', handler);
-  });
-}
-
-function waitForAnyMsg(ws: WebSocket, types: string[], timeoutMs = 90_000): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout waiting for any of [${types.join(',')}] after ${timeoutMs}ms`)), timeoutMs);
-    const handler = (data: Buffer) => {
-      const msg: ServerMessage = JSON.parse(data.toString());
-      if (types.includes(msg.type)) {
-        clearTimeout(timer);
-        ws.off('message', handler);
-        resolve(msg);
-      }
-    };
-    ws.on('message', handler);
-  });
-}
-
-async function completeDmSetup(ws: WebSocket): Promise<void> {
-  await waitForMsg(ws, 'dm-settings');
-  await waitForMsg(ws, 'dm-chat-reply');
+async function completeDmSetup(ws: WebSocket, q: MessageQueue): Promise<void> {
+  await q.waitFor('dm-settings');
+  await q.waitFor('dm-chat-reply');
   const followUps = [
     'Use FATE Core. Mystery intrigue at a haunted masquerade ball. Two players. No house rules.',
     'Yes, everything is decided. Start the game now. We are ready.',
     'Confirmed. Lock it in. Done.',
   ];
   for (const text of followUps) {
-    const replyPromise = waitForMsg(ws, 'dm-chat-reply', 90_000);
     sendMsg(ws, { type: 'dm-chat', text });
-    const reply = await replyPromise;
+    const reply = await q.waitFor('dm-chat-reply', 90_000);
     if (reply.type === 'dm-chat-reply' && reply.done) return;
   }
   throw new Error('DM setup did not complete after all follow-ups');
@@ -119,9 +80,8 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
   it('runs 25 rounds evaluating story quality, trust, skill variety, and location fidelity', async () => {
     const findings: string[] = [];
 
-    const host = await connectWs();
-    const roomPromise = waitForMsg(host, 'room-joined');
-    sendMsg(host, {
+    const { ws: hostWs, q: host } = await connectWsQ();
+    sendMsg(hostWs, {
       type: 'create',
       name: 'Quality Masquerade Playtest',
       dmPreset: 'chronicler',
@@ -129,17 +89,17 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
       systemId: 'fate-core',
       houseRules: null,
     });
-    const roomMsg = await roomPromise;
+    const roomMsg = await host.waitFor('room-joined');
     if (roomMsg.type !== 'room-joined') throw new Error('Expected room-joined');
     const joinCode = roomMsg.joinCode;
 
-    await completeDmSetup(host);
+    await completeDmSetup(hostWs, host);
 
-    const p1 = await connectWs();
-    const p2 = await connectWs();
-    sendMsg(p1, { type: 'join', joinCode, playerName: 'Mentor' });
-    sendMsg(p2, { type: 'join', joinCode, playerName: 'Chaos' });
-    await Promise.all([waitForMsg(p1, 'room-joined'), waitForMsg(p2, 'room-joined')]);
+    const { ws: p1Ws, q: p1 } = await connectWsQ();
+    const { ws: p2Ws, q: p2 } = await connectWsQ();
+    sendMsg(p1Ws, { type: 'join', joinCode, playerName: 'Mentor' });
+    sendMsg(p2Ws, { type: 'join', joinCode, playerName: 'Chaos' });
+    await Promise.all([p1.waitFor('room-joined'), p2.waitFor('room-joined')]);
 
     const socialite: CharacterDefinition = {
       name: 'Isolde Ravenna',
@@ -163,13 +123,12 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
       stunts: ['Battle Instincts: +2 to Notice when assessing physical threats', 'Intimidating Presence: +2 to Provoke in close quarters'],
     };
 
-    for (const [player, def, label] of [[p1, socialite, 'socialite'], [p2, duelist, 'duelist']] as const) {
+    for (const [playerWs, playerQ, def, label] of [[p1Ws, p1, socialite, 'socialite'], [p2Ws, p2, duelist, 'duelist']] as const) {
       let approved = false;
       let charId = '';
       for (let attempt = 0; attempt < 3 && !approved; attempt++) {
-        const valPromise = waitForMsg(player, 'character-validated', 90_000);
-        sendMsg(player, { type: 'submit-character', definition: def });
-        const valMsg = await valPromise;
+        sendMsg(playerWs, { type: 'submit-character', definition: def });
+        const valMsg = await playerQ.waitFor('character-validated', 90_000);
         if (valMsg.type === 'character-validated' && (valMsg as any).approved) {
           charId = (valMsg as any).characterId;
           approved = true;
@@ -183,15 +142,15 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
         findings.push(`BUG: ${label} never approved after 3 attempts`);
         return;
       }
-      await waitForMsg(host, 'negotiation-opened', 30_000);
-      await waitForMsg(host, 'negotiation-message', 90_000);
-      sendMsg(host, { type: 'host-approve-character', characterId: charId });
+      await host.waitFor('negotiation-opened', 30_000);
+      await host.waitFor('negotiation-message', 90_000);
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: charId });
       console.log(`[quality] Host approved ${label}`);
       await new Promise(r => setTimeout(r, 1000));
     }
 
-    sendMsg(host, { type: 'start-game' });
-    const startMsg = await waitForMsg(p1, 'phase-change', 10_000);
+    sendMsg(hostWs, { type: 'start-game' });
+    const startMsg = await p1.waitFor('phase-change', 10_000);
     expect(startMsg.type === 'phase-change' && (startMsg as any).phase).toBe('playing');
     console.log('[quality] Game started');
 
@@ -275,7 +234,7 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
       gameState.round = round;
 
       try {
-        const narMsg = await waitForAnyMsg(host, ['narration', 'phase-change'], 180_000);
+        const narMsg = await host.waitForAny(['narration', 'phase-change'], 180_000);
         if (narMsg.type === 'phase-change') {
           if ((narMsg as any).phase === 'ended') { console.log(`[quality] Game ended at round ${round}`); gameEnded = true; break; }
           continue;
@@ -295,7 +254,7 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
         }
         turnCount = round;
 
-        const next = await waitForAnyMsg(host, ['action-proposals', 'scene-end', 'phase-change'], 120_000);
+        const next = await host.waitForAny(['action-proposals', 'scene-end', 'phase-change'], 120_000);
         if (next.type === 'scene-end') {
           sceneCount++;
           gameState.sceneCount = sceneCount;
@@ -313,17 +272,17 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
           const trust = (currentProposals as any).whisperTrust as number;
           if (trust !== undefined) trustTrajectory.push({ char: charName, trust, turn: round });
 
-          await waitForMsg(host, 'whisper-prompt', 30_000);
+          await host.waitFor('whisper-prompt', 60_000);
 
           const style = charStyles[charName] ?? 'mentor';
           const lastAction = actionsTaken.filter(a => a.char === charName).slice(-1)[0]?.action;
           const whisper = generateWhisper(style, charName, gameState, narMsg.text, lastAction);
 
-          sendMsg(host, { type: 'whisper', text: whisper });
+          sendMsg(hostWs, { type: 'whisper', text: whisper });
           whispersSent.push({ char: charName, whisper, style, turn: round });
           console.log(`[quality] R${round} [${style}] → ${charName.split(' ')[0]}: "${whisper.slice(0, 60)}"`);
 
-          const actionMsg = await waitForMsg(host, 'action-taken', 120_000);
+          const actionMsg = await host.waitFor('action-taken', 120_000);
           if (actionMsg.type === 'action-taken') {
             const action = (actionMsg as any).action as string;
             const skill = detectSkill(action);
@@ -345,7 +304,7 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
             }
           }
 
-          const resMsg = await waitForAnyMsg(host, ['narration', 'resolution', 'scene-end', 'phase-change'], 120_000);
+          const resMsg = await host.waitForAny(['narration', 'resolution', 'scene-end', 'phase-change'], 120_000);
           if (resMsg.type === 'narration' || resMsg.type === 'resolution') {
             narrations.push(resMsg.text ?? '');
             gameState.narrations.push(resMsg.text ?? '');
@@ -367,15 +326,12 @@ describeIfLive('Quality Playtest: Haunted Masquerade 25-turn', () => {
           }
 
           if (charIdx < 1) {
-            let found = false;
-            for (let drain = 0; drain < 8 && !found; drain++) {
-              const peek = await waitForAnyMsg(host, ['action-proposals', 'narration', 'scene-end', 'phase-change', 'character-state-update', 'dice-roll'], 60_000).catch(() => null);
-              if (!peek) { currentProposals = null; break; }
-              if (peek.type === 'action-proposals') { currentProposals = peek; found = true; }
-              else if (peek.type === 'character-state-update' || peek.type === 'dice-roll') { continue; }
-              else { currentProposals = null; break; }
+            const peek = await host.waitForAny(['action-proposals', 'narration', 'scene-end', 'phase-change'], 90_000).catch(() => null);
+            if (peek?.type === 'action-proposals') {
+              currentProposals = peek;
+            } else {
+              currentProposals = null;
             }
-            if (!found) currentProposals = null;
           }
         }
 
