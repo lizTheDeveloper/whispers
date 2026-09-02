@@ -639,6 +639,9 @@ export class GameLoop {
         shouldCompel = true;
       } else if (resolution.outcome === 'tie' && character.state.fatePoints <= 1) {
         shouldCompel = true;
+      } else if (character.state.fatePoints === 0 && this.state.currentTurn - lastCompelTurn >= 4) {
+        shouldCompel = true;
+        console.log(`[game-loop] Proactive compel: ${character.definition.name} at 0 FP for ${this.state.currentTurn - lastCompelTurn} turns — GM keeps the economy flowing`);
       }
       if (shouldCompel) {
         character.state.fatePoints = Math.min(character.state.fatePoints + 1, 5);
@@ -1109,10 +1112,12 @@ export class GameLoop {
     for (const [, char] of this.characters) {
       const trust = char.state.whisperTrust;
       const name = char.definition.name.split(' ')[0]!;
-      if (trust >= 0.35 && trust <= 0.45) {
-        hints.push(`WHISPER CRISIS — ${name}'s trust is at ${trust.toFixed(2)} (tipping point). Present a moment where trusting the voice would clearly HELP — a warning about hidden danger, advice that plays to their strengths. Let the player prove the voice is worth listening to.`);
+      if (trust >= 0.85) {
+        hints.push(`WHISPER COMPLACENCY — ${name} trusts the voice almost completely (${trust.toFixed(2)}). This is DANGEROUS — create a situation where following the voice's likely advice would hurt an innocent or betray an ally. Force the player to choose between easy guidance and hard morality. The voice should feel like a crutch that needs questioning.`);
       } else if (trust >= 0.65 && trust <= 0.75) {
         hints.push(`WHISPER TEST — ${name} deeply trusts the voice (${trust.toFixed(2)}). Present a moral dilemma where the "smart" choice conflicts with the "right" choice. Force the player to decide: do they guide their character toward safety or integrity?`);
+      } else if (trust >= 0.35 && trust <= 0.45) {
+        hints.push(`WHISPER CRISIS — ${name}'s trust is at ${trust.toFixed(2)} (tipping point). Present a moment where trusting the voice would clearly HELP — a warning about hidden danger, advice that plays to their strengths. Let the player prove the voice is worth listening to.`);
       } else if (trust <= 0.20) {
         hints.push(`WHISPER DEAF — ${name} barely hears the voice anymore (${trust.toFixed(2)}). Show what happens when a character has NO inner compass — bad decisions compound, danger closes in. Make the player WANT to rebuild trust.`);
       }
