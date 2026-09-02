@@ -196,81 +196,102 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
 
     const whisperPlan: Record<number, Record<string, string>> = {
       1: { 'Kael Ashwood': 'Look for the ventilation shaft — the map Tobias drew might help' },
-      3: { 'Sister Wren Holloway': 'Talk to Tobias — he saw something in the dark. Be gentle.' },
-      5: { 'Kael Ashwood': 'Something is off about Foreman Greaves — press him about his burns' },
-      7: { 'Sister Wren Holloway': 'The crystals are dangerous — do NOT touch them, just observe' },
-      9: { 'Kael Ashwood': 'Go deeper. The miners might still be alive past the collapse.' },
-      11: { 'Sister Wren Holloway': 'Use the crystal shard — it might react to the cavern walls' },
-      13: { 'Kael Ashwood': 'The Pale Woman is not your enemy. Approach carefully.' },
-      15: { 'Sister Wren Holloway': 'Save the miners first. The mystery can wait.', 'Kael Ashwood': 'Forget the miners — this discovery is bigger than a rescue' },
-      18: { 'Kael Ashwood': 'Trust Wren. She sees things you miss about people.' },
-      20: { 'Sister Wren Holloway': 'Greaves caused this collapse. Confront him before he runs.' },
-      23: { 'Kael Ashwood': 'The forest has always protected you. Let it guide you out.' },
+      2: { 'Sister Wren Holloway': 'Talk to Tobias — he saw something in the dark. Be gentle.' },
+      3: { 'Kael Ashwood': 'Something is off about Foreman Greaves — press him about his burns' },
+      4: { 'Sister Wren Holloway': 'The crystals are dangerous — do NOT touch them, just observe' },
+      5: { 'Kael Ashwood': 'Go deeper. The miners might still be alive past the collapse.' },
+      6: { 'Sister Wren Holloway': 'Use the crystal shard — it might react to the cavern walls' },
+      7: { 'Kael Ashwood': 'The Pale Woman is not your enemy. Approach carefully.' },
+      8: { 'Sister Wren Holloway': 'Save the miners first. The mystery can wait.', 'Kael Ashwood': 'Forget the miners — this discovery is bigger than a rescue' },
+      9: { 'Kael Ashwood': 'Trust Wren. She sees things you miss about people.' },
+      10: { 'Sister Wren Holloway': 'Greaves caused this collapse. Confront him before he runs.' },
+      12: { 'Kael Ashwood': 'The forest has always protected you. Let it guide you out.' },
     };
 
-    for (let turn = 1; turn <= TARGET_TURNS; turn++) {
+    let gameEnded = false;
+    for (let round = 1; round <= TARGET_TURNS && !gameEnded; round++) {
       try {
-        const narMsg = await waitForAnyMsg(host, ['narration', 'phase-change'], 120_000);
+        const narMsg = await waitForAnyMsg(host, ['narration', 'phase-change'], 180_000);
         if (narMsg.type === 'phase-change') {
-          if ((narMsg as any).phase === 'ended') { console.log(`[mine] Game ended at turn ${turn}`); break; }
+          if ((narMsg as any).phase === 'ended') { console.log(`[mine] Game ended at round ${round}`); gameEnded = true; break; }
           continue;
         }
         narrations.push(narMsg.text);
         if ((narMsg as any).locationName) locations.add((narMsg as any).locationName);
-        turnCount = turn;
+        turnCount = round;
 
         if (narMsg.text.includes('Compel:') || narMsg.text.includes('trouble')) compelCount++;
 
         const next = await waitForAnyMsg(host, ['action-proposals', 'scene-end', 'phase-change'], 120_000);
         if (next.type === 'scene-end') {
           sceneCount++;
-          console.log(`[mine] Scene ${sceneCount} ended at turn ${turn}`);
+          console.log(`[mine] Scene ${sceneCount} ended at round ${round}`);
           continue;
         }
-        if (next.type === 'phase-change') { if ((next as any).phase === 'ended') break; continue; }
+        if (next.type === 'phase-change') { if ((next as any).phase === 'ended') { gameEnded = true; break; } continue; }
         if (next.type !== 'action-proposals') continue;
 
-        const charName = (next as any).characterName as string;
-        const whisper = whisperPlan[turn]?.[charName];
+        // Process ALL characters in this round (server sends char turns back-to-back before next narration)
+        let currentProposals: ServerMessage | null = next;
+        for (let charIdx = 0; charIdx < 2 && currentProposals; charIdx++) {
+          const charName = (currentProposals as any).characterName as string;
+          const whisper = whisperPlan[round]?.[charName];
 
-        await waitForMsg(host, 'whisper-prompt', 30_000);
-        if (whisper) {
-          sendMsg(host, { type: 'whisper', text: whisper });
-          console.log(`[mine] T${turn} whispered to ${charName.split(' ')[0]}: "${whisper.slice(0, 50)}"`);
+          await waitForMsg(host, 'whisper-prompt', 30_000);
+          if (whisper) {
+            sendMsg(host, { type: 'whisper', text: whisper });
+            console.log(`[mine] R${round} whispered to ${charName.split(' ')[0]}: "${whisper.slice(0, 50)}"`);
+          }
+
+          const actionMsg = await waitForMsg(host, 'action-taken', 120_000);
+          if (actionMsg.type === 'action-taken') {
+            actionsTaken.push({ char: (actionMsg as any).characterName, action: (actionMsg as any).action, turn: round });
+          }
+
+          // After action-taken, server sends resolution/narration, dice-roll, character-state-update, then possibly next char's proposals
+          const resMsg = await waitForAnyMsg(host, ['narration', 'resolution', 'scene-end', 'phase-change'], 120_000);
+          if (resMsg.type === 'narration' || resMsg.type === 'resolution') {
+            const text = resMsg.text ?? '';
+            narrations.push(text);
+            if (/\([^)]*\+\d+[^)]*vs[^)]*\+\d+[^)]*\)/.test(text)) teachingAsides++;
+            const itemNames = ['lantern', 'map', 'crystal', 'shard', 'journal', 'blueprint'];
+            if (itemNames.some(n => text.toLowerCase().includes(n))) itemMentions++;
+          }
+          if (resMsg.type === 'scene-end') {
+            sceneCount++;
+            console.log(`[mine] Scene ${sceneCount} ended at round ${round} (during char ${charIdx + 1})`);
+            currentProposals = null;
+            break;
+          }
+          if (resMsg.type === 'phase-change') {
+            if ((resMsg as any).phase === 'ended') { gameEnded = true; }
+            currentProposals = null;
+            break;
+          }
+
+          // Check if next char's action-proposals follows, or if we're at end of round
+          if (charIdx < 1) {
+            currentProposals = await waitForAnyMsg(host, ['action-proposals', 'narration', 'scene-end', 'phase-change', 'character-state-update'], 30_000).catch(() => null);
+            if (!currentProposals || currentProposals.type !== 'action-proposals') {
+              // Not another character's turn — drain and move to next round
+              currentProposals = null;
+            }
+          }
         }
 
-        const actionMsg = await waitForMsg(host, 'action-taken', 120_000);
-        if (actionMsg.type === 'action-taken') {
-          actionsTaken.push({ char: (actionMsg as any).characterName, action: (actionMsg as any).action, turn });
-        }
-
-        const resMsg = await waitForAnyMsg(host, ['narration', 'resolution', 'scene-end', 'phase-change'], 120_000);
-        if (resMsg.type === 'narration' || resMsg.type === 'resolution') {
-          const text = resMsg.text ?? '';
-          narrations.push(text);
-          if (/\([^)]*\+\d+[^)]*vs[^)]*\+\d+[^)]*\)/.test(text)) teachingAsides++;
-          const itemNames = ['lantern', 'map', 'crystal', 'shard', 'journal', 'blueprint'];
-          if (itemNames.some(n => text.toLowerCase().includes(n))) itemMentions++;
-        }
-        if (resMsg.type === 'scene-end') {
-          sceneCount++;
-          console.log(`[mine] Scene ${sceneCount} ended at turn ${turn}`);
-        }
-
-        await waitForAnyMsg(host, ['character-state-update', 'narration', 'action-proposals', 'scene-end', 'phase-change'], 30_000).catch(() => null);
-
-        if (turn % 5 === 0) {
-          console.log(`[mine] Turn ${turn} — ${sceneCount} scenes, ${locations.size} locs, ${teachingAsides} asides, ${itemMentions} items`);
+        if (round % 3 === 0) {
+          console.log(`[mine] Round ${round} — ${sceneCount} scenes, ${locations.size} locs, ${teachingAsides} asides, ${itemMentions} items, ${actionsTaken.length} actions`);
         }
       } catch (e) {
-        findings.push(`Turn ${turn}: ${(e as Error).message}`);
-        console.error(`[mine] Turn ${turn} error:`, (e as Error).message);
-        if (turn < 3) throw e;
+        findings.push(`Round ${round}: ${(e as Error).message}`);
+        console.error(`[mine] Round ${round} error:`, (e as Error).message);
+        if (round < 3) throw e;
       }
     }
 
     console.log(`\n[mine] === RESULTS ===`);
-    console.log(`[mine] Turns: ${turnCount}/${TARGET_TURNS}`);
+    console.log(`[mine] Rounds: ${turnCount}/${TARGET_TURNS}`);
+    console.log(`[mine] Actions taken: ${actionsTaken.length} (by ${new Set(actionsTaken.map(a => a.char)).size} characters)`);
     console.log(`[mine] Scenes: ${sceneCount}`);
     console.log(`[mine] Locations: ${[...locations].join(', ')}`);
     console.log(`[mine] Teaching asides: ${teachingAsides}`);
@@ -290,9 +311,11 @@ describeIfLive('Professor + Collapsed Mine: 2-Character Rescue Mission', () => {
 
     if (findings.length > 0) console.log(`[mine] Findings: ${findings.join('; ')}`);
 
-    expect(turnCount).toBeGreaterThanOrEqual(8);
+    expect(turnCount).toBeGreaterThanOrEqual(5);
     expect(sceneCount).toBeGreaterThanOrEqual(2);
     expect(locations.size).toBeGreaterThanOrEqual(2);
+    const uniqueChars = new Set(actionsTaken.map(a => a.char));
+    expect(uniqueChars.size).toBe(2);
 
   }, 900_000);
 });

@@ -133,6 +133,12 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
         text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
       }
 
+      if (schema && !text) {
+        lastBadResponse = '(empty response after stripping roleplay/fence markers)';
+        if (attempt < maxAttempts - 1) continue;
+        throw new Error('LLM returned empty response after stripping markers');
+      }
+
       if (!schema) return text as CallLlmResult<S>;
 
       const repaired = tryRepairJson(text);
