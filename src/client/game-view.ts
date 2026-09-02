@@ -48,17 +48,36 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     }
   });
   ws.on('resolution', (msg) => { if (msg.type === 'resolution') appendLog(msg.text, 'dm'); });
+  const sessionStats = { scenes: 0, followed: 0, partial: 0, ignored: 0 };
+
   ws.on('scene-end', (msg) => {
     if (msg.type === 'scene-end') {
+      sessionStats.scenes++;
       appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system');
-      if ((msg as any).whisperStats && (msg as any).whisperStats.length > 0) {
-        const statsLines = (msg as any).whisperStats.map((s: any) => {
+
+      const stats = (msg as any).whisperStats as Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> | undefined;
+      if (stats && stats.length > 0) {
+        const card = document.createElement('div');
+        card.className = 'narration-entry whisper-stats-card';
+        let html = '<div class="stats-title">Your Influence This Scene</div>';
+        for (const s of stats) {
           const total = s.followed + s.partial + s.ignored;
-          const deltaSign = s.trustDelta >= 0 ? '+' : '';
-          return `${s.name}: ${s.followed}/${total} whispers heeded (trust ${deltaSign}${(s.trustDelta * 100).toFixed(0)}%)`;
-        });
-        appendLog(`Your influence this scene:\n${statsLines.join('\n')}`, 'whisper-recap');
+          sessionStats.followed += s.followed;
+          sessionStats.partial += s.partial;
+          sessionStats.ignored += s.ignored;
+          const pct = total > 0 ? Math.round((s.followed / total) * 100) : 0;
+          const sign = s.trustDelta >= 0 ? '+' : '';
+          html += `<div class="stats-row">`;
+          html += `<span class="stats-name">${s.name}</span>`;
+          html += `<span class="stats-bar"><span class="stats-fill" style="width:${pct}%"></span></span>`;
+          html += `<span class="stats-detail">${s.followed}/${total} heeded &middot; trust ${sign}${(s.trustDelta * 100).toFixed(0)}%</span>`;
+          html += `</div>`;
+        }
+        card.innerHTML = html;
+        log.appendChild(card);
+        log.scrollTop = log.scrollHeight;
       }
+
       const sceneImage = root.querySelector('#scene-image') as HTMLElement;
       sceneImage.style.display = 'none';
     }
@@ -112,7 +131,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     whisperArea.style.display = 'flex';
     whisperInput.focus();
     whisperInput.placeholder = `Whisper to ${msg.characterName}...`;
-    if ((msg as any).mood || (msg as any).trustHint) {
+    if (msg.mood || msg.trustHint) {
       const moodEl = whisperArea.querySelector('.whisper-context') ?? (() => {
         const el = document.createElement('div');
         el.className = 'whisper-context';
@@ -120,8 +139,8 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
         return el;
       })();
       const parts: string[] = [];
-      if ((msg as any).mood) parts.push((msg as any).mood);
-      if ((msg as any).trustHint) parts.push((msg as any).trustHint);
+      if (msg.mood) parts.push(msg.mood);
+      if (msg.trustHint) parts.push(msg.trustHint);
       (moodEl as HTMLElement).textContent = parts.join(' ');
     }
     let remaining = 15;
@@ -226,7 +245,31 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     if (msg.type === 'phase-change' && msg.phase === 'ended') {
       whisperArea.style.display = 'none';
       actionArea.innerHTML = '';
-      appendLog('=== The adventure has concluded. Thank you for playing! ===', 'system');
+
+      const total = sessionStats.followed + sessionStats.partial + sessionStats.ignored;
+      const recapDiv = document.createElement('div');
+      recapDiv.className = 'narration-entry session-recap';
+      let recapHtml = '<div class="recap-title">Session Complete</div>';
+      recapHtml += '<div class="recap-grid">';
+      recapHtml += `<div class="recap-stat"><span class="recap-num">${sessionStats.scenes}</span><span class="recap-label">Scenes</span></div>`;
+      if (total > 0) {
+        const influencePct = Math.round(((sessionStats.followed + sessionStats.partial * 0.5) / total) * 100);
+        recapHtml += `<div class="recap-stat"><span class="recap-num">${total}</span><span class="recap-label">Whispers</span></div>`;
+        recapHtml += `<div class="recap-stat"><span class="recap-num">${influencePct}%</span><span class="recap-label">Influence</span></div>`;
+        recapHtml += `<div class="recap-stat"><span class="recap-num">${sessionStats.followed}</span><span class="recap-label">Heeded</span></div>`;
+      }
+      recapHtml += '</div>';
+      if (total > 0) {
+        const ratio = sessionStats.followed / total;
+        const verdict = ratio >= 0.6 ? 'A trusted guide — your voice shaped the story.'
+          : ratio >= 0.35 ? 'An uncertain influence — sometimes heard, sometimes doubted.'
+          : 'A voice in the dark — mostly resisted, but never silenced.';
+        recapHtml += `<div class="recap-verdict">${verdict}</div>`;
+      }
+      recapDiv.innerHTML = recapHtml;
+      log.appendChild(recapDiv);
+      log.scrollTop = log.scrollHeight;
+
       if (isHost) {
         const controls = root.querySelector('#dm-controls');
         if (controls) controls.innerHTML = '';

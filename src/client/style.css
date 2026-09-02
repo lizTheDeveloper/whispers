@@ -576,14 +576,113 @@ button:disabled {
   font-style: italic;
   margin-top: 0.2rem;
 }
-.narration-entry.whisper-recap {
-  color: var(--signal);
-  border-left: 2px solid rgba(0, 212, 255, 0.3);
-  padding-left: 0.75rem;
-  font-style: italic;
-  white-space: pre-line;
-  margin: 0.5rem 0;
+/* ─── Whisper Stats Card ─── */
+
+.narration-entry.whisper-stats-card {
+  background: linear-gradient(135deg, rgba(255, 61, 127, 0.06) 0%, rgba(0, 212, 255, 0.04) 100%);
+  border: 1px solid rgba(255, 61, 127, 0.15);
+  border-left: 3px solid rgba(255, 61, 127, 0.4);
+  padding: 0.85rem 1rem;
+  margin: 0.5rem 0 1rem;
+}
+.stats-title {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--gene-pink);
+  margin-bottom: 0.6rem;
+}
+.stats-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.stats-name {
+  font-weight: 600;
+  color: var(--star-white);
+  min-width: 6rem;
   font-size: 0.88rem;
+}
+.stats-bar {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 4rem;
+}
+.stats-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--gene-pink), var(--biolume));
+  border-radius: 3px;
+  transition: width 0.8s ease-out;
+}
+.stats-detail {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 10rem;
+  text-align: right;
+}
+
+/* ─── Session Recap ─── */
+
+.narration-entry.session-recap {
+  background: linear-gradient(135deg, rgba(201, 184, 255, 0.08) 0%, rgba(255, 107, 53, 0.04) 100%);
+  border: 1px solid rgba(201, 184, 255, 0.2);
+  border-left: 3px solid rgba(201, 184, 255, 0.5);
+  padding: 1.5rem 1.25rem;
+  margin-top: 1.5rem;
+  animation: epilogue-fade 2s ease-in;
+}
+.recap-title {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #c9b8ff;
+  text-align: center;
+  margin-bottom: 1rem;
+  letter-spacing: 0.04em;
+}
+.recap-grid {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  margin-bottom: 1rem;
+}
+.recap-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+}
+.recap-num {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--star-white);
+  line-height: 1;
+}
+.recap-label {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.recap-verdict {
+  text-align: center;
+  font-style: italic;
+  color: #c9b8ff;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(201, 184, 255, 0.1);
 }
 .whisper-context {
   width: 100%;
