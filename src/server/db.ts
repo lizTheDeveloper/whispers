@@ -147,6 +147,31 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_char_memories_char ON character_memories(character_id);
     CREATE INDEX IF NOT EXISTS idx_char_memories_importance ON character_memories(importance DESC);
+
+    CREATE TABLE IF NOT EXISTS campaign_sessions (
+      token TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      join_code TEXT NOT NULL,
+      player_name TEXT NOT NULL,
+      is_host INTEGER NOT NULL DEFAULT 0,
+      character_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_campaign ON campaign_sessions(campaign_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_join_code ON campaign_sessions(join_code);
+
+    CREATE TABLE IF NOT EXISTS pending_characters (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      join_code TEXT NOT NULL,
+      session_token TEXT NOT NULL,
+      player_name TEXT NOT NULL,
+      definition TEXT NOT NULL,
+      ai_feedback TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_pending_chars_campaign ON pending_characters(campaign_id);
   `);
 
   const cols = db.pragma('table_info(campaigns)') as Array<{ name: string }>;
@@ -156,6 +181,12 @@ function migrate(db: Database.Database): void {
   }
   if (!colNames.has('dm_custom_prompt')) {
     db.exec('ALTER TABLE campaigns ADD COLUMN dm_custom_prompt TEXT');
+  }
+  if (!colNames.has('setup_chat')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN setup_chat TEXT');
+  }
+  if (!colNames.has('phase')) {
+    db.exec("ALTER TABLE campaigns ADD COLUMN phase TEXT NOT NULL DEFAULT 'lobby'");
   }
 
   const cpCols = db.pragma('table_info(checkpoints)') as Array<{ name: string }>;

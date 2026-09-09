@@ -54,7 +54,7 @@ function readSkillPyramid(container: HTMLElement): Record<string, number> {
   return skills;
 }
 
-export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string, onApproved: () => void): void {
+export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string): void {
   root.innerHTML = `
     <div class="character-creator">
       <h2>Create Your Character</h2>
@@ -304,11 +304,13 @@ Born in the slums of Veridian...
         submitBtn.textContent = `Awaiting DM review (${approvedCount}/${pendingCount})...`;
       }
       if (approvedCount >= pendingCount) {
+        // 'approved' arrives twice — once from the AI DM, once from the human
+        // host. Only the server knows which stage this is, so use its words
+        // rather than claiming the character is cleared to play.
         feedback.textContent = pendingCount > 1
-          ? `All ${pendingCount} characters approved! Waiting for game to start...`
-          : 'Character approved! Waiting for game to start...';
+          ? `All ${pendingCount} characters approved. ${msg.feedback}`
+          : msg.feedback;
         feedback.classList.add('approved');
-        onApproved();
       }
     } else {
       feedback.textContent = `DM feedback: ${msg.feedback}`;

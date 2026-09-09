@@ -6,7 +6,12 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { getDb, getDataDir } from './db.js';
-import { createRoom, joinRoom } from './room.js';
+import {
+  createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
+  savePendingCharacter, listPendingCharacters, deletePendingCharacter,
+  saveSetupChat, loadSetupChat, setCampaignPhase,
+  type PendingCharacterRow,
+} from './room.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
@@ -94,6 +99,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 interface ConnectedPlayer {
   ws: WebSocket;
+  sessionToken: string;
   playerName: string;
   characterId: string | null;
   isHost: boolean;
@@ -103,17 +109,6 @@ interface ConnectedPlayer {
 
 const rooms = new Map<string, ConnectedPlayer[]>();
 const gameLoops = new Map<string, GameLoop>();
-
-interface PendingCharacter {
-  charId: string;
-  definition: import('../shared/types.js').CharacterDefinition;
-  playerWs: WebSocket;
-  playerName: string;
-  aiApproved: boolean;
-  aiFeedback: string;
-  campaignId: string;
-}
-const pendingCharacters = new Map<string, PendingCharacter>();
 const negotiations = new Map<string, NegotiationRoom>();
 
 function broadcast(joinCode: string, msg: ServerMessage): void {
@@ -127,6 +122,75 @@ function broadcast(joinCode: string, msg: ServerMessage): void {
 
 function send(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
+function socketFor(joinCode: string, sessionToken: string): WebSocket | null {
+  const p = rooms.get(joinCode)?.find(x => x.sessionToken === sessionToken);
+  return p && p.ws.readyState === WebSocket.OPEN ? p.ws : null;
+}
+
+function hostSocket(joinCode: string): WebSocket | null {
+  const h = rooms.get(joinCode)?.find(p => p.isHost);
+  return h && h.ws.readyState === WebSocket.OPEN ? h.ws : null;
+}
+
+function pendingReviewMsg(p: PendingCharacterRow): ServerMessage {
+  return {
+    type: 'character-pending-review',
+    characterId: p.id,
+    definition: p.definition,
+    aiApproved: true,
+    aiFeedback: p.aiFeedback,
+    playerName: p.playerName,
+  };
+}
+
+function openNegotiation(
+  campaign: { id: string; dmPreset: string },
+  joinCode: string,
+  pending: PendingCharacterRow,
+): void {
+  if (negotiations.has(pending.id)) return;
+  const negotiation = new NegotiationRoom(
+    pending.id, pending.definition, pending.aiFeedback, pending.playerName,
+    () => socketFor(joinCode, pending.sessionToken),
+    () => hostSocket(joinCode),
+    campaign.id, campaign.dmPreset,
+  );
+  negotiations.set(pending.id, negotiation);
+  negotiation.open().catch(e => console.error('[negotiation] open failed:', e));
+}
+
+function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Campaign): void {
+  const uploadToken = randomBytes(32).toString('hex');
+  uploadTokens.set(uploadToken, { campaignId: campaign.id, expires: Date.now() + 4 * 60 * 60 * 1000 });
+  send(ws, {
+    type: 'dm-settings',
+    presetName: campaign.dmPreset,
+    presetPrompt: loadPresetPrompt(campaign.dmPreset),
+    dmCustomPrompt: campaign.dmCustomPrompt,
+    dmInstructions: campaign.dmInstructions,
+    materials: getCampaignMaterials(campaign.id),
+    uploadToken,
+  });
+}
+
+/**
+ * Rebuild a reconnecting participant's screen from durable state. Without this
+ * a refresh leaves the DM staring at an empty lobby even once their host role
+ * is restored.
+ */
+function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Campaign, joinCode: string): void {
+  const db = getDb();
+  const players = (rooms.get(joinCode) ?? []).filter(p => !p.isHost).map(p => p.playerName);
+  const approved = db.prepare('SELECT COUNT(*) AS c FROM characters WHERE campaign_id = ?').get(campaign.id) as { c: number };
+  send(ws, {
+    type: 'lobby-state',
+    players: [...new Set(players)],
+    setupChat: loadSetupChat(db, campaign.id),
+    dmReady: Boolean(campaign.dmInstructions),
+    approvedCount: approved.c,
+  });
 }
 
 wss.on('connection', (ws) => {
@@ -146,28 +210,27 @@ wss.on('connection', (ws) => {
         scenarioId: msg.scenarioId ?? undefined,
         houseRules: msg.houseRules ?? undefined,
       });
+      const session = createSession(db, { campaignId, joinCode, playerName: 'Host', isHost: true });
       currentJoinCode = joinCode;
-      currentPlayer = { ws, playerName: 'Host', characterId: null, isHost: true, setupChat: [], charChat: [] };
+      currentPlayer = { ws, sessionToken: session.token, playerName: 'Host', characterId: null, isHost: true, setupChat: [], charChat: [] };
       rooms.set(joinCode, [currentPlayer]);
-      send(ws, { type: 'room-joined', campaignId, joinCode, isHost: true });
-
-      const presetPrompt = loadPresetPrompt(msg.dmPreset);
-      const uploadToken = randomBytes(32).toString('hex');
-      uploadTokens.set(uploadToken, { campaignId, expires: Date.now() + 4 * 60 * 60 * 1000 });
       send(ws, {
-        type: 'dm-settings',
-        presetName: msg.dmPreset,
-        presetPrompt,
-        dmCustomPrompt: null,
-        dmInstructions: null,
-        materials: [],
-        uploadToken,
+        type: 'room-joined',
+        campaignId, joinCode, isHost: true,
+        sessionToken: session.token,
+        gameName: msg.name,
+        playerName: 'Host',
+        phase: 'lobby',
       });
+
+      const campaign = joinRoom(db, joinCode);
+      if (campaign) sendDmSettings(ws, campaign);
 
       const dm = new DmAgent(db);
       dm.setupChat(msg.dmPreset, []).then(reply => {
         if (currentPlayer) {
           currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
+          saveSetupChat(db, campaignId, currentPlayer.setupChat);
         }
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: false });
       }).catch(e => console.error('[dm-setup] greeting failed:', e));
@@ -176,37 +239,95 @@ wss.on('connection', (ws) => {
     if (msg.type === 'join') {
       const campaign = joinRoom(db, msg.joinCode);
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
+      const session = createSession(db, { campaignId: campaign.id, joinCode: msg.joinCode, playerName: msg.playerName, isHost: false });
       currentJoinCode = msg.joinCode;
-      currentPlayer = { ws, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
+      currentPlayer = { ws, sessionToken: session.token, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
       const players = rooms.get(msg.joinCode) ?? [];
       players.push(currentPlayer);
       rooms.set(msg.joinCode, players);
-      send(ws, { type: 'room-joined', campaignId: campaign.id, joinCode: msg.joinCode, isHost: false });
+      send(ws, {
+        type: 'room-joined',
+        campaignId: campaign.id, joinCode: msg.joinCode, isHost: false,
+        sessionToken: session.token,
+        gameName: campaign.name,
+        playerName: msg.playerName,
+        phase: campaign.phase,
+      });
       broadcast(msg.joinCode, { type: 'player-joined', playerName: msg.playerName, characterId: null });
     }
 
     if (msg.type === 'rejoin') {
       const campaign = joinRoom(db, msg.joinCode);
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
+
+      // The session token is the only thing that can prove host-ness across a
+      // refresh: the previous socket is already gone from the room by now.
+      const session = msg.sessionToken ? getSession(db, msg.sessionToken) : null;
+      if (msg.sessionToken && (!session || session.joinCode !== msg.joinCode)) {
+        send(ws, { type: 'error', message: 'That session is no longer valid — rejoin with the code.' });
+        return;
+      }
+
+      const playerName = session?.playerName ?? msg.playerName ?? 'Adventurer';
+      const isHost = session?.isHost ?? false;
       currentJoinCode = msg.joinCode;
-      const players = rooms.get(msg.joinCode);
-      if (players) {
-        const existing = players.find(p => p.playerName === msg.playerName);
-        if (existing) {
-          existing.ws = ws;
-          currentPlayer = existing;
-          console.log(`[server] Player "${msg.playerName}" reconnected to room ${msg.joinCode}`);
-        } else {
-          currentPlayer = { ws, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
-          players.push(currentPlayer);
+
+      const players = rooms.get(msg.joinCode) ?? [];
+      if (!rooms.has(msg.joinCode)) rooms.set(msg.joinCode, players);
+
+      const existing = session
+        ? players.find(p => p.sessionToken === session.token)
+        : players.find(p => p.playerName === playerName);
+
+      if (existing) {
+        existing.ws = ws;
+        existing.isHost = isHost || existing.isHost;
+        currentPlayer = existing;
+      } else {
+        const token = session?.token ?? createSession(db, {
+          campaignId: campaign.id, joinCode: msg.joinCode, playerName, isHost: false,
+        }).token;
+        currentPlayer = {
+          ws, sessionToken: token, playerName,
+          characterId: session?.characterId ?? null,
+          isHost, setupChat: [], charChat: [],
+        };
+        players.push(currentPlayer);
+      }
+      if (session) touchSession(db, session.token);
+      console.log(`[server] "${playerName}" rejoined room ${msg.joinCode} as ${isHost ? 'host' : 'player'}`);
+
+      send(ws, {
+        type: 'room-joined',
+        campaignId: campaign.id, joinCode: msg.joinCode, isHost: currentPlayer.isHost,
+        sessionToken: currentPlayer.sessionToken,
+        gameName: campaign.name,
+        playerName,
+        phase: campaign.phase,
+      });
+
+      if (currentPlayer.isHost) {
+        currentPlayer.setupChat = loadSetupChat(db, campaign.id);
+        sendDmSettings(ws, campaign);
+        sendLobbyState(ws, campaign, msg.joinCode);
+        // Anything submitted while the DM was away is waiting here.
+        for (const pending of listPendingCharacters(db, campaign.id)) {
+          send(ws, pendingReviewMsg(pending));
+          const neg = negotiations.get(pending.id);
+          if (neg && !neg.isClosed()) neg.replayTo(ws);
+          else openNegotiation(campaign, msg.joinCode, pending);
         }
       } else {
-        currentPlayer = { ws, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
-        rooms.set(msg.joinCode, [currentPlayer]);
+        sendLobbyState(ws, campaign, msg.joinCode);
+        for (const pending of listPendingCharacters(db, campaign.id)) {
+          if (pending.sessionToken !== currentPlayer.sessionToken) continue;
+          const neg = negotiations.get(pending.id);
+          if (neg && !neg.isClosed()) neg.replayTo(ws);
+        }
+        broadcast(msg.joinCode, { type: 'player-joined', playerName, characterId: currentPlayer.characterId });
       }
-      send(ws, { type: 'room-joined', campaignId: campaign.id, joinCode: msg.joinCode, isHost: currentPlayer.isHost });
-      const phase = ((campaign as any).phase as import('../shared/types.js').GamePhase) ?? 'lobby';
-      send(ws, { type: 'phase-change', phase });
+
+      send(ws, { type: 'phase-change', phase: campaign.phase });
     }
 
     if (msg.type === 'submit-character' && currentJoinCode) {
@@ -238,57 +359,70 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      send(ws, { type: 'character-validated', characterId: charId, approved: true, feedback: `AI DM approved: ${feedbackText}. Opening negotiation...` });
-
       const playerName = currentPlayer?.playerName ?? 'Unknown';
-      pendingCharacters.set(charId, {
-        charId, definition: finalDef, playerWs: ws,
-        playerName, aiApproved: true, aiFeedback: feedbackText, campaignId: campaign.id,
+      const pending: PendingCharacterRow = {
+        id: charId,
+        campaignId: campaign.id,
+        joinCode: currentJoinCode,
+        sessionToken: currentPlayer?.sessionToken ?? '',
+        playerName,
+        definition: finalDef,
+        aiFeedback: feedbackText,
+      };
+      // Persist first: the submission must survive the DM being away, refreshing,
+      // or the server restarting, otherwise it is silently lost.
+      savePendingCharacter(db, pending);
+
+      const host = hostSocket(currentJoinCode);
+      send(ws, {
+        type: 'character-validated',
+        characterId: charId,
+        approved: true,
+        feedback: host
+          ? `AI DM approved: ${feedbackText}. Opening negotiation...`
+          : `AI DM approved: ${feedbackText}. The DM isn't at the table right now — your character is queued for their review.`,
       });
 
-      const players = rooms.get(currentJoinCode);
-      const host = players?.find(p => p.isHost);
       if (host) {
-        const negotiation = new NegotiationRoom(
-          charId, finalDef, feedbackText, playerName,
-          ws, host.ws, campaign.id, campaign.dmPreset,
-        );
-        negotiations.set(charId, negotiation);
-        negotiation.open().catch(e => console.error('[negotiation] open failed:', e));
+        send(host, pendingReviewMsg(pending));
+        openNegotiation(campaign, currentJoinCode, pending);
       }
     }
 
     if (msg.type === 'host-approve-character' && currentJoinCode && currentPlayer?.isHost) {
-      const pending = pendingCharacters.get(msg.characterId);
-      if (!pending) return;
       const hostCampaign = joinRoom(db, currentJoinCode);
-      if (!hostCampaign || hostCampaign.id !== pending.campaignId) return;
+      if (!hostCampaign) return;
+      const pending = listPendingCharacters(db, hostCampaign.id).find(p => p.id === msg.characterId);
+      if (!pending) return;
       const initialState = JSON.stringify({
         stress: 0, consequences: [], fatePoints: 3,
         inventory: [], xpMilestones: [], whisperTrust: 0.65,
       });
-      db.prepare('INSERT INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
-        .run(pending.charId, pending.campaignId, null, JSON.stringify(pending.definition), initialState);
+      db.prepare('INSERT OR REPLACE INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
+        .run(pending.id, pending.campaignId, null, JSON.stringify(pending.definition), initialState);
 
-      const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.ws === pending.playerWs);
-      if (playerInRoom) playerInRoom.characterId = pending.charId;
+      const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.sessionToken === pending.sessionToken);
+      if (playerInRoom) playerInRoom.characterId = pending.id;
+      if (pending.sessionToken) setSessionCharacter(db, pending.sessionToken, pending.id);
 
-      send(pending.playerWs, { type: 'character-validated', characterId: pending.charId, approved: true, feedback: 'Approved by both AI DM and host!' });
-      broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.charId, definition: pending.definition });
+      const playerWs = socketFor(currentJoinCode, pending.sessionToken);
+      if (playerWs) send(playerWs, { type: 'character-validated', characterId: pending.id, approved: true, feedback: 'Approved by both AI DM and host!' });
+      broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.id, definition: pending.definition });
       const neg = negotiations.get(msg.characterId);
       if (neg) { neg.close(); negotiations.delete(msg.characterId); }
-      pendingCharacters.delete(msg.characterId);
+      deletePendingCharacter(db, msg.characterId);
     }
 
     if (msg.type === 'host-reject-character' && currentJoinCode && currentPlayer?.isHost) {
-      const pending = pendingCharacters.get(msg.characterId);
-      if (!pending) return;
       const hostCampaign = joinRoom(db, currentJoinCode);
-      if (!hostCampaign || hostCampaign.id !== pending.campaignId) return;
-      send(pending.playerWs, { type: 'character-validated', characterId: pending.charId, approved: false, feedback: `Host feedback: ${msg.reason}` });
+      if (!hostCampaign) return;
+      const pending = listPendingCharacters(db, hostCampaign.id).find(p => p.id === msg.characterId);
+      if (!pending) return;
+      const playerWs = socketFor(currentJoinCode, pending.sessionToken);
+      if (playerWs) send(playerWs, { type: 'character-validated', characterId: pending.id, approved: false, feedback: `Host feedback: ${msg.reason}` });
       const neg = negotiations.get(msg.characterId);
       if (neg) { neg.close(); negotiations.delete(msg.characterId); }
-      pendingCharacters.delete(msg.characterId);
+      deletePendingCharacter(db, msg.characterId);
     }
 
     if (msg.type === 'negotiation-message' && currentJoinCode && currentPlayer) {
@@ -327,6 +461,7 @@ wss.on('connection', (ws) => {
           db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")
             .run(reply.dmInstructions, reply.dmCustomPrompt, campaign.id);
         }
+        saveSetupChat(db, campaign.id, currentPlayer.setupChat);
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: reply.done });
       } catch (e) {
         console.error('[dm-chat] error:', e);
@@ -355,6 +490,7 @@ wss.on('connection', (ws) => {
         { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
       );
       gameLoops.set(jc, gameLoop);
+      setCampaignPhase(db, campaign.id, 'playing');
       gameLoop.start().catch(e => console.error('Game loop error:', e));
     }
 
@@ -368,6 +504,8 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'end-game' && currentJoinCode && currentPlayer?.isHost) {
       const jc = currentJoinCode;
+      const endedCampaign = joinRoom(db, jc);
+      if (endedCampaign) setCampaignPhase(db, endedCampaign.id, 'ended');
       const loop = gameLoops.get(jc);
       if (loop) {
         loop.endGame().then(() => {

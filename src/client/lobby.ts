@@ -1,11 +1,77 @@
 import type { WsClient } from './ws-client.js';
+import { loadSessions, removeSession, type StoredSession } from './session-store.js';
 
-export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaignId: string, joinCode: string, isHost: boolean) => void): void {
+function relativeTime(ts: number): string {
+  const mins = Math.max(1, Math.round((Date.now() - ts) / 60000));
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function renderYourGames(container: HTMLElement): void {
+  const sessions = loadSessions();
+  container.innerHTML = '';
+  if (sessions.length === 0) {
+    container.classList.add('hidden');
+    return;
+  }
+  container.classList.remove('hidden');
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Your Games';
+  container.appendChild(heading);
+
+  const hint = document.createElement('p');
+  hint.className = 'paste-hint';
+  hint.textContent = 'Saved on this browser. Resume where you left off.';
+  container.appendChild(hint);
+
+  const list = document.createElement('ul');
+  list.className = 'saved-game-list';
+
+  for (const s of sessions) {
+    const li = document.createElement('li');
+    li.className = 'saved-game';
+
+    const link = document.createElement('a');
+    link.className = 'saved-game-link';
+    link.href = `#/${s.role === 'dm' ? 'dm' : 'play'}/${s.joinCode}`;
+    // A hash change alone won't re-run init(), so reload into the new route.
+    link.addEventListener('click', () => { setTimeout(() => location.reload(), 0); });
+
+    const name = document.createElement('strong');
+    name.textContent = s.gameName || 'Untitled game';
+    const meta = document.createElement('span');
+    meta.className = 'saved-game-meta';
+    const roleLabel = s.role === 'dm' ? 'DM' : `Playing as ${s.playerName}`;
+    meta.textContent = `${roleLabel} · ${s.joinCode} · ${relativeTime(s.lastSeen)}`;
+    link.append(name, meta);
+
+    const forget = document.createElement('button');
+    forget.className = 'ghost-btn forget-btn';
+    forget.textContent = 'Forget';
+    forget.title = 'Remove this game from this browser';
+    forget.addEventListener('click', (e) => {
+      e.preventDefault();
+      removeSession(s.joinCode, s.role);
+      renderYourGames(container);
+    });
+
+    li.append(link, forget);
+    list.appendChild(li);
+  }
+  container.appendChild(list);
+}
+
+export function renderLobby(root: HTMLElement, ws: WsClient, prefillJoinCode?: string): void {
   root.innerHTML = `
     <div class="lobby">
       <h1>Whispers</h1>
       <p class="subtitle">Agentic TTRPG — You are the voice in their head</p>
       <div id="ws-status" class="ws-status ws-connected">Connected</div>
+
+      <div id="your-games" class="panel saved-games hidden"></div>
 
       <div class="lobby-panels">
         <div class="panel">
@@ -32,13 +98,15 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
 
         <div class="panel">
           <h2>Join Game</h2>
-          <input type="text" id="join-code" placeholder="Enter 6-letter code" maxlength="6" />
+          <input type="text" id="join-code" placeholder="Enter 6-letter code" maxlength="6" value="${prefillJoinCode ?? ''}" />
           <input type="text" id="player-name" placeholder="Your name" />
           <button id="join-btn">Join</button>
         </div>
       </div>
     </div>
   `;
+
+  renderYourGames(root.querySelector('#your-games') as HTMLElement);
 
   const createBtn = root.querySelector('#create-btn') as HTMLButtonElement;
   createBtn.addEventListener('click', () => {
@@ -56,13 +124,7 @@ export function renderLobby(root: HTMLElement, ws: WsClient, onJoined: (campaign
     ws.send({ type: 'join', joinCode, playerName });
   });
 
-  ws.on('room-joined', (msg) => {
-    if (msg.type === 'room-joined') {
-      ws.setRejoinInfo(msg.joinCode, msg.isHost ? 'Host' : (root.querySelector('#player-name') as HTMLInputElement)?.value.trim() || 'Adventurer');
-      onJoined(msg.campaignId, msg.joinCode, msg.isHost);
-    }
-  });
-
+  // room-joined is handled centrally in main.ts, which owns view routing.
   ws.on('error', (msg) => {
     if (msg.type === 'error') alert(msg.message);
   });

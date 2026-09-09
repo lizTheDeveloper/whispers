@@ -9,6 +9,7 @@ export interface Campaign {
   houseRules: string | null;
   dmInstructions: string | null;
   dmCustomPrompt: string | null;
+  phase: GamePhase;
   createdAt: string;
   updatedAt: string;
 }

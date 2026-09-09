@@ -1,7 +1,8 @@
 import type { WsClient } from './ws-client.js';
 import { renderNegotiationChat } from './negotiation-chat.js';
+import { dmUrl, playUrl } from './session-store.js';
 
-export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string, campaignId: string, onGameStart: () => void): void {
+export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string, campaignId: string): void {
   root.innerHTML = `
     <div class="dm-lobby">
       <div class="dm-lobby-main">
@@ -28,6 +29,20 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
         </div>
 
         <div class="sidebar-section">
+          <h3>Your DM Link</h3>
+          <p class="paste-hint">Bookmark this — it brings you back to this chair.</p>
+          <input type="text" id="dm-link" class="link-field" readonly value="${dmUrl(joinCode)}" />
+          <button id="copy-dm-link" class="ghost-btn">Copy DM link</button>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>Player Link</h3>
+          <p class="paste-hint">Send this to your players.</p>
+          <input type="text" id="player-link" class="link-field" readonly value="${playUrl(joinCode)}" />
+          <button id="copy-player-link" class="ghost-btn">Copy player link</button>
+        </div>
+
+        <div class="sidebar-section">
           <h3>Players</h3>
           <ul id="player-list">
             <li class="waiting">Waiting for players...</li>
@@ -51,6 +66,8 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   const submissions = root.querySelector('#character-submissions') as HTMLElement;
   const startBtn = root.querySelector('#start-game-btn') as HTMLButtonElement;
   const copyBtn = root.querySelector('#copy-code') as HTMLButtonElement;
+  const copyDmLinkBtn = root.querySelector('#copy-dm-link') as HTMLButtonElement;
+  const copyPlayerLinkBtn = root.querySelector('#copy-player-link') as HTMLButtonElement;
   const startHint = root.querySelector('#start-hint') as HTMLElement;
 
   let playerCount = 0;
@@ -95,12 +112,17 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     if (e.key === 'Enter') sendChat();
   });
 
-  copyBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(joinCode).then(() => {
-      copyBtn.textContent = 'Copied!';
-      setTimeout(() => { copyBtn.textContent = 'Copy code'; }, 2000);
+  function wireCopy(btn: HTMLButtonElement, value: string, label: string) {
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(value).then(() => {
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = label; }, 2000);
+      }).catch(() => { btn.textContent = 'Copy failed'; });
     });
-  });
+  }
+  wireCopy(copyBtn, joinCode, 'Copy code');
+  wireCopy(copyDmLinkBtn, dmUrl(joinCode), 'Copy DM link');
+  wireCopy(copyPlayerLinkBtn, playUrl(joinCode), 'Copy player link');
 
   fileInput.addEventListener('change', async () => {
     const files = fileInput.files;
@@ -158,21 +180,43 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     }
   }
 
-  ws.on('player-joined', (msg) => {
-    if (msg.type !== 'player-joined') return;
-    playerCount++;
+  function addPlayerToList(playerName: string) {
+    if (playerList.querySelector(`li[data-name="${CSS.escape(playerName)}"]`)) return;
     const waiting = playerList.querySelector('.waiting');
     if (waiting) waiting.remove();
+    playerCount++;
     const li = document.createElement('li');
-    li.textContent = msg.playerName;
-    li.dataset.name = msg.playerName;
+    li.textContent = playerName;
+    li.dataset.name = playerName;
     playerList.appendChild(li);
+  }
+
+  ws.on('player-joined', (msg) => {
+    if (msg.type !== 'player-joined') return;
+    addPlayerToList(msg.playerName);
+  });
+
+  // Sent on rejoin: everything that happened while the DM was away.
+  ws.on('lobby-state', (msg) => {
+    if (msg.type !== 'lobby-state') return;
+    playerList.innerHTML = '<li class="waiting">Waiting for players...</li>';
+    playerCount = 0;
+    for (const name of msg.players) addPlayerToList(name);
+
+    chatLog.innerHTML = '';
+    for (const entry of msg.setupChat) {
+      addChatMessage(entry.content, entry.role === 'user' ? 'host' : 'dm');
+    }
+
+    dmReady = msg.dmReady;
+    approvedCount = msg.approvedCount;
+    updateStartButton();
   });
 
   ws.on('player-left', (msg) => {
     if (msg.type !== 'player-left') return;
     playerCount--;
-    const li = playerList.querySelector(`li[data-name="${msg.playerName}"]`);
+    const li = playerList.querySelector(`li[data-name="${CSS.escape(msg.playerName)}"]`);
     if (li) li.remove();
     if (playerCount === 0) {
       playerList.innerHTML = '<li class="waiting">Waiting for players...</li>';
@@ -181,6 +225,8 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
 
   ws.on('character-pending-review', (msg) => {
     if (msg.type !== 'character-pending-review') return;
+    // Replayed on rejoin as well as sent live — don't stack duplicate cards.
+    if (submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`)) return;
     const card = document.createElement('div');
     card.className = 'dm-char-card pending';
     card.dataset.charId = msg.characterId;
@@ -232,7 +278,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
 
   ws.on('character-submitted', (msg) => {
     if (msg.type !== 'character-submitted') return;
-    const existing = submissions.querySelector(`[data-char-id="${msg.characterId}"]`);
+    const existing = submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`);
     if (existing) {
       existing.classList.remove('pending');
       const actionsEl = existing.querySelector('.dm-char-actions');
@@ -244,8 +290,9 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
 
   ws.on('negotiation-opened', (msg) => {
     if (msg.type !== 'negotiation-opened') return;
-    const existing = submissions.querySelector(`[data-char-id="${msg.characterId}"]`);
+    const existing = submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`);
     if (existing) existing.remove();
+    if (submissions.querySelector(`.negotiation-panel[data-char-id="${CSS.escape(msg.characterId)}"]`)) return;
     renderNegotiationChat(submissions, ws, msg.characterId, msg.characterName, msg.playerName, true);
   });
 
@@ -253,12 +300,6 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     ws.send({ type: 'start-game' });
     startBtn.disabled = true;
     startBtn.textContent = 'Starting...';
-  });
-
-  ws.on('phase-change', (msg) => {
-    if (msg.type === 'phase-change' && msg.phase === 'playing') {
-      onGameStart();
-    }
   });
 
   ws.on('error', (msg) => {

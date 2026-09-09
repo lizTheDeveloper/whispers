@@ -7,7 +7,7 @@ export type ClientMessage =
   | { type: 'create'; name: string; dmPreset: string; scenarioId: string | null; systemId: string; houseRules: string | null }
   | { type: 'submit-character'; definition: CharacterDefinition }
   | { type: 'char-chat'; text: string }
-  | { type: 'rejoin'; joinCode: string; playerName: string }
+  | { type: 'rejoin'; joinCode: string; sessionToken?: string; playerName?: string }
   | { type: 'whisper'; text: string }
   | { type: 'dm-answer'; text: string }
   | { type: 'dm-inject'; text: string }
@@ -21,7 +21,8 @@ export type ClientMessage =
   | { type: 'end-game' };
 
 export type ServerMessage =
-  | { type: 'room-joined'; campaignId: string; joinCode: string; isHost: boolean }
+  | { type: 'room-joined'; campaignId: string; joinCode: string; isHost: boolean; sessionToken: string; gameName: string; playerName: string; phase: GamePhase }
+  | { type: 'lobby-state'; players: string[]; setupChat: Array<{ role: string; content: string }>; dmReady: boolean; approvedCount: number }
   | { type: 'room-state'; state: import('./types.js').RoomState }
   | { type: 'player-joined'; playerName: string; characterId: string | null }
   | { type: 'player-left'; playerName: string }

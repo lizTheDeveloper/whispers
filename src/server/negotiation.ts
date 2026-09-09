@@ -15,13 +15,18 @@ export class NegotiationRoom {
   private playerSpoke = false;
   private closed = false;
 
+  /**
+   * Sockets are resolved on every send rather than captured up front: either
+   * side may refresh mid-negotiation, which replaces their socket entirely.
+   * A captured reference would keep writing into a dead socket forever.
+   */
   constructor(
     readonly characterId: string,
     readonly definition: CharacterDefinition,
     readonly aiFeedback: string,
     readonly playerName: string,
-    private playerWs: WebSocket,
-    private hostWs: WebSocket,
+    private resolvePlayerWs: () => WebSocket | null,
+    private resolveHostWs: () => WebSocket | null,
     private campaignId: string,
     private dmPreset: string,
   ) {}
@@ -60,9 +65,29 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
   isClosed(): boolean { return this.closed; }
 
   isParticipant(ws: WebSocket): 'host' | 'player' | null {
-    if (ws === this.hostWs) return 'host';
-    if (ws === this.playerWs) return 'player';
+    if (ws === this.resolveHostWs()) return 'host';
+    if (ws === this.resolvePlayerWs()) return 'player';
     return null;
+  }
+
+  /** Replay the conversation so far into a reconnected participant's screen. */
+  replayTo(ws: WebSocket): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: 'negotiation-opened',
+      characterId: this.characterId,
+      characterName: this.definition.name,
+      playerName: this.playerName,
+    } satisfies ServerMessage));
+    for (const e of this.history) {
+      ws.send(JSON.stringify({
+        type: 'negotiation-message',
+        characterId: this.characterId,
+        sender: e.sender,
+        senderName: e.senderName,
+        text: e.text,
+      } satisfies ServerMessage));
+    }
   }
 
   close(): void { this.closed = true; }
@@ -122,7 +147,9 @@ Your backstory: ${d.backstory}` },
 
   private sendToBoth(msg: ServerMessage): void {
     const data = JSON.stringify(msg);
-    if (this.playerWs.readyState === WebSocket.OPEN) this.playerWs.send(data);
-    if (this.hostWs.readyState === WebSocket.OPEN) this.hostWs.send(data);
+    const playerWs = this.resolvePlayerWs();
+    const hostWs = this.resolveHostWs();
+    if (playerWs && playerWs.readyState === WebSocket.OPEN) playerWs.send(data);
+    if (hostWs && hostWs.readyState === WebSocket.OPEN) hostWs.send(data);
   }
 }

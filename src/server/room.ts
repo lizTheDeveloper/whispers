@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { Campaign } from '../shared/types.js';
+import type { Campaign, CharacterDefinition } from '../shared/types.js';
 
 function generateJoinCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -44,7 +44,104 @@ export function joinRoom(db: Database.Database, joinCode: string): Campaign | nu
     houseRules: row.house_rules,
     dmInstructions: row.dm_instructions ?? null,
     dmCustomPrompt: row.dm_custom_prompt ?? null,
+    phase: row.phase ?? 'lobby',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export interface CampaignSession {
+  token: string;
+  campaignId: string;
+  joinCode: string;
+  playerName: string;
+  isHost: boolean;
+  characterId: string | null;
+}
+
+/**
+ * Sessions are the durable proof of "who you are in this room". The in-memory
+ * socket list cannot carry that across a refresh — a closed socket is removed
+ * from the room before the reconnecting page gets a chance to identify itself,
+ * so host-ness has to survive in the database or it is lost for good.
+ */
+export function createSession(
+  db: Database.Database,
+  opts: { campaignId: string; joinCode: string; playerName: string; isHost: boolean }
+): CampaignSession {
+  const token = randomBytes(24).toString('hex');
+  db.prepare(`
+    INSERT INTO campaign_sessions (token, campaign_id, join_code, player_name, is_host)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(token, opts.campaignId, opts.joinCode, opts.playerName, opts.isHost ? 1 : 0);
+  return { token, campaignId: opts.campaignId, joinCode: opts.joinCode, playerName: opts.playerName, isHost: opts.isHost, characterId: null };
+}
+
+export function getSession(db: Database.Database, token: string): CampaignSession | null {
+  const row = db.prepare('SELECT * FROM campaign_sessions WHERE token = ?').get(token) as any;
+  if (!row) return null;
+  return {
+    token: row.token,
+    campaignId: row.campaign_id,
+    joinCode: row.join_code,
+    playerName: row.player_name,
+    isHost: row.is_host === 1,
+    characterId: row.character_id ?? null,
+  };
+}
+
+export function touchSession(db: Database.Database, token: string): void {
+  db.prepare("UPDATE campaign_sessions SET last_seen_at = datetime('now') WHERE token = ?").run(token);
+}
+
+export function setSessionCharacter(db: Database.Database, token: string, characterId: string): void {
+  db.prepare('UPDATE campaign_sessions SET character_id = ? WHERE token = ?').run(characterId, token);
+}
+
+export interface PendingCharacterRow {
+  id: string;
+  campaignId: string;
+  joinCode: string;
+  sessionToken: string;
+  playerName: string;
+  definition: CharacterDefinition;
+  aiFeedback: string;
+}
+
+export function savePendingCharacter(db: Database.Database, row: PendingCharacterRow): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO pending_characters (id, campaign_id, join_code, session_token, player_name, definition, ai_feedback)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, row.campaignId, row.joinCode, row.sessionToken, row.playerName, JSON.stringify(row.definition), row.aiFeedback);
+}
+
+export function listPendingCharacters(db: Database.Database, campaignId: string): PendingCharacterRow[] {
+  const rows = db.prepare('SELECT * FROM pending_characters WHERE campaign_id = ? ORDER BY created_at ASC').all(campaignId) as any[];
+  return rows.map(r => ({
+    id: r.id,
+    campaignId: r.campaign_id,
+    joinCode: r.join_code,
+    sessionToken: r.session_token,
+    playerName: r.player_name,
+    definition: JSON.parse(r.definition) as CharacterDefinition,
+    aiFeedback: r.ai_feedback,
+  }));
+}
+
+export function deletePendingCharacter(db: Database.Database, id: string): void {
+  db.prepare('DELETE FROM pending_characters WHERE id = ?').run(id);
+}
+
+export function saveSetupChat(db: Database.Database, campaignId: string, chat: Array<{ role: string; content: string }>): void {
+  db.prepare("UPDATE campaigns SET setup_chat = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(chat), campaignId);
+}
+
+export function loadSetupChat(db: Database.Database, campaignId: string): Array<{ role: string; content: string }> {
+  const row = db.prepare('SELECT setup_chat FROM campaigns WHERE id = ?').get(campaignId) as any;
+  if (!row?.setup_chat) return [];
+  try { return JSON.parse(row.setup_chat); } catch { return []; }
+}
+
+export function setCampaignPhase(db: Database.Database, campaignId: string, phase: string): void {
+  db.prepare("UPDATE campaigns SET phase = ?, updated_at = datetime('now') WHERE id = ?").run(phase, campaignId);
 }

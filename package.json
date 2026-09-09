@@ -11,7 +11,7 @@
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.server.json",
     "test": "vitest",
     "test:run": "vitest run",
-    "start": "node dist/server/index.js"
+    "start": "node dist/server/server/index.js"
   },
   "dependencies": {
     "@dice-roller/rpg-dice-roller": "^5.5.0",
