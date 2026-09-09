@@ -170,3 +170,115 @@ describe('Character submissions reach the DM even if the DM is away', () => {
     await closeWs(hostWs2);
   }, 30_000);
 });
+
+describe('Rejoin cannot be used to take over another seat', () => {
+  it('refuses a rejoin that carries no session token', async () => {
+    const { ws, joined } = await createGame();
+    const { joinCode } = joined;
+
+    const attacker = await connectWs(port);
+    const aq = new MessageQueue(attacker);
+    // The join code is public — it is handed to every player.
+    sendMsg(attacker, { type: 'rejoin', joinCode, playerName: 'Host' } as any);
+    const reply = await aq.waitForAny(['room-joined', 'error'], 10_000) as any;
+
+    expect(reply.type).toBe('error');
+    await closeWs(attacker);
+    await closeWs(ws);
+  }, 20_000);
+
+  it('does not hand host powers to a name-only rejoin', async () => {
+    const { ws, joined } = await createGame();
+    const { joinCode } = joined;
+
+    const attacker = await connectWs(port);
+    const aq = new MessageQueue(attacker);
+    sendMsg(attacker, { type: 'rejoin', joinCode, playerName: 'Host' } as any);
+    const reply = await aq.waitForAny(['room-joined', 'error'], 10_000) as any;
+
+    expect(reply.type === 'room-joined' && reply.isHost).not.toBe(true);
+    await closeWs(attacker);
+    await closeWs(ws);
+  }, 20_000);
+
+  it('leaves the real host connected after a takeover attempt', async () => {
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
+    const { joinCode } = joined;
+
+    const attacker = await connectWs(port);
+    const aq = new MessageQueue(attacker);
+    sendMsg(attacker, { type: 'rejoin', joinCode, playerName: 'Host' } as any);
+    await aq.waitForAny(['room-joined', 'error'], 10_000);
+
+    // The genuine host must still own the host socket: a submission has to
+    // reach them, not the attacker.
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+    expect(review.playerName).toBe('Wendy');
+
+    await closeWs(attacker);
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 40_000);
+
+  it('rejects a session token minted for a different game', async () => {
+    const a = await createGame();
+    const b = await createGame();
+
+    const ws3 = await connectWs(port);
+    const q3 = new MessageQueue(ws3);
+    sendMsg(ws3, { type: 'rejoin', joinCode: b.joined.joinCode, sessionToken: a.joined.sessionToken } as any);
+    const reply = await q3.waitForAny(['room-joined', 'error'], 10_000) as any;
+
+    expect(reply.type).toBe('error');
+    await closeWs(ws3);
+    await closeWs(a.ws);
+    await closeWs(b.ws);
+  }, 30_000);
+
+  it('rejects a fabricated session token', async () => {
+    const { ws, joined } = await createGame();
+    const ws2 = await connectWs(port);
+    const q2 = new MessageQueue(ws2);
+    sendMsg(ws2, { type: 'rejoin', joinCode: joined.joinCode, sessionToken: 'f'.repeat(48) } as any);
+    const reply = await q2.waitForAny(['room-joined', 'error'], 10_000) as any;
+
+    expect(reply.type).toBe('error');
+    await closeWs(ws2);
+    await closeWs(ws);
+  }, 20_000);
+});
+
+describe('A stale socket closing does not evict the reconnected seat', () => {
+  it('keeps the host in the room when their previous socket closes late', async () => {
+    const { ws: hostWs1, joined } = await createGame();
+    const { joinCode, sessionToken } = joined;
+
+    // Reconnect BEFORE the old socket closes — the two overlap, which is what
+    // happens when a browser restores a tab.
+    const hostWs2 = await connectWs(port);
+    const hq2 = new MessageQueue(hostWs2);
+    sendMsg(hostWs2, { type: 'rejoin', joinCode, sessionToken } as any);
+    await hq2.waitFor('room-joined', 10_000);
+
+    await closeWs(hostWs1);
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+
+    // The live host socket must still be the room's host.
+    const review = await hq2.waitFor('character-pending-review', 20_000) as any;
+    expect(review.playerName).toBe('Wendy');
+
+    await closeWs(playerWs);
+    await closeWs(hostWs2);
+  }, 40_000);
+});

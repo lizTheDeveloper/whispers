@@ -260,41 +260,41 @@ wss.on('connection', (ws) => {
       const campaign = joinRoom(db, msg.joinCode);
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
 
-      // The session token is the only thing that can prove host-ness across a
-      // refresh: the previous socket is already gone from the room by now.
+      // A rejoin reclaims an existing seat, so it must prove ownership of that
+      // seat. The session token is the only proof there is: the join code is
+      // public by design (it is handed to every player), and the host's display
+      // name is the fixed string 'Host'. Matching on either would let any
+      // player claim the DM chair and hijack its socket. There is deliberately
+      // no fallback — every client path sends a token, and a caller without one
+      // is asking to become someone else. New arrivals use 'join'.
       const session = msg.sessionToken ? getSession(db, msg.sessionToken) : null;
-      if (msg.sessionToken && (!session || session.joinCode !== msg.joinCode)) {
+      if (!session || session.joinCode !== msg.joinCode) {
         send(ws, { type: 'error', message: 'That session is no longer valid — rejoin with the code.' });
         return;
       }
 
-      const playerName = session?.playerName ?? msg.playerName ?? 'Adventurer';
-      const isHost = session?.isHost ?? false;
+      const playerName = session.playerName;
+      const isHost = session.isHost;
       currentJoinCode = msg.joinCode;
 
       const players = rooms.get(msg.joinCode) ?? [];
       if (!rooms.has(msg.joinCode)) rooms.set(msg.joinCode, players);
 
-      const existing = session
-        ? players.find(p => p.sessionToken === session.token)
-        : players.find(p => p.playerName === playerName);
+      const existing = players.find(p => p.sessionToken === session.token);
 
       if (existing) {
         existing.ws = ws;
-        existing.isHost = isHost || existing.isHost;
+        existing.isHost = isHost;
         currentPlayer = existing;
       } else {
-        const token = session?.token ?? createSession(db, {
-          campaignId: campaign.id, joinCode: msg.joinCode, playerName, isHost: false,
-        }).token;
         currentPlayer = {
-          ws, sessionToken: token, playerName,
-          characterId: session?.characterId ?? null,
+          ws, sessionToken: session.token, playerName,
+          characterId: session.characterId,
           isHost, setupChat: [], charChat: [],
         };
         players.push(currentPlayer);
       }
-      if (session) touchSession(db, session.token);
+      touchSession(db, session.token);
       console.log(`[server] "${playerName}" rejoined room ${msg.joinCode} as ${isHost ? 'host' : 'player'}`);
 
       send(ws, {
@@ -359,12 +359,16 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      const playerName = currentPlayer?.playerName ?? 'Unknown';
+      if (!currentPlayer?.sessionToken) {
+        send(ws, { type: 'error', message: 'Join the game before submitting a character.' });
+        return;
+      }
+      const playerName = currentPlayer.playerName;
       const pending: PendingCharacterRow = {
         id: charId,
         campaignId: campaign.id,
         joinCode: currentJoinCode,
-        sessionToken: currentPlayer?.sessionToken ?? '',
+        sessionToken: currentPlayer.sessionToken,
         playerName,
         definition: finalDef,
         aiFeedback: feedbackText,
@@ -523,6 +527,11 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (!currentJoinCode || !currentPlayer) return;
+    // A rejoin reuses this seat object and repoints it at the new socket, so a
+    // late close from the socket we replaced must not evict the live seat —
+    // that would drop the reconnected DM out of the room (no host socket, no
+    // broadcasts) and announce a departure that never happened.
+    if (currentPlayer.ws !== ws) return;
     const players = rooms.get(currentJoinCode);
     if (players) {
       const idx = players.indexOf(currentPlayer);

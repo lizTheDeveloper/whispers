@@ -7,7 +7,7 @@ export type ClientMessage =
   | { type: 'create'; name: string; dmPreset: string; scenarioId: string | null; systemId: string; houseRules: string | null }
   | { type: 'submit-character'; definition: CharacterDefinition }
   | { type: 'char-chat'; text: string }
-  | { type: 'rejoin'; joinCode: string; sessionToken?: string; playerName?: string }
+  | { type: 'rejoin'; joinCode: string; sessionToken: string }
   | { type: 'whisper'; text: string }
   | { type: 'dm-answer'; text: string }
   | { type: 'dm-inject'; text: string }
