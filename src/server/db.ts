@@ -172,6 +172,18 @@ function migrate(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_pending_chars_campaign ON pending_characters(campaign_id);
+
+    CREATE TABLE IF NOT EXISTS character_interviews (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      session_token TEXT NOT NULL,
+      transcript TEXT NOT NULL DEFAULT '[]',
+      definition TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_interview_session ON character_interviews(campaign_id, session_token);
   `);
 
   const cols = db.pragma('table_info(campaigns)') as Array<{ name: string }>;

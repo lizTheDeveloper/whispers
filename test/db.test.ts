@@ -93,6 +93,9 @@ describe('migrate() idempotency', () => {
       expect(cols.filter(c => c.name === 'world_seed')).toHaveLength(1);
       expect(cols.filter(c => c.name === 'seed_accepted_at')).toHaveLength(1);
 
+      const tables = getDb().pragma("table_info(character_interviews)") as Array<{ name: string }>;
+      expect(tables.filter(c => c.name === 'transcript')).toHaveLength(1);
+
       closeDb();
     } finally {
       if (prevDataDir === undefined) delete process.env.DATA_DIR;
