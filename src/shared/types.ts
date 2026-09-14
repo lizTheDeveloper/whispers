@@ -125,6 +125,8 @@ export interface DiceResult {
 
 export type GamePhase = 'lobby' | 'character-creation' | 'playing' | 'ended';
 
+export type TableRole = 'dm' | 'player';
+
 export interface RoomState {
   campaignId: string;
   joinCode: string;
