@@ -179,7 +179,7 @@ describe('the interview end-to-end, over the wire', () => {
     await closeWs(hostWs);
   }, 60_000);
 
-  it('refuses a character interview once the game is playing, not only while it is in the lobby', async () => {
+  it('refuses a character interview AND a character submission once the game is playing, not only while it is in the lobby', async () => {
     const CHAR = {
       name: 'Vex Ashgrove', backstory: 'Raised by cartographers.',
       personality: 'Curious, stubborn.', highConcept: 'Runaway Star-Cartographer',
@@ -209,6 +209,14 @@ describe('the interview end-to-end, over the wire', () => {
     sendMsg(playerWs, { type: 'char-chat', text: 'Can I make another character?' });
     const refused = await pq.waitFor('error', 10_000) as any;
     expect(refused.message).toMatch(/not open/i);
+
+    // submit-character used to check only `phase === 'lobby'`, so a
+    // pasted/form-built character (no interview record) could still be
+    // submitted mid-game and flow straight to host approval. It must now be
+    // refused on the same terms as char-chat above.
+    sendMsg(playerWs, { type: 'submit-character', definition: { ...CHAR, name: 'A Second Character' } });
+    const submitRefused = await pq.waitFor('error', 10_000) as any;
+    expect(submitRefused.message).toMatch(/not open/i);
 
     sendMsg(hostWs, { type: 'end-game' });
     await hostQ.waitFor('phase-change', 20_000);
@@ -258,4 +266,80 @@ describe('the interview end-to-end, over the wire', () => {
     await closeWs(playerWs);
     await closeWs(hostWs);
   }, 60_000);
+
+  // The single hole in submit-character's completeness guarantee: the DM's
+  // validateCharacter reply carries an entirely unvalidated `modifications`
+  // record that gets spread over the definition AFTER both shape and
+  // readiness have already passed. A bad model edit here must not reach the
+  // pending character — it must be dropped, with the player's own already-
+  // validated definition submitted instead.
+  it('discards a DM modification that would empty out skills, rather than persisting a hollow character', async () => {
+    const { hostWs, hostQ, joined } = await openTable();
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+
+    const CHAR = {
+      // The stub selects its "bad modifications" fixture off this marker,
+      // the same way THIN_SHEET_TRIGGER selects the thin-sheet fixture above.
+      name: 'MODIFICATIONS_TRIGGER Vex Ashgrove',
+      backstory: 'Raised by cartographers.',
+      personality: 'Curious, stubborn.',
+      highConcept: 'Runaway Star-Cartographer',
+      trouble: 'Owes a debt to the Ledger Cult',
+      aspects: ['Maps are promises', 'Never look back'],
+      skills: { Notice: 3, Lore: 2 },
+      stunts: ['Dead Reckoning: +2 to Notice.'],
+    };
+
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+
+    // The stub's validation reply proposes modifications: { skills: {} } —
+    // merged in unchecked, this would pass shape (skills is still an
+    // object) but fail readiness (no skill entries) and produce a live
+    // character that cannot roll anything. It must be discarded: the
+    // pending character the host sees still carries the player's own
+    // validated skills, untouched.
+    expect(review.definition.skills).toEqual(CHAR.skills);
+    expect(Object.keys(review.definition.skills).length).toBeGreaterThan(0);
+    expect(review.definition.name).toBe(CHAR.name);
+
+    sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+    await pq.waitFor('character-submitted', 10_000);
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
+
+  // validateCharacterDefinitionShape bounded name/highConcept/trouble/
+  // backstory/personality/aspects/stunts but never checked skills at all —
+  // not type, not key length, not entry count, not value range — despite it
+  // being client-reachable, persisted, and injected into every DM prompt.
+  it('refuses a character with a skill rating outside the FATE ladder this game implements', async () => {
+    const { hostWs, joined } = await openTable();
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+
+    sendMsg(playerWs, {
+      type: 'submit-character',
+      definition: {
+        name: 'Overclocked Vex', backstory: '', personality: '',
+        highConcept: 'Runaway Star-Cartographer', trouble: 'Owes a debt',
+        aspects: ['Maps are promises', 'Never look back'],
+        skills: { Notice: 99 }, // ladder tops out at 8 (Legendary)
+        stunts: ['Dead Reckoning: +2 to Notice.'],
+      },
+    });
+    const refused = await pq.waitFor('error', 10_000) as any;
+    expect(refused.message).toMatch(/skills/i);
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 30_000);
 });

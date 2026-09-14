@@ -6,6 +6,11 @@ import { getFreePort } from './ws-helpers.js';
 
 export const LLM_STUB_REPLIES = {
   validation: { approved: true, feedback: 'Solid sheet.', modifications: null },
+  // A validation reply proposing a modification that would break readiness
+  // (an emptied-out skills object) if merged in unchecked. Selected by a
+  // MODIFICATIONS_TRIGGER marker in the submitted character's name, the
+  // same pattern THIN_SHEET_TRIGGER uses below for the interview stub.
+  validationBadModifications: { approved: true, feedback: 'Tightened up the sheet.', modifications: { skills: {} } },
   setupOpen: {
     reply: 'What kind of game are we running?',
     done: false,
@@ -137,7 +142,11 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
             text = JSON.stringify(playerTurns >= 2 ? LLM_STUB_REPLIES.charInterviewDone : LLM_STUB_REPLIES.charInterviewOpen);
           }
         } else if (body.includes('character sheet validation API')) {
-          text = JSON.stringify(LLM_STUB_REPLIES.validation);
+          text = JSON.stringify(
+            body.includes('MODIFICATIONS_TRIGGER')
+              ? LLM_STUB_REPLIES.validationBadModifications
+              : LLM_STUB_REPLIES.validation
+          );
         } else if (body.includes('helping set up a new game')) {
           const hostSpoke = body.includes('"role":"user"');
           text = JSON.stringify(hostSpoke ? LLM_STUB_REPLIES.setupDone : LLM_STUB_REPLIES.setupOpen);

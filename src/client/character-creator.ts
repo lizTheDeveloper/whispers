@@ -140,6 +140,13 @@ Can't Resist a Locked Door
 ## Backstory
 Born in the slums of Veridian...
 
+## Skills
+- Burglary: +3
+- Stealth: +2
+
+## Stunts
+Quick Fingers: +2 to Stealth when picking locks
+
 ---
 
 # Elara Moonwhisper
@@ -310,7 +317,11 @@ Born in the slums of Veridian...
   });
 
   previewKeepTalkingBtn.addEventListener('click', () => {
-    previewPanel.classList.add('hidden');
+    // The preview stays visible — hiding it here used to be a dead end: a
+    // clarifying question could come back with definition: null (see the
+    // character-readiness handler below) and there was no way to bring the
+    // panel back short of a page refresh. The sheet shown is still accurate,
+    // so just let the player keep typing underneath it.
     chatInput.focus();
   });
 

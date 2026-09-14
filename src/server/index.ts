@@ -26,6 +26,7 @@ import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor } from './seat.js';
 import {
   getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewStatus, getInterviewBySession,
+  type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness } from './character-readiness.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
@@ -179,6 +180,12 @@ function openNegotiation(
 const MAX_SHORT_FIELD = 256;
 const MAX_LONG_FIELD = 5000;
 const MAX_LIST_ITEMS = 20;
+// The FATE ladder this game actually implements (game-loop.ts's difficulty
+// cap/floor) runs Mediocre(0) through Legendary(8) with no named rungs below
+// 0 — so a skill rating outside that range cannot come from a legitimate
+// build, only from a malformed or adversarial payload.
+const MIN_SKILL_RATING = 0;
+const MAX_SKILL_RATING = 8;
 
 function isValidShortField(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_SHORT_FIELD;
@@ -186,6 +193,23 @@ function isValidShortField(value: unknown): value is string {
 
 function isValidLongField(value: unknown): value is string {
   return typeof value === 'string' && value.length <= MAX_LONG_FIELD;
+}
+
+/**
+ * `skills` was the one field validateCharacterDefinitionShape never checked
+ * — not type, not key length, not entry count, not value range — despite
+ * being client-reachable, persisted, and injected into every DM prompt.
+ * Bounded the same way aspects/stunts are: reject rather than coerce.
+ */
+function isValidSkillsRecord(value: unknown): value is Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_LIST_ITEMS) return false;
+  return entries.every(([name, rating]) =>
+    isValidShortField(name) &&
+    typeof rating === 'number' && Number.isFinite(rating) &&
+    rating >= MIN_SKILL_RATING && rating <= MAX_SKILL_RATING
+  );
 }
 
 /**
@@ -207,7 +231,40 @@ function validateCharacterDefinitionShape(def: unknown): string | null {
   if (!Array.isArray(d.stunts) || d.stunts.length > MAX_LIST_ITEMS || !d.stunts.every(isValidShortField)) {
     return `Stunts must be at most ${MAX_LIST_ITEMS} entries of ${MAX_SHORT_FIELD} characters each.`;
   }
+  if (!isValidSkillsRecord(d.skills)) {
+    return `Skills must be at most ${MAX_LIST_ITEMS} entries, each a name up to ${MAX_SHORT_FIELD} characters with a rating from ${MIN_SKILL_RATING} to ${MAX_SKILL_RATING}.`;
+  }
   return null;
+}
+
+// Every interview message is capped at MAX_LONG_FIELD chars, but the
+// TRANSCRIPT LENGTH is not — it is durable now, unlike the old in-memory
+// chat that self-limited by being wiped on rejoin. Left uncapped, a
+// long-running interview eventually exceeds the model's context window, and
+// every retry re-sends the same oversized history: that session can never
+// interview again. Window it before it reaches the model while still
+// persisting everything (appendInterviewTurn is unaffected by this).
+//
+// N=40: the same order of magnitude as the scene transcript's own
+// compaction threshold (35 messages — see CLAUDE.md), so the two
+// subsystems share a design language for "how much raw conversation is too
+// much to keep replaying." At the per-message cap, 40 turns is at most
+// ~200,000 characters (~50k tokens) of transcript, which leaves headroom
+// under any model this proxy fronts even with the system prompt, rules
+// excerpt and world block layered on top.
+const INTERVIEW_HISTORY_WINDOW = 40;
+
+/**
+ * Keeps the world introduction (turn 0) in the window regardless of where it
+ * falls — it is the world context every later question is grounded in, not
+ * just another chat message, and it is the one turn sendWorldIntroduction
+ * guarantees is never regenerated differently.
+ */
+function windowInterviewHistory(transcript: InterviewTurn[]): InterviewTurn[] {
+  if (transcript.length <= INTERVIEW_HISTORY_WINDOW) return transcript;
+  const intro = transcript[0]!;
+  const recent = transcript.slice(-(INTERVIEW_HISTORY_WINDOW - 1));
+  return recent[0] === intro ? recent : [intro, ...recent];
 }
 
 function isValidBoundedString(value: unknown, max: number): boolean {
@@ -349,6 +406,20 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
       influences: getInfluences(db, campaign.id),
       seed,
     });
+    // introduceWorld calls callLlm with no schema, so a proxy hiccup (outage,
+    // an all-whitespace body, a response that was nothing but thinking tags)
+    // comes back as '' rather than throwing. Appending that would store an
+    // empty turn PERMANENTLY — unlike the "no introduction yet" state this
+    // function already tolerates, an empty stored one is never regenerated
+    // (see the `stored` check above) and rides into every later
+    // interviewForCharacter call, where some providers reject an
+    // empty-content message outright. Do neither: log and leave the
+    // interview exactly as it was, so the next join/rejoin gets a real
+    // attempt instead of a blank "The World" panel forever.
+    if (!text.trim()) {
+      console.warn(`[world-introduction] empty introduction from LLM for campaign ${campaign.id} — not persisting, will retry on next join`);
+      return;
+    }
     appendInterviewTurn(db, interview.id, { role: 'assistant', content: text });
     send(ws, { type: 'world-introduction', text });
   } catch (e) {
@@ -539,8 +610,17 @@ wss.on('connection', (ws) => {
     if (msg.type === 'submit-character' && currentJoinCode) {
       const submitCampaign = joinRoom(db, currentJoinCode);
       if (!submitCampaign) return;
-      if (submitCampaign.phase === 'lobby') {
-        send(ws, { type: 'error', message: 'The DM is still building the world — character creation opens when it is ready.' });
+      // Widened from "refuse only in lobby" to match char-chat below: a
+      // character interview is refused outside character-creation, but a
+      // pasted or form-built character could still be submitted mid-game
+      // (playing/ended) and flow straight to host approval. That asymmetry
+      // was never intended — the checklist this whole step exists for must
+      // hold on every path into `characters`, not just the interview one.
+      if (submitCampaign.phase !== 'character-creation') {
+        const message = submitCampaign.phase === 'lobby'
+          ? 'The DM is still building the world — character creation opens when it is ready.'
+          : 'Character creation is not open right now.';
+        send(ws, { type: 'error', message });
         return;
       }
       // The submit gate is keyed on the INTERVIEW, not on whether the
@@ -604,13 +684,36 @@ wss.on('connection', (ws) => {
         return;
       }
 
+      // validation.modifications is CharacterValidationSchema's
+      // z.record(z.unknown()).nullable() — entirely unvalidated model
+      // output — and msg.definition has already cleared both shape and
+      // readiness at this point. Spreading modifications over it without
+      // re-checking would let a bad model edit (an over-long name, an
+      // emptied-out skills object) punch straight through the one gate this
+      // whole step exists to guarantee. Re-run both checks on the merged
+      // result; if either fails, drop the modifications and keep the
+      // player's own already-valid definition rather than failing their
+      // submission over the model's mistake.
       let finalDef = msg.definition;
-      if (validation.modifications) {
-        finalDef = { ...msg.definition, ...validation.modifications } as typeof msg.definition;
+      let modifications = validation.modifications;
+      if (modifications) {
+        const merged = { ...msg.definition, ...modifications } as typeof msg.definition;
+        const mergedShapeError = validateCharacterDefinitionShape(merged);
+        const mergedReadiness = mergedShapeError ? null : checkCharacterReadiness(merged);
+        if (mergedShapeError || !mergedReadiness!.ready) {
+          console.warn(
+            `[submit-character] discarding DM modifications for ${charId} (${JSON.stringify(modifications)}) — merged definition failed ${
+              mergedShapeError ? `shape validation: ${mergedShapeError}` : `readiness: ${mergedReadiness!.detail.join(' ')}`
+            }`
+          );
+          modifications = null;
+        } else {
+          finalDef = merged;
+        }
       }
 
-      const feedbackText = validation.modifications
-        ? `${validation.feedback} (DM adjusted: ${Object.keys(validation.modifications).join(', ')})`
+      const feedbackText = modifications
+        ? `${validation.feedback} (DM adjusted: ${Object.keys(modifications).join(', ')})`
         : validation.feedback;
 
       if (!validation.approved) {
@@ -737,7 +840,8 @@ wss.on('connection', (ws) => {
       const dm = new DmAgent(db);
       try {
         const before = checkCharacterReadiness(interview.definition);
-        const history = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
+        const fullHistory = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
+        const history = windowInterviewHistory(fullHistory);
         const reply = await dm.interviewForCharacter({
           systemId: campaign.systemId,
           preset: campaign.dmPreset,
@@ -749,11 +853,27 @@ wss.on('connection', (ws) => {
         });
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
-        const readiness = checkCharacterReadiness(reply.definition);
+        // A clarifying question ("can she be called Ash?") gets `definition:
+        // null` back from the model — it isn't re-proposing a sheet, just
+        // answering. Falling back to the interview's own stored definition
+        // means readiness reflects what the player's character actually IS,
+        // not "nothing was proposed this turn". Without this, a confirmed,
+        // complete character gets told it is missing all six fields on its
+        // very next follow-up message.
+        const readiness = checkCharacterReadiness(reply.definition ?? interview.definition);
         if (reply.definition && readiness.ready) {
           setInterviewDefinition(db, interview.id, reply.definition);
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
           send(ws, { type: 'character-preview', definition: reply.definition, readiness });
+        } else if (!reply.definition && interview.definition && readiness.ready) {
+          // Nothing new was proposed, but the stored sheet is still ready —
+          // re-send it as a preview instead of a false "still shaping this
+          // character" checklist. Does NOT touch interview status: if it was
+          // already confirmed, the confirm button reappearing and requiring
+          // one more click is a minor inconvenience, not a lie about the
+          // character's state.
+          send(ws, { type: 'char-chat-reply', text: reply.reply, definition: null });
+          send(ws, { type: 'character-preview', definition: interview.definition, readiness });
         } else {
           // A proposed-but-incomplete sheet is NOT shown as a definition — the
           // model does not get to decide the interview is finished.
