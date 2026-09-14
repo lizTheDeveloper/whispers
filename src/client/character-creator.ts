@@ -325,6 +325,13 @@ Born in the slums of Veridian...
     if (msg.type !== 'character-readiness') return;
     awaitingConfirmAck = false;
     previewPanel.classList.add('hidden');
+    // A confirmed sheet's submit button lives outside previewPanel, so
+    // hiding the panel alone leaves it showing "Submit X..." right next to
+    // "still shaping this character" — hide it too so the screen doesn't
+    // contradict itself. Harmless server-side (a confirmed interview
+    // resubmits its own stored definition either way); this is purely about
+    // not telling the player two things at once.
+    chatSubmitBtn.classList.add('hidden');
     renderReadiness(msg.readiness.detail);
   });
 
@@ -333,11 +340,15 @@ Born in the slums of Veridian...
     awaitingConfirmAck = false;
     chatSend.disabled = false;
 
-    // The transcript's first turn is the world introduction, stored with
-    // role: 'assistant' — it is hoisted back into the intro container rather
-    // than replayed as a chat bubble, matching where a fresh introduction
-    // lands and keeping it visible for the whole interview.
-    const [introTurn, ...rest] = msg.transcript;
+    // The transcript's first turn IS the world introduction only while
+    // introduction generation succeeded when this interview started —
+    // sendWorldIntroduction can fail (LLM timeout/outage) and sends nothing,
+    // in which case position 0 is the player's own first real message. Hoist
+    // it into the intro container only when it is genuinely an assistant
+    // turn; otherwise replay the whole transcript as chat bubbles so nothing
+    // is silently relocated or dropped.
+    const introTurn = msg.transcript[0]?.role === 'assistant' ? msg.transcript[0] : undefined;
+    const rest = introTurn ? msg.transcript.slice(1) : msg.transcript;
     if (introTurn) renderWorldIntro(introTurn.content);
 
     const bubbles = rest.map(turn => {
