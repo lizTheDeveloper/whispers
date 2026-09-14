@@ -1,16 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createServer as createHttpServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { WebSocket } from 'ws';
-import { getFreePort, connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
+import { connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
+import { startHarness, type Harness } from './lib/server-harness.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
 
-let llmStub: Server;
-let gameServer: { server: Server };
+let harness: Harness;
 let port: number;
-let dataDir: string;
 
 const CHAR: CharacterDefinition = {
   name: 'Vex Ashgrove',
@@ -23,51 +18,13 @@ const CHAR: CharacterDefinition = {
   stunts: ['Dead Reckoning: +2 to Notice when navigating.'],
 };
 
-/** Canned LLM proxy so these tests are deterministic and offline. */
-function startLlmStub(): Promise<{ server: Server; url: string }> {
-  return new Promise((resolve) => {
-    const server = createHttpServer((req, res) => {
-      let body = '';
-      req.on('data', (c) => { body += c; });
-      req.on('end', () => {
-        let text: string;
-        if (body.includes('character sheet validation API')) {
-          text = JSON.stringify({ approved: true, feedback: 'Solid sheet.', modifications: null });
-        } else if (body.includes('helping set up a new game')) {
-          text = JSON.stringify({ reply: 'What kind of game are we running?', done: false, dmInstructions: null, dmCustomPrompt: null });
-        } else {
-          text = 'Understood. Lets keep moving.';
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ text }));
-      });
-    });
-    server.listen(0, () => {
-      const { port: p } = server.address() as { port: number };
-      resolve({ server, url: `http://localhost:${p}` });
-    });
-  });
-}
-
 beforeAll(async () => {
-  const stub = await startLlmStub();
-  llmStub = stub.server;
-  process.env.LLM_PROXY_URL = stub.url;
-  dataDir = mkdtempSync(join(tmpdir(), 'whispers-session-'));
-  process.env.DATA_DIR = dataDir;
-  port = await getFreePort();
-  process.env.PORT = String(port);
-
-  gameServer = await import('../src/server/index.js');
-  if (!gameServer.server.listening) {
-    await new Promise<void>((r) => gameServer.server.once('listening', () => r()));
-  }
+  harness = await startHarness();
+  port = harness.port;
 }, 30_000);
 
 afterAll(async () => {
-  await new Promise<void>((r) => gameServer.server.close(() => r()));
-  await new Promise<void>((r) => llmStub.close(() => r()));
-  rmSync(dataDir, { recursive: true, force: true });
+  await harness.stop();
 });
 
 async function createGame() {
