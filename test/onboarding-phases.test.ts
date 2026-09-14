@@ -118,29 +118,25 @@ describe('Character creation is gated behind the world', () => {
     await closeWs(hostWs);
   }, 40_000);
 
-  // The phase advance moved out of dm-chat (Task 6) and into accept-world-seed.
-  // dm-chat only drafts a seed now; accepting one is what calls
-  // advancePhaseIfLobby, whose conditional write (phase = 'lobby' in the
-  // WHERE clause) must let exactly one caller win the transition, and the
-  // handler must broadcast phase-change only from the write that actually
-  // happened — otherwise the phase could be pushed through twice, or a
-  // losing racer could clobber a later phase.
+  // The phase advance moved out of dm-chat (Task 6) and into accept-world-seed,
+  // which calls advancePhaseIfLobby exactly like dm-chat used to.
   //
-  // accept-world-seed does all of its DB work synchronously (no awaits), so
-  // two calls fired back to back on the same socket can never truly
-  // interleave — but that is exactly what makes this a meaningful
-  // regression test rather than a flaky one: the second call re-reads the
-  // campaign fresh and is refused because the first call has already moved
-  // it out of 'lobby', and advancePhaseIfLobby's conditional write is what
-  // the first call's success (and the "broadcast only once" guarantee)
-  // depends on. If a future change dropped that guard, or made the write
-  // unconditional in a way that let two calls both believe they won, this
-  // test would see a second phase-change arrive.
+  // What this test actually proves: accept-world-seed does all of its DB
+  // work synchronously (no awaits before advancePhaseIfLobby), so two calls
+  // fired back to back on the same socket can never truly interleave — the
+  // first one runs to completion (including the broadcast) before the
+  // second's handler invocation even starts. The second call's own fresh
+  // `campaign.phase !== 'lobby'` guard is what stops it, *before* it ever
+  // reaches advancePhaseIfLobby — so this test does NOT exercise
+  // advancePhaseIfLobby's WHERE-clause atomicity the way the dm-chat version
+  // of this test exercised it (that one raced a real network round trip to
+  // the stubbed LLM, which is a genuine yield point). What it does prove is
+  // the user-visible property that matters here regardless of mechanism: two
+  // back-to-back accept-world-seed calls yield exactly one phase-change and
+  // one refusal, never two successes and never two broadcasts.
   //
   // This replaces an earlier version of this test that raced two dm-chat
-  // calls against each other — dm-chat no longer advances the phase at all,
-  // so that race no longer exercises advancePhaseIfLobby. Two
-  // accept-world-seed calls now do.
+  // calls against each other — dm-chat no longer advances the phase at all.
   it('advances phase exactly once when two accept-world-seed calls race the same transition', async () => {
     const { ws: hostWs, q: hostQ } = await createGame();
 
@@ -156,8 +152,12 @@ describe('Character creation is gated behind the world', () => {
     const first = await hostQ.waitFor('phase-change', 10_000) as any;
     expect(first.phase).toBe('character-creation');
 
-    // No second phase-change should ever arrive — the loser of the race
-    // must not broadcast.
+    // The loser of the race gets an explicit refusal, not silence.
+    const refused = await hostQ.waitFor('error', 10_000) as any;
+    expect(refused.message).toMatch(/already open/i);
+
+    // No second phase-change should ever arrive — the loser must not
+    // broadcast.
     await expect(hostQ.waitFor('phase-change', 500)).rejects.toThrow();
 
     await closeWs(hostWs);

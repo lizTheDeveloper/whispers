@@ -22,6 +22,20 @@ async function createGame() {
   return { ws, q, joined };
 }
 
+/**
+ * dm-chat sends world-readiness TWICE on the path that also drafts a seed —
+ * once right after dm-chat-reply (before drafting), and again after the
+ * draft is sent. MessageQueue hands back buffered messages before waiting on
+ * new ones, so a test that only drains one of the two and then asserts on
+ * "the next world-readiness" can silently get handed the stale first one
+ * instead of the one produced by whatever it just did. Drain both before any
+ * such assertion.
+ */
+async function drainDmChatReadiness(q: MessageQueue): Promise<void> {
+  await q.waitFor('world-readiness', 10_000);
+  await q.waitFor('world-readiness', 10_000);
+}
+
 describe('World setup gates the table', () => {
   it('does not open the table when the model says done', async () => {
     const { ws, q, joined } = await createGame();
@@ -53,6 +67,7 @@ describe('World setup gates the table', () => {
     const { ws, q } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
     const draft = await q.waitFor('world-seed-draft', 20_000) as any;
+    await drainDmChatReadiness(q);
 
     // Accepting without a table role must be refused.
     sendMsg(ws, { type: 'accept-world-seed', seed: draft.seed } as any);
@@ -72,6 +87,7 @@ describe('World setup gates the table', () => {
     const { ws, q } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
     const draft = await q.waitFor('world-seed-draft', 20_000) as any;
+    await drainDmChatReadiness(q);
     sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
     await q.waitFor('room-joined', 10_000);
 
@@ -101,6 +117,83 @@ describe('World setup gates the table', () => {
     for (const loc of draft.seed.locations) {
       expect(names).toContain(loc.name);
     }
+    await closeWs(ws);
+  }, 40_000);
+
+  it('accepts an edited seed, not the previously stored draft', async () => {
+    // Every other acceptance test sends back the draft byte-identical to
+    // what the server stored, so none of them would catch a regression that
+    // silently re-read the stored draft instead of the seed in msg.seed. The
+    // host can edit a draft before accepting it — the edit must be what
+    // lands in the world bible.
+    const { ws, q, joined } = await createGame();
+    sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
+    const draft = await q.waitFor('world-seed-draft', 20_000) as any;
+    await drainDmChatReadiness(q);
+    sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
+    await q.waitFor('room-joined', 10_000);
+
+    const originalName = draft.seed.locations[0].name;
+    const edited = {
+      ...draft.seed,
+      locations: [
+        { ...draft.seed.locations[0], name: 'The Drowned Belfry' },
+        ...draft.seed.locations.slice(1),
+      ],
+    };
+    sendMsg(ws, { type: 'accept-world-seed', seed: edited } as any);
+    await q.waitFor('phase-change', 15_000);
+
+    const { getDb } = await import('../src/server/db.js');
+    const { WorldBible } = await import('../src/server/world-bible.js');
+    const wb = new WorldBible(getDb());
+    const names = wb.getAllLocationNames(joined.campaignId);
+    expect(names).toContain('The Drowned Belfry');
+    expect(names).not.toContain(originalName);
+    await closeWs(ws);
+  }, 40_000);
+
+  it('does not let a regenerate-world-seed clobber a seed accepted while it was in flight', async () => {
+    // regenerate-world-seed sits behind a real await (the LLM call that
+    // drafts it), same as dm-chat used to. accept-world-seed does not — it
+    // is fully synchronous. So a regenerate fired first, followed
+    // immediately by an accept of the seed already on screen, lets the
+    // accept finish (mark accepted, seed the world bible, advance the
+    // phase) entirely before the regenerate's await resolves. The
+    // redraft must then be refused, not silently overwrite
+    // campaigns.world_seed out from under an already-accepted, already-seeded
+    // world.
+    const { ws, q, joined } = await createGame();
+    sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
+    const draft = await q.waitFor('world-seed-draft', 20_000) as any;
+    await drainDmChatReadiness(q);
+    sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
+    await q.waitFor('room-joined', 10_000);
+
+    sendMsg(ws, { type: 'regenerate-world-seed' } as any);
+    sendMsg(ws, { type: 'accept-world-seed', seed: draft.seed } as any);
+
+    // TCP preserves send order on one connection, and accept-world-seed's
+    // handler never yields, so these arrive in exactly this order: the
+    // accept's own world-seed-draft(accepted: true), its phase-change
+    // broadcast, its own readiness — then, once the stubbed LLM call
+    // finally resolves, whatever regenerate-world-seed produces.
+    const accepted = await q.waitFor('world-seed-draft', 15_000) as any;
+    expect(accepted.accepted).toBe(true);
+    const phase = await q.waitFor('phase-change', 15_000) as any;
+    expect(phase.phase).toBe('character-creation');
+    await q.waitFor('world-readiness', 10_000);
+
+    const regenReply = await q.waitForAny(['error', 'world-seed-draft'], 10_000) as any;
+    expect(regenReply.type).toBe('error');
+    expect(regenReply.message).toMatch(/already accepted/i);
+
+    // And the seed actually in the world bible is the one that was accepted,
+    // not a clobber-in-progress from the redraft.
+    const { getDb } = await import('../src/server/db.js');
+    const { isSeedAccepted } = await import('../src/server/world-seed.js');
+    expect(isSeedAccepted(getDb(), joined.campaignId)).toBe(true);
+
     await closeWs(ws);
   }, 40_000);
 

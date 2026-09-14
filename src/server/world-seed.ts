@@ -92,6 +92,26 @@ export function setWorldSeed(db: Database.Database, campaignId: string, seed: Wo
     .run(JSON.stringify(seed), campaignId);
 }
 
+/**
+ * Writes a seed only if the campaign has not accepted one yet. Regenerating a
+ * seed involves a real await (the LLM call that drafts it) that an
+ * accept-world-seed on the same socket can complete during — that call does
+ * all of its own work synchronously, so it can finish first, write the seed
+ * that is actually in the world bible, and advance the phase, all before this
+ * redraft resolves. An unconditional setWorldSeed after that would silently
+ * clobber campaigns.world_seed with a draft nobody accepted, leaving the DB
+ * out of sync with the world bible. The WHERE clause makes the write atomic
+ * the same way advancePhaseIfLobby's is: whichever write actually happens is
+ * the only one the caller should act on. Returns whether this call's write
+ * took effect.
+ */
+export function setWorldSeedIfNotAccepted(db: Database.Database, campaignId: string, seed: WorldSeed): boolean {
+  const result = db.prepare(
+    "UPDATE campaigns SET world_seed = ?, updated_at = datetime('now') WHERE id = ? AND seed_accepted_at IS NULL"
+  ).run(JSON.stringify(seed), campaignId);
+  return result.changes === 1;
+}
+
 export function markSeedAccepted(db: Database.Database, campaignId: string): void {
   db.prepare("UPDATE campaigns SET seed_accepted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
     .run(campaignId);

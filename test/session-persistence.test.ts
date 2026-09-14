@@ -285,7 +285,15 @@ describe('Table role governs DM authority', () => {
     const { joinCode } = joined;
 
     await finishWorldSetup(hostWs, hostQ);
-    // hostTableRole stays null here — defaults to 'dm' authority.
+    // finishWorldSetup itself claims the DM chair via choose-table-role (it
+    // has to — accepting a seed requires a table role), so host_table_role
+    // is no longer unset by the time it returns. Null it back out directly
+    // through the shared in-process DB (same module-registry trick used in
+    // test/world-setup.test.ts) so this test still proves what its name
+    // says: an owner whose table role was never explicitly chosen still gets
+    // DM authority by default.
+    const { getDb } = await import('../src/server/db.js');
+    getDb().prepare('UPDATE campaigns SET host_table_role = NULL WHERE id = ?').run(joined.campaignId);
 
     const playerWs = await connectWs(port);
     const pq = new MessageQueue(playerWs);

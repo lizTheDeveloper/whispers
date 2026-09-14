@@ -15,7 +15,7 @@ import {
   type PendingCharacterRow,
 } from './room.js';
 import {
-  getWorldSeed, setWorldSeed, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
+  getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
@@ -643,11 +643,14 @@ wss.on('connection', (ws) => {
 
       const parsed = WorldSeedSchema.safeParse(msg.seed);
       if (!parsed.success) { send(ws, { type: 'error', message: 'That world could not be read. Ask the DM to redraft it.' }); return; }
-      setWorldSeed(db, campaign.id, parsed.data);
 
       // Check readiness with the seed the host is actually accepting, and with
       // acceptance assumed — so the only thing left to decide is whether the
-      // rest of the checklist passes.
+      // rest of the checklist passes. Checked BEFORE anything is written: the
+      // incoming seed must not overwrite the last good stored draft unless it
+      // actually clears the checklist — otherwise a rejected accept (e.g. a
+      // thinned-out edit) would clobber a perfectly acceptable draft with the
+      // one that just failed.
       const readiness = checkWorldReadiness({
         influences: getInfluences(db, campaign.id),
         seed: parsed.data,
@@ -660,13 +663,27 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      markSeedAccepted(db, campaign.id);
-      seedWorld(db, campaign.id, parsed.data);
-      send(ws, { type: 'world-seed-draft', seed: parsed.data, accepted: true });
-      if (advancePhaseIfLobby(db, campaign.id)) {
-        broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
+      // Persisting the accepted seed, marking it accepted, seeding the world
+      // bible, and advancing the phase must land together or not at all — a
+      // throw partway through (e.g. inside seedWorld) must not leave the
+      // campaign accepted-but-unseeded, or seeded-but-still-in-lobby, the way
+      // it would if these were four unwrapped writes.
+      try {
+        const advanced = db.transaction(() => {
+          setWorldSeed(db, campaign.id, parsed.data);
+          markSeedAccepted(db, campaign.id);
+          seedWorld(db, campaign.id, parsed.data);
+          return advancePhaseIfLobby(db, campaign.id);
+        })();
+        send(ws, { type: 'world-seed-draft', seed: parsed.data, accepted: true });
+        if (advanced) {
+          broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
+        }
+        sendReadiness(ws, joinRoom(db, currentJoinCode)!);
+      } catch (e) {
+        console.error('[accept-world-seed] failed:', e);
+        send(ws, { type: 'error', message: 'Could not open the table with that world. Try again.' });
       }
-      sendReadiness(ws, joinRoom(db, currentJoinCode)!);
     }
 
     if (msg.type === 'regenerate-world-seed' && currentJoinCode && isWorldAuthor(currentPlayer)) {
@@ -685,7 +702,20 @@ wss.on('connection', (ws) => {
           history,
           existing: getWorldSeed(db, campaign.id),
         });
-        setWorldSeed(db, campaign.id, seed);
+        // The draft above sat behind a real LLM call, which the host's own
+        // accept-world-seed (fully synchronous, no await of its own) can
+        // complete during and after. If that happened, the seed actually in
+        // the world bible is the one that got accepted — this write must not
+        // clobber campaigns.world_seed with a redraft nobody accepted, or a
+        // rejoining host would see this seed labelled accepted: true even
+        // though it was never seeded. The WHERE clause makes that check and
+        // the write atomic; a stale in-handler `campaign` snapshot is not
+        // safe to gate it on for the same reason advancePhaseIfLobby doesn't
+        // trust one either.
+        if (!setWorldSeedIfNotAccepted(db, campaign.id, seed)) {
+          send(ws, { type: 'error', message: 'The world was already accepted while redrafting.' });
+          return;
+        }
         send(ws, { type: 'world-seed-draft', seed, accepted: false });
         sendReadiness(ws, joinRoom(db, currentJoinCode)!);
       } catch (e) {

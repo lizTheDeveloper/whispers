@@ -85,6 +85,29 @@ describe('seedWorld', () => {
     seedWorld(db, campaignId, seed);
     expect(new WorldBible(db).getAllLocationNames(campaignId).length).toBeGreaterThan(0);
   });
+
+  it('does not resurrect a plot hook that was already resolved', () => {
+    // The idempotency test above only proves dedup while every event is
+    // still unresolved. accept-world-seed and regenerate-world-seed both
+    // create genuine re-seed paths now, and by the time a host re-seeds, a
+    // plot hook from the first pass may already have been played out and
+    // resolved. Deduping only against UNRESOLVED events (the old behaviour)
+    // would let that same hook come back as a brand-new open thread on a
+    // second seedWorld call — worse than the duplicate-row bug the original
+    // dedup existed to prevent.
+    const { campaignId } = createRoom(db, { name: 'Resolved Dedup', dmPreset: 'chronicler', systemId: 'fate-core' });
+    seedWorld(db, campaignId, seed);
+
+    const countEvents = (): number =>
+      (db.prepare('SELECT COUNT(*) AS c FROM events WHERE campaign_id = ?').get(campaignId) as { c: number }).c;
+    const before = countEvents();
+
+    db.prepare("UPDATE events SET outcome = 'The keeper was found, safe.' WHERE campaign_id = ?").run(campaignId);
+
+    seedWorld(db, campaignId, seed);
+
+    expect(countEvents()).toBe(before);
+  });
 });
 
 describe('loadStockScenario', () => {
