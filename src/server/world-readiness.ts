@@ -30,12 +30,32 @@ export function normalizeInfluences(raw: unknown): string[] {
   return out;
 }
 
+/** A named-entity slot (location/NPC) is only real once it has a non-empty name, not merely a slot in the array. */
+function hasNonEmptyName(entry: unknown): boolean {
+  return typeof entry === 'object' && entry !== null && typeof (entry as { name?: unknown }).name === 'string'
+    && (entry as { name: string }).name.trim().length > 0;
+}
+
+function isNonEmptyString(entry: unknown): boolean {
+  return typeof entry === 'string' && entry.trim().length > 0;
+}
+
+function countValid(arr: unknown, isValid: (entry: unknown) => boolean): number {
+  return Array.isArray(arr) ? arr.filter(isValid).length : 0;
+}
+
+/**
+ * Counts VALID entries, not array length: a model can produce an array of
+ * the right length full of nulls or empty objects, and that must not read
+ * as a finished world. A false "not ready" is an annoyance; a false "ready"
+ * opens the table onto a world that does not exist.
+ */
 function seedIsComplete(seed: WorldSeed | null): boolean {
   if (!seed) return false;
   if (typeof seed.premise !== 'string' || !seed.premise.trim()) return false;
-  if (!Array.isArray(seed.locations) || seed.locations.length < MIN_SEED_LOCATIONS) return false;
-  if (!Array.isArray(seed.npcs) || seed.npcs.length < MIN_SEED_NPCS) return false;
-  if (!Array.isArray(seed.plotHooks) || seed.plotHooks.length < MIN_SEED_HOOKS) return false;
+  if (countValid(seed.locations, hasNonEmptyName) < MIN_SEED_LOCATIONS) return false;
+  if (countValid(seed.npcs, hasNonEmptyName) < MIN_SEED_NPCS) return false;
+  if (countValid(seed.plotHooks, isNonEmptyString) < MIN_SEED_HOOKS) return false;
   return true;
 }
 
@@ -56,15 +76,19 @@ export function checkWorldReadiness(input: {
   const unmet: WorldReadinessItem[] = [];
   const detail: string[] = [];
 
-  if (input.influences.length < MIN_INFLUENCES) {
+  // Count only entries that are actually non-empty after trimming: this must
+  // stay safe even when called with input that never passed through
+  // normalizeInfluences (a later call site could feed it directly).
+  const influenceCount = input.influences.filter(isNonEmptyString).length;
+  if (influenceCount < MIN_INFLUENCES) {
     unmet.push('influences');
-    detail.push(`Name at least ${MIN_INFLUENCES} stylistic influences (currently ${input.influences.length}).`);
+    detail.push(`Name at least ${MIN_INFLUENCES} stylistic influences (currently ${influenceCount}).`);
   }
   if (!seedIsComplete(input.seed)) {
     unmet.push('seed');
     detail.push(`The world needs a premise, at least ${MIN_SEED_LOCATIONS} locations, ${MIN_SEED_NPCS} NPCs, and ${MIN_SEED_HOOKS} plot hook.`);
   }
-  if (!input.dmInstructions || !input.dmInstructions.trim()) {
+  if (typeof input.dmInstructions !== 'string' || !input.dmInstructions.trim()) {
     unmet.push('dmInstructions');
     detail.push('The DM still needs a summary of how you want this game run.');
   }

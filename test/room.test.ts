@@ -90,3 +90,49 @@ describe('host table role', () => {
     }
   });
 });
+
+describe('influences', () => {
+  // Same isolation rationale as 'host table role' above: db.ts binds
+  // DATA_DIR at module load, so the temp dir must exist before the dynamic
+  // import, and the real project DB must never be touched by tests.
+  it('is an empty list on a fresh campaign, round-trips through setInfluences, filters non-strings, and degrades corrupt JSON to empty instead of throwing', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'whispers-influences-test-'));
+    const prevDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = dataDir;
+    try {
+      const { getDb, closeDb } = await import('../src/server/db.js');
+      const { createRoom, getInfluences, setInfluences } = await import('../src/server/room.js');
+      const db = getDb();
+      const { campaignId } = createRoom(db, {
+        name: 'Influences Test', dmPreset: 'chronicler', systemId: 'fate-core',
+      });
+
+      // null column -> []
+      expect(getInfluences(db, campaignId)).toEqual([]);
+
+      // stored [] -> []
+      setInfluences(db, campaignId, []);
+      expect(getInfluences(db, campaignId)).toEqual([]);
+
+      // round trip through setInfluences
+      setInfluences(db, campaignId, ['Le Guin', 'Annihilation']);
+      expect(getInfluences(db, campaignId)).toEqual(['Le Guin', 'Annihilation']);
+
+      // a non-string array member is filtered out on read
+      db.prepare('UPDATE campaigns SET influences = ? WHERE id = ?')
+        .run(JSON.stringify(['Le Guin', 42, null, 'Annihilation']), campaignId);
+      expect(getInfluences(db, campaignId)).toEqual(['Le Guin', 'Annihilation']);
+
+      // corrupt JSON in the column -> [] rather than a throw
+      db.prepare('UPDATE campaigns SET influences = ? WHERE id = ?').run('not valid json{', campaignId);
+      expect(() => getInfluences(db, campaignId)).not.toThrow();
+      expect(getInfluences(db, campaignId)).toEqual([]);
+
+      closeDb();
+    } finally {
+      if (prevDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = prevDataDir;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});

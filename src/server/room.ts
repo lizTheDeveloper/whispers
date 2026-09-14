@@ -208,7 +208,12 @@ export function getInfluences(db: Database.Database, campaignId: string): string
   try {
     const parsed = JSON.parse(row.influences);
     return Array.isArray(parsed) ? parsed.filter((x: unknown): x is string => typeof x === 'string') : [];
-  } catch { return []; }
+  } catch {
+    // A corrupt value must not be silently indistinguishable from "no
+    // influences yet" — log so a bad write is discoverable, then degrade.
+    console.warn(`getInfluences: corrupt influences JSON for campaign ${campaignId}`);
+    return [];
+  }
 }
 
 export function setInfluences(db: Database.Database, campaignId: string, list: string[]): void {

@@ -42,9 +42,9 @@ describe('normalizeInfluences', () => {
 
   it('caps the list and each entry so a model cannot flood the prompt', () => {
     const many = Array.from({ length: 30 }, (_, i) => `influence-${i}`);
-    expect(normalizeInfluences(many).length).toBeLessThanOrEqual(12);
+    expect(normalizeInfluences(many).length).toBe(12);
     const long = normalizeInfluences(['x'.repeat(500)]);
-    expect(long[0]!.length).toBeLessThanOrEqual(120);
+    expect(long[0]!.length).toBe(120);
   });
 });
 
@@ -70,11 +70,24 @@ describe('checkWorldReadiness', () => {
     expect(checkWorldReadiness({ ...base, seed: { ...goodSeed, premise: '   ' } }).unmet).toContain('seed');
   });
 
+  it('counts valid seed entries, not array length, so junk shapes never read as a finished world', () => {
+    expect(checkWorldReadiness({ ...base, seed: { ...goodSeed, locations: [null, null] as any } }).unmet).toContain('seed');
+    expect(checkWorldReadiness({ ...base, seed: { ...goodSeed, locations: [{}, {}] as any } }).unmet).toContain('seed');
+    expect(checkWorldReadiness({ ...base, seed: { ...goodSeed, npcs: [{}, {}] as any } }).unmet).toContain('seed');
+    expect(checkWorldReadiness({ ...base, seed: { ...goodSeed, plotHooks: ['', ''] } }).unmet).toContain('seed');
+  });
+
   it('requires dm instructions, a table role, and an accepted seed', () => {
     expect(checkWorldReadiness({ ...base, dmInstructions: null }).unmet).toContain('dmInstructions');
     expect(checkWorldReadiness({ ...base, dmInstructions: '   ' }).unmet).toContain('dmInstructions');
     expect(checkWorldReadiness({ ...base, hostTableRole: null }).unmet).toContain('tableRole');
     expect(checkWorldReadiness({ ...base, seedAccepted: false }).unmet).toContain('seedAccepted');
+  });
+
+  it('does not trust the caller to have pre-normalized influences', () => {
+    const r = checkWorldReadiness({ ...base, influences: ['   ', '   ', '   '] });
+    expect(r.ready).toBe(false);
+    expect(r.unmet).toContain('influences');
   });
 
   it('reports every unmet item at once, not just the first', () => {
