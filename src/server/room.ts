@@ -154,10 +154,32 @@ export function setCampaignPhase(db: Database.Database, campaignId: string, phas
  * (roundCount, forceSceneEnd, allowSceneEnd, the session hard limit) is
  * keyed off exactly those counters. Nothing can stop it. start-game must
  * refuse before that loop is ever created.
+ *
+ * Counts characters that are actually at the table. Revoked characters keep
+ * their row — `character_memories` has a foreign key to it — so liveness has
+ * to be a predicate, not a row count. This gates `start-game` and feeds
+ * `lobby-state.approvedCount`; both would be wrong without the NULL check.
  */
 export function countLiveCharacters(db: Database.Database, campaignId: string): number {
-  const row = db.prepare('SELECT COUNT(*) AS c FROM characters WHERE campaign_id = ?').get(campaignId) as { c: number };
+  const row = db.prepare('SELECT COUNT(*) AS c FROM characters WHERE campaign_id = ? AND revoked_at IS NULL').get(campaignId) as { c: number };
   return row.c;
+}
+
+/**
+ * Soft delete — a character cannot be hard-deleted once it has memories,
+ * since `character_memories.character_id` is a foreign key to it and the
+ * database runs with `PRAGMA foreign_keys = ON`. Revoking sets `revoked_at`
+ * instead, which is enough for `countLiveCharacters` to stop counting it.
+ * Returns whether a live row was actually revoked (false if the id does not
+ * exist, or was already revoked).
+ */
+export function revokeCharacter(db: Database.Database, characterId: string): boolean {
+  const res = db.prepare("UPDATE characters SET revoked_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND revoked_at IS NULL").run(characterId);
+  return res.changes === 1;
+}
+
+export function clearSessionCharacter(db: Database.Database, sessionToken: string): void {
+  db.prepare('UPDATE campaign_sessions SET character_id = NULL WHERE token = ?').run(sessionToken);
 }
 
 /**

@@ -8,12 +8,13 @@ import { randomBytes } from 'node:crypto';
 import { getDb, getDataDir } from './db.js';
 import { safeDataFile, dataPath } from './data-paths.js';
 import {
-  createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
+  createRoom, joinRoom, createSession, getSession, touchSession,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
   saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
   countLiveCharacters, beginPlayIfReady, getInfluences, setInfluences,
   type PendingCharacterRow,
 } from './room.js';
+import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
 } from './world-seed.js';
@@ -779,23 +780,20 @@ wss.on('connection', (ws) => {
       if (!hostCampaign || !hasDmAuthority(currentPlayer, hostCampaign.hostTableRole)) return;
       const pending = listPendingCharacters(db, hostCampaign.id).find(p => p.id === msg.characterId);
       if (!pending) return;
-      const initialState = JSON.stringify({
-        stress: 0, consequences: [], fatePoints: 3,
-        inventory: [], xpMilestones: [], whisperTrust: 0.65,
-      });
-      db.prepare('INSERT OR REPLACE INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
-        .run(pending.id, pending.campaignId, null, JSON.stringify(pending.definition), initialState);
 
+      makeCharacterLive(db, pending);
+
+      // Everything below only fires after the transaction above has
+      // committed — announcing a character before the write lands is how a
+      // client ends up showing something the database does not have.
       const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.sessionToken === pending.sessionToken);
       if (playerInRoom) playerInRoom.characterId = pending.id;
-      if (pending.sessionToken) setSessionCharacter(db, pending.sessionToken, pending.id);
 
       const playerWs = socketFor(currentJoinCode, pending.sessionToken);
       if (playerWs) send(playerWs, { type: 'character-validated', characterId: pending.id, approved: true, feedback: 'Approved by both AI DM and host!' });
       broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.id, definition: pending.definition });
       const neg = negotiations.get(msg.characterId);
       if (neg) { neg.close(); negotiations.delete(msg.characterId); }
-      deletePendingCharacter(db, msg.characterId);
     }
 
     if (msg.type === 'host-reject-character' && currentJoinCode) {

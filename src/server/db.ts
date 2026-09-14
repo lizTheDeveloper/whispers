@@ -226,6 +226,11 @@ function migrate(db: Database.Database): void {
   if (!cpCols.some(c => c.name === 'transcript')) {
     db.exec('ALTER TABLE checkpoints ADD COLUMN transcript TEXT');
   }
+
+  const charCols = db.pragma('table_info(characters)') as Array<{ name: string }>;
+  if (!charCols.some(c => c.name === 'revoked_at')) {
+    db.exec('ALTER TABLE characters ADD COLUMN revoked_at TEXT');
+  }
 }
 
 export function closeDb(): void {
