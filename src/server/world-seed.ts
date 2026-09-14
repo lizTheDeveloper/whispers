@@ -57,7 +57,10 @@ export function seedWorld(db: Database.Database, campaignId: string, seed: World
  */
 export function loadStockScenario(scenarioId: string): { seed: WorldSeed; openingNarration: string | null } | null {
   const file = safeDataFile('scenarios', scenarioId, '.json');
-  if (!file) return null;
+  if (!file) {
+    console.warn(`[world-seed] Scenario ${scenarioId} not found — falling back to a from-scratch draft.`);
+    return null;
+  }
   try {
     const raw = JSON.parse(readFileSync(file, 'utf-8'));
     const parsed = WorldSeedSchema.safeParse({
@@ -70,6 +73,9 @@ export function loadStockScenario(scenarioId: string): { seed: WorldSeed; openin
     if (!parsed.success) {
       console.warn(`[world-seed] Scenario ${scenarioId} failed validation:`, parsed.error.issues.map(i => i.path.join('.')).join(', '));
       return null;
+    }
+    if (raw.openingNarration !== undefined && typeof raw.openingNarration !== 'string') {
+      console.warn(`[world-seed] Scenario ${scenarioId} has a non-string openingNarration — dropping it.`);
     }
     return { seed: parsed.data, openingNarration: typeof raw.openingNarration === 'string' ? raw.openingNarration : null };
   } catch (e) {

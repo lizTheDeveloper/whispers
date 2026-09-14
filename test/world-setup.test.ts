@@ -23,17 +23,24 @@ async function createGame() {
 }
 
 /**
- * dm-chat sends world-readiness TWICE on the path that also drafts a seed —
- * once right after dm-chat-reply (before drafting), and again after the
- * draft is sent. MessageQueue hands back buffered messages before waiting on
- * new ones, so a test that only drains one of the two and then asserts on
- * "the next world-readiness" can silently get handed the stale first one
- * instead of the one produced by whatever it just did. Drain both before any
- * such assertion.
+ * dm-chat sends world-readiness on the path that also drafts a seed — once
+ * right after dm-chat-reply (before drafting), and again after the draft is
+ * sent — so a stale one can already be buffered ahead of the one a later
+ * action (e.g. accept-world-seed) produces. Rather than draining a fixed,
+ * easily-outdated count of stale messages, keep consuming world-readiness
+ * messages until one matches the expected `unmet` list exactly. The
+ * accept-refusal readiness this is used for is always computed with
+ * `seedAccepted: true`, so its `unmet` never contains 'seedAccepted' —
+ * whereas every stale dm-chat readiness does, since the seed has not been
+ * accepted yet at the time it is sent. That makes the target message
+ * self-identifying: order-independent, count-independent, and immune to a
+ * future third stale message.
  */
-async function drainDmChatReadiness(q: MessageQueue): Promise<void> {
-  await q.waitFor('world-readiness', 10_000);
-  await q.waitFor('world-readiness', 10_000);
+async function waitForReadinessUnmet(q: MessageQueue, expectedUnmet: string[]): Promise<any> {
+  for (;;) {
+    const msg = await q.waitFor('world-readiness', 10_000) as any;
+    if (JSON.stringify(msg.readiness.unmet) === JSON.stringify(expectedUnmet)) return msg;
+  }
 }
 
 describe('World setup gates the table', () => {
@@ -67,12 +74,11 @@ describe('World setup gates the table', () => {
     const { ws, q } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
     const draft = await q.waitFor('world-seed-draft', 20_000) as any;
-    await drainDmChatReadiness(q);
 
     // Accepting without a table role must be refused.
     sendMsg(ws, { type: 'accept-world-seed', seed: draft.seed } as any);
-    const blocked = await q.waitFor('world-readiness', 10_000) as any;
-    expect(blocked.readiness.unmet).toContain('tableRole');
+    const blocked = await waitForReadinessUnmet(q, ['tableRole']);
+    expect(blocked.readiness.unmet).toEqual(['tableRole']);
 
     sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
     await q.waitFor('room-joined', 10_000);
@@ -87,7 +93,6 @@ describe('World setup gates the table', () => {
     const { ws, q, joined } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
     const draft = await q.waitFor('world-seed-draft', 20_000) as any;
-    await drainDmChatReadiness(q);
 
     sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
     await q.waitFor('room-joined', 10_000);
@@ -111,14 +116,13 @@ describe('World setup gates the table', () => {
     const { ws, q } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
     const draft = await q.waitFor('world-seed-draft', 20_000) as any;
-    await drainDmChatReadiness(q);
     sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
     await q.waitFor('room-joined', 10_000);
 
     const thin = { ...draft.seed, locations: [draft.seed.locations[0]], npcs: [] };
     sendMsg(ws, { type: 'accept-world-seed', seed: thin } as any);
-    const readiness = await q.waitFor('world-readiness', 10_000) as any;
-    expect(readiness.readiness.unmet).toContain('seed');
+    const readiness = await waitForReadinessUnmet(q, ['seed']);
+    expect(readiness.readiness.unmet).toEqual(['seed']);
     await expect(q.waitFor('phase-change', 2_000)).rejects.toThrow(/Timeout/);
     await closeWs(ws);
   }, 40_000);
@@ -153,7 +157,6 @@ describe('World setup gates the table', () => {
     const { ws, q, joined } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
     const draft = await q.waitFor('world-seed-draft', 20_000) as any;
-    await drainDmChatReadiness(q);
     sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
     await q.waitFor('room-joined', 10_000);
 
@@ -190,7 +193,6 @@ describe('World setup gates the table', () => {
     const { ws, q, joined } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
     const draft = await q.waitFor('world-seed-draft', 20_000) as any;
-    await drainDmChatReadiness(q);
     sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
     await q.waitFor('room-joined', 10_000);
 
@@ -217,6 +219,65 @@ describe('World setup gates the table', () => {
     const { getDb } = await import('../src/server/db.js');
     const { isSeedAccepted } = await import('../src/server/world-seed.js');
     expect(isSeedAccepted(getDb(), joined.campaignId)).toBe(true);
+
+    await closeWs(ws);
+  }, 40_000);
+
+  it('does not let dm-chat\'s own draft clobber a seed accepted while it was in flight', async () => {
+    // dm-chat drafts a world the same way regenerate-world-seed does: a real
+    // await (draftWorldSeed) sits between dm-chat-reply being sent and the
+    // draft landing. dm-chat-reply is sent BEFORE that await even starts, so
+    // a host who accepts the instant they see the reply — the exact shape of
+    // the double-send bug this guards against, since the client's Enter-key
+    // handler has no disabled check — can finish accepting (mark accepted,
+    // seed the world bible, advance the phase) entirely before dm-chat's own
+    // draftWorldSeed resolves. That resolution must then be refused, not
+    // silently overwrite campaigns.world_seed out from under an
+    // already-accepted, already-seeded world.
+    const { ws, q, joined } = await createGame();
+    sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
+    await q.waitFor('room-joined', 10_000);
+
+    sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
+    await q.waitFor('dm-chat-reply', 15_000);
+
+    // A hand-built seed, distinct in content from whatever the stub will
+    // draft, so a clobber is detectable by what ends up stored rather than
+    // merely by presence.
+    const acceptedSeed = {
+      premise: 'The world the host actually accepted.',
+      locations: [
+        { name: 'Accepted Hall', description: 'A room that exists because it was accepted.', terrain: null },
+        { name: 'Accepted Yard', description: 'A yard that exists because it was accepted.', terrain: null },
+      ],
+      npcs: [
+        { name: 'Accepted Warden', description: 'Exists because accepted.', disposition: null, motivation: null },
+        { name: 'Accepted Scribe', description: 'Exists because accepted.', disposition: null, motivation: null },
+      ],
+      plotHooks: ['A hook that exists because it was accepted.'],
+      items: [],
+    };
+    sendMsg(ws, { type: 'accept-world-seed', seed: acceptedSeed } as any);
+
+    const accepted = await q.waitFor('world-seed-draft', 15_000) as any;
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.seed.premise).toBe(acceptedSeed.premise);
+    const phase = await q.waitFor('phase-change', 15_000) as any;
+    expect(phase.phase).toBe('character-creation');
+
+    // Give dm-chat's own in-flight draft time to resolve and, if the guard
+    // regressed, clobber the seed that was just accepted.
+    await new Promise((r) => setTimeout(r, 500));
+
+    const { getDb } = await import('../src/server/db.js');
+    const { getWorldSeed, isSeedAccepted } = await import('../src/server/world-seed.js');
+    expect(isSeedAccepted(getDb(), joined.campaignId)).toBe(true);
+    expect(getWorldSeed(getDb(), joined.campaignId)?.premise).toBe(acceptedSeed.premise);
+
+    const { WorldBible } = await import('../src/server/world-bible.js');
+    const wb = new WorldBible(getDb());
+    const names = wb.getAllLocationNames(joined.campaignId);
+    expect(names).toContain('Accepted Hall');
 
     await closeWs(ws);
   }, 40_000);

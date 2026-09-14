@@ -207,6 +207,47 @@ function validateCharacterDefinitionShape(def: unknown): string | null {
   return null;
 }
 
+function isValidBoundedString(value: unknown, max: number): boolean {
+  return typeof value === 'string' && value.length <= max;
+}
+
+function isValidNullableBoundedString(value: unknown, max: number): boolean {
+  return value === null || isValidBoundedString(value, max);
+}
+
+/**
+ * WorldSeedSchema validates shape but not size — a host-supplied seed is
+ * persisted verbatim, expanded into unbounded locations/entities/items/events
+ * rows, and then injected into every DM prompt for the rest of the campaign.
+ * Bound it the same way submit-character bounds a character definition:
+ * reject rather than truncate, so the host gets an explicit reason instead of
+ * a silently thinned-out world.
+ */
+function validateWorldSeedShape(seed: import('../shared/types.js').WorldSeed): string | null {
+  if (!isValidLongField(seed.premise)) return `Premise must be at most ${MAX_LONG_FIELD} characters.`;
+  if (seed.locations.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} locations are allowed.`;
+  for (const loc of seed.locations) {
+    if (!isValidShortField(loc.name)) return `Location names must be 1-${MAX_SHORT_FIELD} characters.`;
+    if (!isValidLongField(loc.description)) return `Location descriptions must be at most ${MAX_LONG_FIELD} characters.`;
+    if (!isValidNullableBoundedString(loc.terrain, MAX_SHORT_FIELD)) return `Location terrain must be at most ${MAX_SHORT_FIELD} characters.`;
+  }
+  if (seed.npcs.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} NPCs are allowed.`;
+  for (const npc of seed.npcs) {
+    if (!isValidShortField(npc.name)) return `NPC names must be 1-${MAX_SHORT_FIELD} characters.`;
+    if (!isValidLongField(npc.description)) return `NPC descriptions must be at most ${MAX_LONG_FIELD} characters.`;
+    if (!isValidNullableBoundedString(npc.disposition, MAX_SHORT_FIELD)) return `NPC disposition must be at most ${MAX_SHORT_FIELD} characters.`;
+    if (!isValidNullableBoundedString(npc.motivation, MAX_LONG_FIELD)) return `NPC motivation must be at most ${MAX_LONG_FIELD} characters.`;
+  }
+  if (seed.plotHooks.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} plot hooks are allowed.`;
+  if (!seed.plotHooks.every(h => isValidLongField(h))) return `Plot hooks must be at most ${MAX_LONG_FIELD} characters each.`;
+  if (seed.items.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} items are allowed.`;
+  for (const item of seed.items) {
+    if (!isValidShortField(item.name)) return `Item names must be 1-${MAX_SHORT_FIELD} characters.`;
+    if (!isValidLongField(item.description)) return `Item descriptions must be at most ${MAX_LONG_FIELD} characters.`;
+  }
+  return null;
+}
+
 function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Campaign): void {
   const uploadToken = randomBytes(32).toString('hex');
   uploadTokens.set(uploadToken, { campaignId: campaign.id, expires: Date.now() + 4 * 60 * 60 * 1000 });
@@ -247,20 +288,27 @@ function sendReadiness(ws: WebSocket, campaign: import('../shared/types.js').Cam
  * a refresh leaves the DM staring at an empty lobby even once their host role
  * is restored.
  */
-function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Campaign, joinCode: string): void {
+/**
+ * A non-owner is a player rejoining a lobby, not the host — the host's setup
+ * chat with the DM is where a TTRPG's twists get decided, and hostTableRole/
+ * readiness/influences are host-only bookkeeping the player views never
+ * render. Only players/phase/approvedCount are shared, since those are what
+ * the waiting-room view actually uses.
+ */
+function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Campaign, joinCode: string, isOwner: boolean): void {
   const db = getDb();
   const players = (rooms.get(joinCode) ?? []).filter(p => !p.isOwner).map(p => p.playerName);
   const approved = db.prepare('SELECT COUNT(*) AS c FROM characters WHERE campaign_id = ?').get(campaign.id) as { c: number };
   send(ws, {
     type: 'lobby-state',
     players: [...new Set(players)],
-    setupChat: loadSetupChat(db, campaign.id),
+    setupChat: isOwner ? loadSetupChat(db, campaign.id) : [],
     dmReady: Boolean(campaign.dmInstructions),
     approvedCount: approved.c,
     phase: campaign.phase,
-    influences: getInfluences(db, campaign.id),
-    hostTableRole: campaign.hostTableRole,
-    readiness: currentReadiness(campaign),
+    influences: isOwner ? getInfluences(db, campaign.id) : [],
+    hostTableRole: isOwner ? campaign.hostTableRole : null,
+    readiness: isOwner ? currentReadiness(campaign) : { ready: false, unmet: [], detail: [] },
   });
 }
 
@@ -392,7 +440,7 @@ wss.on('connection', (ws) => {
         const seed = getWorldSeed(db, campaign.id);
         if (seed) send(ws, { type: 'world-seed-draft', seed, accepted: isSeedAccepted(db, campaign.id) });
         sendReadiness(ws, campaign);
-        sendLobbyState(ws, campaign, msg.joinCode);
+        sendLobbyState(ws, campaign, msg.joinCode, true);
         // Anything submitted while the DM was away is waiting here.
         for (const pending of listPendingCharacters(db, campaign.id)) {
           send(ws, pendingReviewMsg(pending));
@@ -401,7 +449,7 @@ wss.on('connection', (ws) => {
           else openNegotiation(campaign, msg.joinCode, pending);
         }
       } else {
-        sendLobbyState(ws, campaign, msg.joinCode);
+        sendLobbyState(ws, campaign, msg.joinCode, false);
         for (const pending of listPendingCharacters(db, campaign.id)) {
           if (pending.sessionToken !== currentPlayer.sessionToken) continue;
           const neg = negotiations.get(pending.id);
@@ -585,6 +633,15 @@ wss.on('connection', (ws) => {
       }
       currentPlayer.setupChat.push({ role: 'user', content: msg.text });
       const dm = new DmAgent(db);
+      let after: import('../shared/types.js').Campaign | null = null;
+      // This try/catch exists for "the setupChat call failed" — it pops the
+      // user message pushed above and apologizes. draftWorldSeed must not sit
+      // inside it: by the time a draft can be attempted, the assistant reply
+      // has already been pushed to history, persisted by saveSetupChat, and
+      // sent to the host. If this catch fired for a draft failure it would
+      // pop the ASSISTANT message instead, desync in-memory history from the
+      // database, and the next saveSetupChat would permanently delete a
+      // message the host already watched arrive.
       try {
         const before = currentReadiness(campaign);
         const reply = await dm.setupChat({
@@ -604,18 +661,28 @@ wss.on('connection', (ws) => {
         }
         saveSetupChat(db, campaign.id, currentPlayer.setupChat);
 
-        const after = joinRoom(db, currentJoinCode);
+        after = joinRoom(db, currentJoinCode);
         if (!after) return;
 
-        // Draft a world as soon as there is enough to build one. The phase does
-        // NOT advance here any more — only accepting the seed opens the table.
-        const readiness = currentReadiness(after);
-        const needsSeed = readiness.unmet.includes('seed');
-        const canDraft = getInfluences(db, after.id).length >= MIN_INFLUENCES && Boolean(after.dmInstructions);
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: reply.done });
         sendReadiness(ws, after);
+      } catch (e) {
+        console.error('[dm-chat] error:', e);
+        currentPlayer.setupChat.pop();
+        send(ws, { type: 'dm-chat-reply', text: 'Sorry, I lost my train of thought. Could you repeat that?', done: false });
+        return;
+      }
 
-        if (needsSeed && canDraft) {
+      // Draft a world as soon as there is enough to build one. The phase does
+      // NOT advance here any more — only accepting the seed opens the table.
+      const readiness = currentReadiness(after);
+      const needsSeed = readiness.unmet.includes('seed');
+      const canDraft = getInfluences(db, after.id).length >= MIN_INFLUENCES && Boolean(after.dmInstructions);
+
+      if (needsSeed && canDraft) {
+        // Its own try/catch: an LLM outage or a Zod rejection here is routine
+        // and must not touch chat history, which is already saved and shown.
+        try {
           const stock = after.scenarioId ? loadStockScenario(after.scenarioId) : null;
           const seed = await dm.draftWorldSeed({
             preset: after.dmPreset,
@@ -625,14 +692,25 @@ wss.on('connection', (ws) => {
             history: currentPlayer.setupChat,
             existing: getWorldSeed(db, after.id) ?? stock?.seed ?? null,
           });
-          setWorldSeed(db, after.id, seed);
+
+          // accept-world-seed is fully synchronous and can complete — mark
+          // accepted, seed the world bible, advance the phase — during this
+          // await. An unconditional write here would clobber the accepted
+          // seed with a draft nobody accepted, the same failure mode
+          // setWorldSeedIfNotAccepted was introduced to close off for
+          // regenerate-world-seed. The phase re-check catches the case where
+          // the campaign moved on while this was in flight even when the
+          // WHERE clause alone would not (e.g. accepted then somehow cleared).
+          const latest = joinRoom(db, currentJoinCode);
+          if (!latest || latest.phase !== 'lobby') return;
+          if (!setWorldSeedIfNotAccepted(db, after.id, seed)) return;
+
           send(ws, { type: 'world-seed-draft', seed, accepted: false });
           sendReadiness(ws, joinRoom(db, currentJoinCode)!);
+        } catch (e) {
+          console.error('[dm-chat] draft failed:', e);
+          send(ws, { type: 'error', message: 'The DM replied, but could not draft a world yet. Try again.' });
         }
-      } catch (e) {
-        console.error('[dm-chat] error:', e);
-        currentPlayer.setupChat.pop();
-        send(ws, { type: 'dm-chat-reply', text: 'Sorry, I lost my train of thought. Could you repeat that?', done: false });
       }
     }
 
@@ -643,6 +721,9 @@ wss.on('connection', (ws) => {
 
       const parsed = WorldSeedSchema.safeParse(msg.seed);
       if (!parsed.success) { send(ws, { type: 'error', message: 'That world could not be read. Ask the DM to redraft it.' }); return; }
+
+      const sizeError = validateWorldSeedShape(parsed.data);
+      if (sizeError) { send(ws, { type: 'error', message: sizeError }); return; }
 
       // Check readiness with the seed the host is actually accepting, and with
       // acceptance assumed — so the only thing left to decide is whether the
@@ -693,7 +774,11 @@ wss.on('connection', (ws) => {
       const dm = new DmAgent(db);
       try {
         const history = [...currentPlayer!.setupChat];
-        if (msg.note) history.push({ role: 'user', content: `Redraft the world: ${msg.note}` });
+        // A bad note (too long, wrong type) should not fail the redraft — it
+        // just doesn't get folded into the prompt, the same as no note at all.
+        if (isValidLongField(msg.note) && msg.note.trim()) {
+          history.push({ role: 'user', content: `Redraft the world: ${msg.note}` });
+        }
         const seed = await dm.draftWorldSeed({
           preset: campaign.dmPreset,
           systemId: campaign.systemId,
