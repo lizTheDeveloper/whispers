@@ -200,6 +200,15 @@ function migrate(db: Database.Database): void {
   if (!colNames.has('host_table_role')) {
     db.exec('ALTER TABLE campaigns ADD COLUMN host_table_role TEXT');
   }
+  if (!colNames.has('influences')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN influences TEXT');
+  }
+  if (!colNames.has('world_seed')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN world_seed TEXT');
+  }
+  if (!colNames.has('seed_accepted_at')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN seed_accepted_at TEXT');
+  }
 
   const cpCols = db.pragma('table_info(checkpoints)') as Array<{ name: string }>;
   if (!cpCols.some(c => c.name === 'transcript')) {

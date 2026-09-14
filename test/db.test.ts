@@ -89,6 +89,9 @@ describe('migrate() idempotency', () => {
 
       const cols = getDb().pragma('table_info(campaigns)') as Array<{ name: string }>;
       expect(cols.filter(c => c.name === 'host_table_role')).toHaveLength(1);
+      expect(cols.filter(c => c.name === 'influences')).toHaveLength(1);
+      expect(cols.filter(c => c.name === 'world_seed')).toHaveLength(1);
+      expect(cols.filter(c => c.name === 'seed_accepted_at')).toHaveLength(1);
 
       closeDb();
     } finally {

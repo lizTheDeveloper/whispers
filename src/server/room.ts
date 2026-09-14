@@ -201,3 +201,17 @@ export function setHostTableRole(db: Database.Database, campaignId: string, role
   db.prepare("UPDATE campaigns SET host_table_role = ?, updated_at = datetime('now') WHERE id = ?")
     .run(role, campaignId);
 }
+
+export function getInfluences(db: Database.Database, campaignId: string): string[] {
+  const row = db.prepare('SELECT influences FROM campaigns WHERE id = ?').get(campaignId) as any;
+  if (!row?.influences) return [];
+  try {
+    const parsed = JSON.parse(row.influences);
+    return Array.isArray(parsed) ? parsed.filter((x: unknown): x is string => typeof x === 'string') : [];
+  } catch { return []; }
+}
+
+export function setInfluences(db: Database.Database, campaignId: string, list: string[]): void {
+  db.prepare("UPDATE campaigns SET influences = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(list), campaignId);
+}

@@ -128,6 +128,27 @@ export type GamePhase = 'lobby' | 'character-creation' | 'playing' | 'ended';
 
 export type TableRole = 'dm' | 'player';
 
+export interface WorldSeedLocation { name: string; description: string; terrain: string | null }
+export interface WorldSeedNpc { name: string; description: string; disposition: string | null; motivation: string | null }
+export interface WorldSeedItem { name: string; description: string }
+
+export interface WorldSeed {
+  premise: string;
+  locations: WorldSeedLocation[];
+  npcs: WorldSeedNpc[];
+  plotHooks: string[];
+  items: WorldSeedItem[];
+}
+
+export type WorldReadinessItem = 'influences' | 'seed' | 'dmInstructions' | 'tableRole' | 'seedAccepted';
+
+export interface WorldReadiness {
+  ready: boolean;
+  unmet: WorldReadinessItem[];
+  /** Human-readable, one per unmet item, in the same order. Shown to the host and fed back to the model. */
+  detail: string[];
+}
+
 export interface RoomState {
   campaignId: string;
   joinCode: string;
