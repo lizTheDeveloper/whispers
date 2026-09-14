@@ -1,11 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import { DmAgent } from './agents/dm.js';
-import { safeDataFile } from './data-paths.js';
 import { CharacterAgent } from './agents/character.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
+import { loadStockScenario, seedWorld } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
 import { callLlm } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
@@ -1058,32 +1057,13 @@ export class GameLoop {
   }
 
   private async seedScenario(scenarioId: string): Promise<void> {
-    try {
-      const scenarioPath = safeDataFile('scenarios', scenarioId, '.json');
-      if (!scenarioPath) { console.warn(`[game-loop] Scenario not found: ${scenarioId}`); return; }
-      const scenario = JSON.parse(readFileSync(scenarioPath, 'utf-8'));
-
-      const diff = {
-        newLocations: (scenario.locations ?? []).map((l: any) => ({ name: l.name, description: l.description, terrain: l.terrain ?? null })),
-        newEntities: (scenario.npcs ?? []).map((n: any) => ({
-          name: n.name,
-          type: 'npc',
-          description: n.motivation ? `${n.description} [Motivation: ${n.motivation}]` : n.description,
-          disposition: n.disposition ?? null,
-        })),
-        newItems: (scenario.items ?? []).map((item: any) => ({ name: item.name, description: item.description, properties: item.properties ?? {} })),
-        newEvents: (scenario.plotHooks ?? []).map((hook: string, i: number) => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
-        newRelationships: [] as any[],
-      };
-      this.worldBible.applyDiff(this.campaignId, diff, { allowNewLocations: true });
-
-      if (scenario.openingNarration) {
-        this.transcript.push({ role: 'system' as const, content: `[Scenario] ${scenario.openingNarration}`, timestamp: new Date().toISOString() });
-      }
-      console.log(`[game-loop] Seeded scenario "${scenario.name}": ${diff.newLocations.length} locations, ${diff.newEntities.length} NPCs, ${diff.newEvents.length} plot hooks`);
-    } catch (e: any) {
-      console.warn(`[game-loop] Failed to load scenario ${scenarioId}: ${e.message}`);
+    const loaded = loadStockScenario(scenarioId);
+    if (!loaded) return;
+    seedWorld(this.db, this.campaignId, loaded.seed);
+    if (loaded.openingNarration) {
+      this.transcript.push({ role: 'system' as const, content: `[Scenario] ${loaded.openingNarration}`, timestamp: new Date().toISOString() });
     }
+    console.log(`[game-loop] Seeded scenario "${scenarioId}"`);
   }
 
   handleWhisper(text: string): void {

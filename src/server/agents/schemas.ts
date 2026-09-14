@@ -119,3 +119,30 @@ export const SceneSummarySchema = z.object({
   summary: z.string().min(1).default('The scene unfolds...'),
 });
 export type SceneSummary = z.infer<typeof SceneSummarySchema>;
+
+/**
+ * A world seed's shape, not its sufficiency. Minimum counts are NOT enforced
+ * here — checkWorldReadiness (src/server/world-readiness.ts) owns that
+ * separately, so a short draft can still round-trip to the host for editing
+ * rather than being rejected outright.
+ */
+export const WorldSeedSchema = z.object({
+  premise: z.string().min(1),
+  locations: z.array(z.object({
+    name: z.string().min(1),
+    description: z.string().default(''),
+    terrain: z.string().nullable().default(null),
+  })).default([]),
+  npcs: z.array(z.object({
+    name: z.string().min(1),
+    description: z.string().default(''),
+    disposition: z.string().nullable().default(null),
+    motivation: z.string().nullable().default(null),
+  })).default([]),
+  plotHooks: z.array(z.string().min(1)).default([]),
+  items: z.array(z.object({
+    name: z.string().min(1),
+    description: z.string().default(''),
+  })).default([]),
+});
+export type WorldSeedParsed = z.infer<typeof WorldSeedSchema>;
