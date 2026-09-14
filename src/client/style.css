@@ -1495,3 +1495,95 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .world-seed-panel, .influence-list li, .seed-section li { animation: none; }
 }
+
+/* ---- Character creation: world introduction (player-facing) ---- */
+.world-introduction {
+  margin-bottom: 1.5rem;
+  background: linear-gradient(160deg, var(--surface) 0%, var(--void-deep) 100%);
+  padding: 1.5rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 107, 53, 0.1);
+  box-shadow: var(--shadow-card);
+  animation: entry-in 0.4s ease-out;
+}
+.world-introduction h3 {
+  font-size: 1.1rem;
+  color: var(--ember);
+  margin-bottom: 0.75rem;
+}
+#world-intro-text p {
+  color: var(--star-white);
+  line-height: 1.7;
+  margin-bottom: 0.85rem;
+}
+#world-intro-text p:last-child { margin-bottom: 0; }
+
+/* ---- Character interview: readiness checklist (chat tab) ---- */
+.readiness-panel {
+  margin-top: 1rem;
+  padding: 1rem 1.15rem;
+  background: rgba(255, 107, 53, 0.03);
+  border: 1px solid rgba(255, 107, 53, 0.12);
+  border-radius: var(--radius);
+  animation: preview-in 0.3s ease-out;
+}
+.readiness-heading {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-bottom: 0.5rem;
+  font-style: italic;
+}
+
+/* ---- Character interview: proposed sheet + confirm gate (chat tab) ---- */
+.character-preview {
+  margin-top: 1rem;
+  padding: 1.25rem 1.5rem;
+  background: linear-gradient(160deg, var(--surface) 0%, var(--void-deep) 100%);
+  border: 1px solid rgba(0, 255, 136, 0.12);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  animation: entry-in 0.4s ease-out;
+}
+.character-preview h3 {
+  font-size: 1.2rem;
+  color: var(--star-white);
+}
+.preview-concept {
+  color: var(--biolume);
+  font-style: italic;
+  margin: 0.25rem 0 0.5rem;
+}
+.preview-trouble {
+  color: var(--gene-pink);
+  margin-bottom: 1rem;
+  font-size: 0.92rem;
+}
+.preview-section { margin-bottom: 1rem; }
+.preview-section h4 {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.4rem;
+}
+.preview-section ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.preview-section li {
+  padding: 0.4rem 0.7rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+}
+.preview-confirmed-note {
+  color: var(--biolume);
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+.preview-actions {
+  display: flex;
+  gap: 0.6rem;
+}

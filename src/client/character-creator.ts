@@ -60,23 +60,53 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
       <h2>Create Your Character</h2>
       <p>Join code: <strong>${joinCode}</strong></p>
 
+      <div id="world-intro" class="world-introduction hidden">
+        <h3>The World</h3>
+        <div id="world-intro-text"></div>
+      </div>
+
       <div class="creator-tabs">
-        <button class="tab" data-tab="chat">Talk to DM</button>
-        <button class="tab active" data-tab="form">Build here</button>
+        <button class="tab active" data-tab="chat">Talk to DM</button>
+        <button class="tab" data-tab="form">Build here</button>
         <button class="tab" data-tab="paste">Paste markdown</button>
       </div>
 
-      <div class="tab-panel hidden" id="panel-chat">
+      <div class="tab-panel" id="panel-chat">
         <div id="char-chat-log" class="dm-chat-log"></div>
         <div class="dm-chat-input">
           <input type="text" id="char-chat-input" placeholder="Tell the DM about your character idea..." />
           <button id="char-chat-send">Send</button>
         </div>
-        <div id="chat-char-preview" class="parse-preview hidden"></div>
+        <div id="chat-readiness" class="readiness-panel hidden">
+          <p class="readiness-heading">Still shaping this character:</p>
+          <ul id="readiness-list" class="readiness-list"></ul>
+        </div>
+        <div id="chat-char-preview" class="character-preview hidden">
+          <h3 id="preview-name"></h3>
+          <p id="preview-concept" class="preview-concept"></p>
+          <p id="preview-trouble" class="preview-trouble"></p>
+          <div class="preview-section">
+            <h4>Aspects</h4>
+            <ul id="preview-aspects"></ul>
+          </div>
+          <div class="preview-section">
+            <h4>Skills</h4>
+            <ul id="preview-skills"></ul>
+          </div>
+          <div class="preview-section">
+            <h4>Stunts</h4>
+            <ul id="preview-stunts"></ul>
+          </div>
+          <p id="preview-confirmed-note" class="preview-confirmed-note hidden">Confirmed — ready to submit.</p>
+          <div class="preview-actions">
+            <button id="preview-confirm">Confirm this character</button>
+            <button id="preview-keep-talking" class="ghost-btn">Keep talking</button>
+          </div>
+        </div>
         <button id="chat-submit-char" class="hidden">Submit this character to DM for approval</button>
       </div>
 
-      <div class="tab-panel" id="panel-form">
+      <div class="tab-panel hidden" id="panel-form">
         <div class="form-grid">
           <label>Name <input type="text" id="char-name" value="Sigmund the Bold" /></label>
           <label>High Concept <input type="text" id="char-concept" value="Reformed Thief with a Heart of Gold" /></label>
@@ -117,7 +147,7 @@ Born in the slums of Veridian...
         <div id="parse-preview" class="parse-preview hidden"></div>
       </div>
 
-      <button id="submit-char">Submit to DM for Approval</button>
+      <button id="submit-char" class="hidden">Submit to DM for Approval</button>
       <div id="dm-feedback" class="feedback hidden"></div>
     </div>
   `;
@@ -153,11 +183,182 @@ Born in the slums of Veridian...
   const chatLog = root.querySelector('#char-chat-log') as HTMLElement;
   const chatInput = root.querySelector('#char-chat-input') as HTMLInputElement;
   const chatSend = root.querySelector('#char-chat-send') as HTMLButtonElement;
-  const chatPreview = root.querySelector('#chat-char-preview') as HTMLElement;
   const chatSubmitBtn = root.querySelector('#chat-submit-char') as HTMLButtonElement;
   let chatDefinition: CharacterDefinition | null = null;
   const defaultSubmitLabel = submitBtn.textContent ?? 'Submit to DM for Approval';
   const defaultChatSubmitLabel = chatSubmitBtn.textContent ?? 'Submit this character to DM for approval';
+
+  // The world introduction: model-written prose, rendered above the tabs and
+  // kept visible for the whole interview (never hidden by a tab switch).
+  const worldIntroEl = root.querySelector('#world-intro') as HTMLElement;
+  const worldIntroText = root.querySelector('#world-intro-text') as HTMLElement;
+
+  function renderWorldIntro(text: string) {
+    worldIntroText.replaceChildren();
+    const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+    for (const p of paragraphs.length > 0 ? paragraphs : [text]) {
+      const para = document.createElement('p');
+      para.textContent = p;
+      worldIntroText.appendChild(para);
+    }
+    worldIntroEl.classList.remove('hidden');
+  }
+
+  ws.on('world-introduction', (msg) => {
+    if (msg.type !== 'world-introduction') return;
+    renderWorldIntro(msg.text);
+  });
+
+  // The readiness checklist: shown when the DM proposed a sheet the server
+  // judged unfinished. This is not a failure state — the interview is
+  // continuing — so it reads as a checklist, not an error.
+  const readinessPanel = root.querySelector('#chat-readiness') as HTMLElement;
+  const readinessList = root.querySelector('#readiness-list') as HTMLElement;
+
+  function renderReadiness(detail: string[]) {
+    readinessList.replaceChildren();
+    for (const line of detail) {
+      const li = document.createElement('li');
+      li.className = 'readiness-item';
+      li.textContent = line;
+      readinessList.appendChild(li);
+    }
+    readinessPanel.classList.toggle('hidden', detail.length === 0);
+  }
+
+  // The proposed sheet: name, high concept, trouble, aspects, skills, stunts.
+  // Everything here is model-generated, so every field is set with
+  // textContent and every list is rebuilt with replaceChildren — never
+  // innerHTML with a value spliced in.
+  const previewPanel = root.querySelector('#chat-char-preview') as HTMLElement;
+  const previewName = root.querySelector('#preview-name') as HTMLElement;
+  const previewConcept = root.querySelector('#preview-concept') as HTMLElement;
+  const previewTrouble = root.querySelector('#preview-trouble') as HTMLElement;
+  const previewAspects = root.querySelector('#preview-aspects') as HTMLElement;
+  const previewSkills = root.querySelector('#preview-skills') as HTMLElement;
+  const previewStunts = root.querySelector('#preview-stunts') as HTMLElement;
+  const previewConfirmedNote = root.querySelector('#preview-confirmed-note') as HTMLElement;
+  const previewConfirmBtn = root.querySelector('#preview-confirm') as HTMLButtonElement;
+  const previewKeepTalkingBtn = root.querySelector('#preview-keep-talking') as HTMLButtonElement;
+  // Set right before sending confirm-character, and consumed by the next
+  // character-preview message — the server's ack of that confirmation has
+  // the exact same shape as a fresh proposal, so this is how the client
+  // tells them apart.
+  let awaitingConfirmAck = false;
+
+  function renderPreviewSheet(def: CharacterDefinition) {
+    previewName.textContent = def.name;
+    previewConcept.textContent = def.highConcept;
+    previewTrouble.textContent = `Trouble: ${def.trouble}`;
+
+    previewAspects.replaceChildren();
+    for (const aspect of def.aspects) {
+      const li = document.createElement('li');
+      li.textContent = aspect;
+      previewAspects.appendChild(li);
+    }
+
+    previewSkills.replaceChildren();
+    for (const [skill, rank] of Object.entries(def.skills)) {
+      const li = document.createElement('li');
+      li.textContent = `${skill} (+${rank})`;
+      previewSkills.appendChild(li);
+    }
+
+    previewStunts.replaceChildren();
+    for (const stunt of def.stunts) {
+      const li = document.createElement('li');
+      li.textContent = stunt;
+      previewStunts.appendChild(li);
+    }
+  }
+
+  /**
+   * Renders the proposed sheet. `confirmed` distinguishes the server's ack of
+   * confirm-character from a fresh, not-yet-confirmed proposal: only once
+   * confirmed does the submit affordance appear — confirming is the real
+   * gate, this screen never lets the player edit the sheet afterward.
+   */
+  function showPreview(def: CharacterDefinition, confirmed: boolean) {
+    chatDefinition = def;
+    renderPreviewSheet(def);
+    previewPanel.classList.remove('hidden');
+    readinessPanel.classList.add('hidden');
+
+    if (confirmed) {
+      previewConfirmBtn.classList.add('hidden');
+      previewKeepTalkingBtn.classList.add('hidden');
+      previewConfirmedNote.classList.remove('hidden');
+      chatSubmitBtn.classList.remove('hidden');
+      chatSubmitBtn.disabled = false;
+      chatSubmitBtn.textContent = `Submit ${def.name} to DM for approval`;
+    } else {
+      previewConfirmBtn.classList.remove('hidden');
+      previewConfirmBtn.disabled = false;
+      previewConfirmBtn.textContent = 'Confirm this character';
+      previewKeepTalkingBtn.classList.remove('hidden');
+      previewConfirmedNote.classList.add('hidden');
+      chatSubmitBtn.classList.add('hidden');
+    }
+  }
+
+  previewConfirmBtn.addEventListener('click', () => {
+    awaitingConfirmAck = true;
+    previewConfirmBtn.disabled = true;
+    previewConfirmBtn.textContent = 'Confirming...';
+    ws.send({ type: 'confirm-character' });
+  });
+
+  previewKeepTalkingBtn.addEventListener('click', () => {
+    previewPanel.classList.add('hidden');
+    chatInput.focus();
+  });
+
+  ws.on('character-preview', (msg) => {
+    if (msg.type !== 'character-preview') return;
+    const confirmed = awaitingConfirmAck;
+    awaitingConfirmAck = false;
+    showPreview(msg.definition, confirmed);
+  });
+
+  ws.on('character-readiness', (msg) => {
+    if (msg.type !== 'character-readiness') return;
+    awaitingConfirmAck = false;
+    previewPanel.classList.add('hidden');
+    renderReadiness(msg.readiness.detail);
+  });
+
+  ws.on('interview-replay', (msg) => {
+    if (msg.type !== 'interview-replay') return;
+    awaitingConfirmAck = false;
+    chatSend.disabled = false;
+
+    // The transcript's first turn is the world introduction, stored with
+    // role: 'assistant' — it is hoisted back into the intro container rather
+    // than replayed as a chat bubble, matching where a fresh introduction
+    // lands and keeping it visible for the whole interview.
+    const [introTurn, ...rest] = msg.transcript;
+    if (introTurn) renderWorldIntro(introTurn.content);
+
+    const bubbles = rest.map(turn => {
+      const bubble = document.createElement('div');
+      bubble.className = `dm-chat-bubble ${turn.role === 'user' ? 'player' : 'dm'}`;
+      bubble.textContent = turn.content;
+      return bubble;
+    });
+    chatLog.replaceChildren(...bubbles);
+    chatLog.scrollTop = chatLog.scrollHeight;
+
+    readinessPanel.classList.add('hidden');
+    if (msg.definition) {
+      // A restored proposal is shown unconfirmed — re-confirming is a no-op
+      // on the server, and the client has no way to know from this message
+      // alone whether it was confirmed before the reconnect.
+      showPreview(msg.definition, false);
+    } else {
+      previewPanel.classList.add('hidden');
+    }
+  });
 
   function addChatMsg(text: string, sender: 'dm' | 'player') {
     const bubble = document.createElement('div');
@@ -196,14 +397,6 @@ Born in the slums of Veridian...
     chatSend.disabled = false;
 
     addChatMsg(msg.text, 'dm');
-
-    if (msg.definition) {
-      chatDefinition = msg.definition;
-      chatPreview.classList.remove('hidden');
-      chatPreview.textContent = `${msg.definition.name} — ${msg.definition.highConcept}`;
-      chatSubmitBtn.classList.remove('hidden');
-      chatSubmitBtn.textContent = `Submit ${msg.definition.name} to DM for approval`;
-    }
   });
 
   chatSubmitBtn.addEventListener('click', () => {
@@ -243,7 +436,7 @@ Born in the slums of Veridian...
   // --- Submit logic ---
   function getActiveTab(): string {
     const active = root.querySelector('.creator-tabs .tab.active') as HTMLButtonElement;
-    return active?.dataset.tab || 'form';
+    return active?.dataset.tab || 'chat';
   }
 
   let pendingCount = 0;
@@ -367,6 +560,15 @@ Born in the slums of Veridian...
     chatSend.disabled = false;
     const typing = chatLog.querySelector('#char-typing');
     if (typing) typing.remove();
+
+    // A rejected confirm-character (e.g. "not finished yet") must not leave
+    // the confirm button stuck disabled on "Confirming...", awaiting an ack
+    // that is never coming.
+    if (awaitingConfirmAck) {
+      awaitingConfirmAck = false;
+      previewConfirmBtn.disabled = false;
+      previewConfirmBtn.textContent = 'Confirm this character';
+    }
 
     // A previous 'approved' class must not linger under a rejection — set
     // the full class list rather than adding on top of it, matching
