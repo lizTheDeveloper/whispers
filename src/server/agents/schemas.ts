@@ -104,15 +104,15 @@ export type DmSetupReply = z.infer<typeof DmSetupReplySchema>;
 export const CharInterviewReplySchema = z.object({
   reply: z.string().min(1),
   definition: z.object({
-    name: z.string(),
-    highConcept: z.string(),
-    trouble: z.string(),
-    aspects: z.array(z.string()),
-    personality: z.string(),
-    backstory: z.string(),
-    skills: z.record(z.number()),
-    stunts: z.array(z.string()),
-  }).nullable(),
+    name: z.string().default(''),
+    highConcept: z.string().default(''),
+    trouble: z.string().default(''),
+    aspects: z.array(z.string()).default([]),
+    personality: z.string().default(''),
+    backstory: z.string().default(''),
+    skills: z.record(z.number()).default({}),
+    stunts: z.array(z.string()).default([]),
+  }).nullable().default(null),
 });
 export type CharInterviewReply = z.infer<typeof CharInterviewReplySchema>;
 

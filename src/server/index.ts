@@ -612,7 +612,15 @@ wss.on('connection', (ws) => {
       currentPlayer.charChat.push({ role: 'user', content: msg.text });
       const dm = new DmAgent(db);
       try {
-        const reply = await dm.interviewForCharacter(campaign.systemId, currentPlayer.charChat);
+        const reply = await dm.interviewForCharacter({
+          systemId: campaign.systemId,
+          preset: campaign.dmPreset,
+          playerName: currentPlayer.playerName,
+          influences: getInfluences(db, campaign.id),
+          seed: getWorldSeed(db, campaign.id),
+          history: currentPlayer.charChat,
+          unmet: [],
+        });
         currentPlayer.charChat.push({ role: 'assistant', content: reply.reply });
         send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
       } catch (e) {

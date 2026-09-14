@@ -413,35 +413,86 @@ Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","te
     });
   }
 
-  async interviewForCharacter(systemId: string, history: Array<{ role: string; content: string }>): Promise<CharInterviewReply> {
-    const ruleContext = this.lookupRules(systemId, 'character creation aspects skills stunts');
+  /**
+   * The player's first sight of the world. Written in the fiction, not as a
+   * briefing — they should want to be somewhere in it before they are asked
+   * who they are. Keep the influences in the prose and out of the content.
+   */
+  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed }): Promise<string> {
+    const places = opts.seed.locations.slice(0, 4).map(l => `${l.name}: ${l.description}`).join('\n');
+    const people = opts.seed.npcs.slice(0, 4).map(n => `${n.name}: ${n.description}`).join('\n');
+    const hooks = opts.seed.plotHooks.slice(0, 4).map(h => `- ${h}`).join('\n');
 
-    const systemPrompt = `You are a character creation API for a TTRPG game. You help players build characters through conversation.
+    const systemPrompt = `You are a TTRPG Dungeon Master ("${opts.preset}" style) introducing a player to a world they are about to make a character for.
 
-Rules reference:
-${ruleContext}
+Write 120-180 words of second-person present tense. Put them somewhere specific and let them look around. Name real places and real people from the world below. End on something unresolved — a question the world is already asking.
 
-Ask about their concept, backstory, skills. Be encouraging. Help if they're stuck.
-Guide them toward characters with INTERNAL TENSION — a scholar tempted by forbidden knowledge, a healer who once let someone die, a warrior who fears what they become in battle. The best characters have a clear strength AND a clear vulnerability. The "trouble" aspect should create genuine dilemmas, not minor inconveniences.
+Do NOT explain the setting, list factions, or describe mechanics. Do not tell them who their character is; that is the next conversation. No headings, no bullet points, no preamble — just the prose.
 
-CRITICAL: You MUST respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON. Every response must be valid JSON.
+${opts.influences.length > 0 ? `Stylistic influences to honour in voice and texture only: ${opts.influences.join(' × ')}\n\n` : ''}Premise: ${opts.seed.premise}
 
-When you don't have enough info yet: {"reply": "your question here", "definition": null}
-When you have enough info: {"reply": "summary", "definition": {"name": "...", "highConcept": "...", "trouble": "...", "aspects": ["..."], "personality": "...", "backstory": "...", "skills": {"Skill": 3}, "stunts": ["..."]}}`;
+Places:
+${places}
 
-    const lastMsg = history[history.length - 1];
-    const augmentedHistory = lastMsg?.role === 'user'
-      ? [...history.slice(0, -1), { role: 'user', content: `${lastMsg.content}\n\n(Remember: respond with ONLY a JSON object, no other text)` }]
-      : history;
+People:
+${people}
+
+Unresolved:
+${hooks}`;
 
     return callLlm({
       messages: [
         { role: 'system', content: systemPrompt },
-        ...augmentedHistory,
+        { role: 'user', content: 'Introduce them to this world.' },
       ],
-      schema: CharInterviewReplySchema,
-      temperature: 0.5,
+      temperature: 0.9,
     });
+  }
+
+  async interviewForCharacter(opts: {
+    systemId: string;
+    preset: string;
+    playerName: string;
+    influences: string[];
+    seed: WorldSeed | null;
+    history: Array<{ role: string; content: string }>;
+    unmet: string[];
+  }): Promise<CharInterviewReply> {
+    const ruleContext = this.lookupRules(opts.systemId, 'character creation aspects skills stunts');
+    const worldBlock = opts.seed
+      ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\nUnresolved: ${opts.seed.plotHooks.slice(0, 4).join(' / ')}\n`
+      : '';
+    const unmetBlock = opts.unmet.length > 0
+      ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nAsk for these, but ask the way a person would.\n`
+      : '';
+
+    const systemPrompt = `You are a character creation API for a TTRPG. You help a player named ${opts.playerName} build a character through conversation, for a world that already exists.
+
+Ask a MIX of two kinds of question, and lead with the second kind:
+
+DIRECT — the plain thing, when you need a specific field. "What do we call them?"
+
+INDIRECT — put the character in a real place from the world below and ask what they do, notice, or want. "You are on the tidal stair as the water comes up. What makes you stop?" Never ask for a game term this way. Infer aspects, skills and a trouble from how they answer, and reflect what you inferred back in plain language so they can correct you.
+
+Open indirect. Use direct questions only to close the gaps listed below. Never present a checklist, never ask for more than two things at once, and never use the words "high concept", "aspect" or "stunt" in a question — describe what you mean instead.
+
+Aim them at characters with INTERNAL TENSION: a clear strength and a clear vulnerability. The trouble should create genuine dilemmas, not minor inconveniences, and it should have somewhere to bite in THIS world.
+${worldBlock}${unmetBlock}
+Rules reference:
+${ruleContext}
+
+CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON.
+
+While the sheet is unfinished: {"reply": "your question", "definition": null}
+Once you believe it is finished: {"reply": "what you understand about them, in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."]}}`;
+
+    const messages = [{ role: 'system', content: systemPrompt }, ...opts.history];
+    const last = messages[messages.length - 1];
+    if (last && last.role === 'user') {
+      messages[messages.length - 1] = { ...last, content: `${last.content}\n\n(Remember: respond with ONLY a JSON object, no other text)` };
+    }
+
+    return callLlm({ messages, schema: CharInterviewReplySchema, temperature: 0.5 });
   }
 
   async validateCharacter(definition: CharacterDefinition, systemId: string): Promise<CharacterValidation> {
