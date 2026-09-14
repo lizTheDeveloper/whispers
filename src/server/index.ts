@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { getDb, getDataDir } from './db.js';
-import { safeDataFile } from './data-paths.js';
+import { safeDataFile, dataPath } from './data-paths.js';
 import {
   createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
@@ -666,6 +666,15 @@ wss.on('connection', (ws) => {
   });
 });
 
+function verifyDataDir(): void {
+  const missing: string[] = [];
+  if (!safeDataFile('dm-presets', 'chronicler', '.txt')) missing.push('dm-presets/');
+  if (!existsSync(dataPath('systems'))) missing.push('systems/');
+  if (missing.length > 0) {
+    console.error(`[server] DATA DIRECTORY INCOMPLETE at ${getDataDir()} — missing: ${missing.join(', ')}. DM presets and rules lookups will silently degrade. Set DATA_DIR to the directory containing dm-presets/, scenarios/, and systems/.`);
+  }
+}
+
 function bootstrapRules(): void {
   const db = getDb();
   const dataDir = getDataDir();
@@ -680,6 +689,7 @@ function bootstrapRules(): void {
   }
 }
 
+verifyDataDir();
 bootstrapRules();
 server.listen(PORT, () => {
   console.log(`Whispers server listening on port ${PORT}`);

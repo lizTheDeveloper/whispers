@@ -9,8 +9,12 @@ import { getDataDir } from './db.js';
  * put them at `<repo>/src/data/...` in dev and `/app/dist/.../data/...` in a
  * container — neither of which exists. DM presets therefore never loaded in
  * any environment, and scenario seeding never loaded in production, both
- * failing silently into a fallback. `getDataDir()` is the only resolution
- * strategy in this codebase that has ever been correct.
+ * failing silently into a fallback. `getDataDir()` is correct in dev, and
+ * correct in production because the deployment sets `DATA_DIR` explicitly —
+ * but its own fallback (used when `DATA_DIR` is unset) is layout-unaware and
+ * reproduces the same bug for a bare `docker run` or a local
+ * `npm run build && npm start`. That's why `index.ts` runs a boot-time check
+ * that logs loudly if the data directory turns out to be incomplete.
  */
 export function dataPath(...segments: string[]): string {
   return resolve(getDataDir(), ...segments);
