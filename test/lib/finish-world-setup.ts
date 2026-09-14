@@ -1,6 +1,7 @@
 import { expect } from 'vitest';
 import type { WebSocket } from 'ws';
 import { sendMsg, type MessageQueue } from './ws-helpers.js';
+import type { TableRole } from '../../src/shared/types.js';
 
 /**
  * Drives world setup all the way to an open table.
@@ -32,8 +33,12 @@ import { sendMsg, type MessageQueue } from './ws-helpers.js';
  * — the session-persistence copy lacked the phase-change drain, which is a
  * silent-vacuous-test risk if a later test in that file ever adds its own
  * phase-change wait. One implementation, shared.
+ *
+ * `role` defaults to 'dm' so every existing caller is unchanged; pass
+ * 'player' to drive setup all the way to an open table with the host seated
+ * as a player instead (no human approver for characters on that path).
  */
-export async function finishWorldSetup(ws: WebSocket, q: MessageQueue): Promise<void> {
+export async function finishWorldSetup(ws: WebSocket, q: MessageQueue, role: TableRole = 'dm'): Promise<void> {
   sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
 
   let reply: any;
@@ -47,7 +52,7 @@ export async function finishWorldSetup(ws: WebSocket, q: MessageQueue): Promise<
   const draft = await q.waitFor('world-seed-draft', 20_000) as any;
   expect(draft.accepted).toBe(false);
 
-  sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
+  sendMsg(ws, { type: 'choose-table-role', role } as any);
   await q.waitFor('room-joined', 10_000);
 
   sendMsg(ws, { type: 'accept-world-seed', seed: draft.seed } as any);

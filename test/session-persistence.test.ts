@@ -255,7 +255,7 @@ describe('Table role governs DM authority', () => {
     await closeWs(ws);
   }, 20_000);
 
-  it('refuses character approval from an owner who chose to play', async () => {
+  it('refuses character approval from an owner who chose to play — but the character is already live via the AI DM', async () => {
     const { ws: hostWs, q: hostQ, joined } = await createGame();
     const { joinCode } = joined;
 
@@ -269,11 +269,26 @@ describe('Table role governs DM authority', () => {
     sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
     await pq.waitFor('room-joined', 10_000);
     sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
-    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
 
-    // The owner is playing, so this approval must not take effect.
-    sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+    // There is no human approver on this path — the AI DM's own validation
+    // is the decision, and the character goes live immediately, without any
+    // host-approve-character ever being sent. This used to be the dead end:
+    // a pending row that sat in review forever because the only approver
+    // (the host) had no DM authority to act on it.
+    const validated = await pq.waitFor('character-validated', 20_000) as any;
+    expect(validated.approved).toBe(true);
+    // The broadcast reaches everyone in the room, so both queues get their
+    // own copy of it — drain each before checking for a SECOND one below.
+    const submitted = await hostQ.waitFor('character-submitted', 10_000) as any;
+    expect(submitted.characterId).toBe(validated.characterId);
+    const submittedToPlayer = await pq.waitFor('character-submitted', 10_000) as any;
+    expect(submittedToPlayer.characterId).toBe(validated.characterId);
 
+    // The owner is playing, not running the table, so their own
+    // host-approve-character still carries no DM authority — it is refused
+    // (no effect, no second character-submitted), same as before. The
+    // difference is the character no longer needed it to go live.
+    sendMsg(hostWs, { type: 'host-approve-character', characterId: validated.characterId });
     await expect(pq.waitFor('character-submitted', 3_000)).rejects.toThrow(/Timeout/);
 
     await closeWs(playerWs);

@@ -24,7 +24,7 @@ import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
 import { NegotiationRoom } from './negotiation.js';
-import { hasDmAuthority, isWorldAuthor } from './seat.js';
+import { hasDmAuthority, isWorldAuthor, effectiveTableRole } from './seat.js';
 import {
   getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewStatus, getInterviewBySession,
   type InterviewTurn,
@@ -737,8 +737,29 @@ wss.on('connection', (ws) => {
         aiFeedback: feedbackText,
       };
       // Persist first: the submission must survive the DM being away, refreshing,
-      // or the server restarting, otherwise it is silently lost.
+      // or the server restarting, otherwise it is silently lost. It is also
+      // written before the table-role branch below, so the AI-approval path
+      // and the host-review path share one shape, and a crash between the
+      // write and the branch leaves a reviewable row rather than nothing.
       savePendingCharacter(db, pending);
+
+      const approver = effectiveTableRole(campaign.hostTableRole);
+      if (approver === 'player') {
+        // The host is at the table as a player, so there is no human to
+        // approve. The AI DM's validation is the decision — the character
+        // goes live immediately and the host keeps a veto they can use later.
+        makeCharacterLive(db, pending);
+
+        // Everything below only fires after the transaction above has
+        // committed — announcing a character before the write lands is how a
+        // client ends up showing something the database does not have.
+        const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.sessionToken === pending.sessionToken);
+        if (playerInRoom) playerInRoom.characterId = pending.id;
+
+        send(ws, { type: 'character-validated', characterId: pending.id, approved: true, feedback: `${feedbackText} Your character is in the game.` });
+        broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.id, definition: pending.definition });
+        return;
+      }
 
       const host = hostSocket(currentJoinCode);
       send(ws, {
