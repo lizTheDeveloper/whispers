@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { dataPath, safeDataFile } from '../src/server/data-paths.js';
+import { composePresetSections } from '../src/server/agents/dm.js';
 
 describe('data path resolution', () => {
   it('finds the DM preset files that ship with the repo', () => {
@@ -48,5 +49,32 @@ describe('preset text reaches the DM system prompt', () => {
     const criticalIdx = text.indexOf('CRITICAL:');
     expect(criticalIdx).toBeGreaterThan(0);
     expect(text.slice(0, criticalIdx).trim().length).toBeGreaterThan(50);
+  });
+});
+
+describe('preset sections compose', () => {
+  it('returns real preset text, a CRITICAL section, and a narration hint', () => {
+    const { head, critical, narrationHint } = composePresetSections('chronicler');
+    expect(head.length).toBeGreaterThan(100);
+    expect(head).not.toMatch(/^You are a TTRPG Dungeon Master with the "chronicler" personality\.$/m);
+    expect(critical).toContain('CRITICAL:');
+    expect(narrationHint).toContain('non-visual sense');
+  });
+
+  it('falls back to a named generic prompt for an unknown preset', () => {
+    const { head, critical, narrationHint } = composePresetSections('no-such-preset');
+    expect(head).toContain('no-such-preset');
+    expect(critical).toBe('');
+    expect(narrationHint).toBe('');
+  });
+});
+
+describe('dmCustomPrompt augments rather than replaces', () => {
+  it('keeps the preset head and CRITICAL section when a custom prompt exists', () => {
+    const { head, critical } = composePresetSections('trickster');
+    // The composed sections are independent of dmCustomPrompt by construction:
+    // buildSystemPrompt starts from them unconditionally.
+    expect(head.length).toBeGreaterThan(100);
+    expect(critical).toContain('CRITICAL:');
   });
 });

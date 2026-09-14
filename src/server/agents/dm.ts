@@ -17,6 +17,31 @@ function loadPresetText(presetName: string): string | null {
   return text;
 }
 
+/**
+ * Exported for tests: composes the preset head, its CRITICAL section, and the
+ * per-preset narration hint. `dmCustomPrompt` augments this — it must never
+ * replace it, or the host's chosen personality silently stops being enforced.
+ */
+export function composePresetSections(preset: string): { head: string; critical: string; narrationHint: string } {
+  let presetText = loadPresetText(preset) ?? '';
+  let critical = '';
+  let narrationHint = '';
+  const criticalIdx = presetText.indexOf('CRITICAL:');
+  if (criticalIdx >= 0) {
+    critical = '\n' + presetText.slice(criticalIdx);
+    presetText = presetText.slice(0, criticalIdx).trimEnd();
+    if (preset === 'professor') {
+      narrationHint = ' IMPORTANT: End the narration with a parenthetical teaching aside like (Empathy +4 vs Good difficulty = three shifts of success!)';
+    } else if (preset === 'chronicler') {
+      narrationHint = ' IMPORTANT: Include at least one non-visual sense (sound, smell, touch, or taste) in the narration';
+    } else if (preset === 'trickster') {
+      narrationHint = ' IMPORTANT: Include dramatic irony, dark humor, or a hidden cost in the narration';
+    }
+  }
+  const head = presetText ? presetText + '\n' : `You are a TTRPG Dungeon Master with the "${preset}" personality.\n`;
+  return { head, critical, narrationHint };
+}
+
 export interface ScenePacing {
   sceneNumber: number;
   sceneTurnCount: number;
@@ -379,26 +404,16 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
   }
 
   private buildSystemPrompt(ctx: DmContext): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
-    let prompt: string;
-    let criticalSection = '';
-    let narrationHint = '';
+    const sections = composePresetSections(ctx.preset);
+    let prompt = sections.head;
+    const criticalSection = sections.critical;
+    const narrationHint = sections.narrationHint;
+
+    // The setup conversation's tailored prompt is ADDITIONAL direction, not a
+    // replacement — replacing it silently dropped the preset's personality
+    // enforcement and its narration hint.
     if (ctx.dmCustomPrompt) {
-      prompt = ctx.dmCustomPrompt + '\n';
-    } else {
-      let presetText = loadPresetText(ctx.preset) ?? '';
-      const criticalIdx = presetText.indexOf('CRITICAL:');
-      if (criticalIdx >= 0) {
-        criticalSection = '\n' + presetText.slice(criticalIdx);
-        presetText = presetText.slice(0, criticalIdx).trimEnd();
-        if (ctx.preset === 'professor') {
-          narrationHint = ' IMPORTANT: End the narration with a parenthetical teaching aside like (Empathy +4 vs Good difficulty = three shifts of success!)';
-        } else if (ctx.preset === 'chronicler') {
-          narrationHint = ' IMPORTANT: Include at least one non-visual sense (sound, smell, touch, or taste) in the narration';
-        } else if (ctx.preset === 'trickster') {
-          narrationHint = ' IMPORTANT: Include dramatic irony, dark humor, or a hidden cost in the narration';
-        }
-      }
-      prompt = presetText ? presetText + '\n' : `You are a TTRPG Dungeon Master with the "${ctx.preset}" personality.\n`;
+      prompt += `\nFor this campaign specifically:\n${ctx.dmCustomPrompt}\n`;
     }
 
     prompt += `
