@@ -11,8 +11,9 @@ const INITIAL_STATE = JSON.stringify({
 /**
  * The ONE path into the `characters` table.
  *
- * Both approval routes call this — the human host's, and the AI DM's when the
- * host is playing rather than running the table. It is a transaction because
+ * This is meant to be the ONLY path both approval routes call — the human
+ * host's today, and the AI DM's once it lands, for when the host is playing
+ * rather than running the table. It is a transaction because
  * the insert, the session claim, the interview status and the pending-row
  * delete have to move together: a half-applied approval leaves a character
  * that exists but nobody owns, or a pending row for a character already live.

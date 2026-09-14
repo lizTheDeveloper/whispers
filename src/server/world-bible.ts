@@ -439,6 +439,12 @@ export class WorldBible {
         const findId = (name: string) => {
           const entity = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) as any;
           if (entity) return entity.id;
+          // Deliberately not filtering revoked_at here: this resolves a
+          // participant in a relationship extracted from play, and a
+          // relationship involving a since-revoked character is still true
+          // history. Filtering would risk creating a duplicate entity for
+          // the same name instead of pointing back at the character that
+          // actually lived it.
           const char = this.db.prepare("SELECT id FROM characters WHERE campaign_id = ? AND json_extract(definition, '$.name') = ? COLLATE NOCASE").get(campaignId, name) as any;
           return char?.id ?? null;
         };

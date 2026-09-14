@@ -359,13 +359,13 @@ function sendReadiness(ws: WebSocket, campaign: import('../shared/types.js').Cam
 function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Campaign, joinCode: string, isOwner: boolean): void {
   const db = getDb();
   const players = (rooms.get(joinCode) ?? []).filter(p => !p.isOwner).map(p => p.playerName);
-  const approved = db.prepare('SELECT COUNT(*) AS c FROM characters WHERE campaign_id = ?').get(campaign.id) as { c: number };
+  const approvedCount = countLiveCharacters(db, campaign.id);
   send(ws, {
     type: 'lobby-state',
     players: [...new Set(players)],
     setupChat: isOwner ? loadSetupChat(db, campaign.id) : [],
     dmReady: Boolean(campaign.dmInstructions),
-    approvedCount: approved.c,
+    approvedCount,
     phase: campaign.phase,
     influences: isOwner ? getInfluences(db, campaign.id) : [],
     hostTableRole: isOwner ? campaign.hostTableRole : null,

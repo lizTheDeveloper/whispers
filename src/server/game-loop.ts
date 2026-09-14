@@ -53,7 +53,10 @@ export class GameLoop {
   }
 
   loadCharacters(): void {
-    const rows = this.db.prepare('SELECT * FROM characters WHERE campaign_id = ?').all(this.campaignId) as any[];
+    // A revoked character must not take turns — that is the exact scenario
+    // revocation exists to prevent, so this feeds initiativeOrder only rows
+    // that are still live.
+    const rows = this.db.prepare('SELECT * FROM characters WHERE campaign_id = ? AND revoked_at IS NULL').all(this.campaignId) as any[];
     for (const row of rows) {
       this.characters.set(row.id, {
         id: row.id,

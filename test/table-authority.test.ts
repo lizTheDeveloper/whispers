@@ -46,13 +46,26 @@ describe('makeCharacterLive', () => {
     expect(room.listPendingCharacters(db, campaignId)).toHaveLength(0);
   });
 
-  it('is all-or-nothing — a failure leaves no partial state', () => {
-    const { campaignId, pending } = seedPending('b');
-    // A pending row referencing a campaign that does not exist must not half-apply.
+  it('propagates a failure without applying the write it failed on', () => {
+    const { pending } = seedPending('b');
+    // What this proves: characters.campaign_id's FK is the only statement in
+    // makeCharacterLive that can throw, and it throws on the FIRST statement
+    // inside the transaction — so the throw propagates to the caller (it is
+    // not swallowed) and that first insert was not applied for `bad`'s own
+    // id, nor was the session claim that would have followed it.
+    //
+    // What this does NOT prove: rollback of a completed write. A failure
+    // that lands AFTER a successful statement — e.g. the pending-row delete
+    // failing once the insert and session claim already landed — is not
+    // exercised here, and could not be without a schema change:
+    // campaign_sessions.character_id has no FK, deletePendingCharacter
+    // cannot throw on a missing row, and SQLite cannot add a constraint via
+    // ALTER. Removing the `db.transaction(...)` wrapper entirely would not
+    // change this test's result.
     const bad = { ...pending, id: 'char-b2', campaignId: 'no-such-campaign' };
     expect(() => mod.makeCharacterLive(db, bad)).toThrow();
-    expect(room.countLiveCharacters(db, campaignId)).toBe(0);
-    expect(room.listPendingCharacters(db, campaignId)).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS c FROM characters WHERE id = ?').get(bad.id).c).toBe(0);
+    expect(db.prepare('SELECT character_id FROM campaign_sessions WHERE token = ?').get(bad.sessionToken).character_id).toBeNull();
   });
 });
 
