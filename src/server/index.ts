@@ -575,6 +575,22 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: shapeError });
         return;
       }
+      // Shape only bounds sizes/types — it has no notion of "finished".
+      // A confirmed interview definition has already cleared this same
+      // readiness bar (that is what "confirmed" means), so this is a
+      // no-op for that path. The "Build here" and "Paste markdown" tabs
+      // have no readiness gate of their own, so without this a sheet with
+      // a name, high concept and trouble but zero skills/aspects/stunts
+      // would sail through — a character that cannot roll anything.
+      // Named per-character (not just "unmet: skills") because the paste
+      // tab can submit several characters from one click, and the 'error'
+      // message is a plain string with no submission-correlation id to
+      // otherwise tell the player which sheet the refusal is about.
+      const readiness = checkCharacterReadiness(msg.definition);
+      if (!readiness.ready) {
+        send(ws, { type: 'error', message: `${msg.definition.name} is not ready: ${readiness.detail.join(' ')}` });
+        return;
+      }
       const campaign = submitCampaign;
       const dm = new DmAgent(db);
       const charId = randomBytes(16).toString('hex');
