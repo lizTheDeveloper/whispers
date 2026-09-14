@@ -111,6 +111,10 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   let phase: GamePhase = 'lobby';
   let hostTableRole: TableRole | null = null;
   let currentSeed: WorldSeed | null = null;
+  // True only while a "Draft it again" request is in flight. Guards resetSeedButtons()
+  // against an unrelated world-readiness broadcast (e.g. from a chat message sent while
+  // the redraft is still pending) re-enabling Accept against the stale pre-redraft seed.
+  let redraftPending = false;
 
   function addChatMessage(text: string, sender: 'dm' | 'host') {
     const bubble = document.createElement('div');
@@ -238,6 +242,12 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   roleDmBtn.addEventListener('click', () => ws.send({ type: 'choose-table-role', role: 'dm' }));
   rolePlayerBtn.addEventListener('click', () => ws.send({ type: 'choose-table-role', role: 'player' }));
 
+  // Relies on WsClient.on registering into a Set that is still being iterated by the very
+  // dispatch that called renderDmLobby (via main.ts's own 'room-joined' handler) — Set.forEach
+  // visits handlers added during its own pass, which is how this catches the room-joined that
+  // caused this view to mount. Correct per spec, but non-obvious: a future rewrite of
+  // ws-client.ts's dispatch to e.g. [...set].forEach(...) would silently stop delivering this
+  // first message, with nothing to catch the regression.
   ws.on('room-joined', (msg) => {
     if (msg.type !== 'room-joined') return;
     hostTableRole = msg.tableRole;
@@ -360,6 +370,10 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
 
   function renderSeed(seed: WorldSeed, accepted: boolean) {
     currentSeed = seed;
+    // A new draft is the authoritative end of any in-flight redraft, whether this one
+    // IS that redraft's result or a later draft superseded it — either way there is no
+    // longer a pending request whose stale seed resetSeedButtons() needs to protect.
+    redraftPending = false;
     seedPanel.classList.remove('hidden');
     seedPanel.replaceChildren();
 
@@ -416,6 +430,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
         acceptBtn.disabled = true;
         redraftBtn.disabled = true;
         redraftBtn.textContent = 'Drafting...';
+        redraftPending = true;
         const note = noteInput.value.trim();
         ws.send({ type: 'regenerate-world-seed', note: note.length > 0 ? note : undefined });
       });
@@ -428,6 +443,10 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   }
 
   function resetSeedButtons() {
+    // A pending redraft owns the disabled state until its own draft or error arrives —
+    // an unrelated world-readiness broadcast must not re-arm Accept against the seed
+    // that redraft is about to replace (see redraftPending's declaration above).
+    if (redraftPending) return;
     const acceptBtn = seedPanel.querySelector('#accept-seed-btn') as HTMLButtonElement | null;
     const redraftBtn = seedPanel.querySelector('#redraft-seed-btn') as HTMLButtonElement | null;
     if (acceptBtn) acceptBtn.disabled = false;
@@ -589,6 +608,9 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     if (msg.type !== 'error') return;
     hideTyping();
     chatSend.disabled = false;
+    // Any server error ends whatever request was pending, including a failed redraft --
+    // this must clear unconditionally or a failed redraft leaves the panel permanently disabled.
+    redraftPending = false;
     resetSeedButtons();
   });
 }
