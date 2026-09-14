@@ -15,13 +15,13 @@ const ws = new WsClient();
  * all and wiped whatever was on screen.
  */
 let currentView: string | null = null;
-let isHost = false;
+let isOwner = false;
 
 function renderFor(joinCode: string, campaignId: string, host: boolean, phase: GamePhase): void {
   const key = `${host ? 'dm' : 'play'}:${joinCode}:${phase}`;
   if (currentView === key) return; // silent reconnect — leave the screen alone
   currentView = key;
-  isHost = host;
+  isOwner = host;
 
   if (phase === 'playing' || phase === 'ended') {
     renderGameView(root, ws, host);
@@ -39,14 +39,14 @@ ws.on('room-joined', (msg) => {
     campaignId: msg.campaignId,
     joinCode: msg.joinCode,
     gameName: msg.gameName,
-    role: msg.isHost ? 'dm' : 'player',
+    role: msg.isOwner ? 'dm' : 'player',
     playerName: msg.playerName,
     sessionToken: msg.sessionToken,
     phase: msg.phase,
     lastSeen: Date.now(),
   });
-  setRoute({ view: msg.isHost ? 'dm' : 'play', joinCode: msg.joinCode });
-  renderFor(msg.joinCode, msg.campaignId, msg.isHost, msg.phase);
+  setRoute({ view: msg.isOwner ? 'dm' : 'play', joinCode: msg.joinCode });
+  renderFor(msg.joinCode, msg.campaignId, msg.isOwner, msg.phase);
 });
 
 ws.on('phase-change', (msg) => {
@@ -55,8 +55,8 @@ ws.on('phase-change', (msg) => {
   if (currentView?.endsWith(':playing')) return;
   const [, joinCode] = currentView?.split(':') ?? [];
   if (!joinCode) return;
-  currentView = `${isHost ? 'dm' : 'play'}:${joinCode}:playing`;
-  renderGameView(root, ws, isHost);
+  currentView = `${isOwner ? 'dm' : 'play'}:${joinCode}:playing`;
+  renderGameView(root, ws, isOwner);
 });
 
 ws.on('error', (msg) => {

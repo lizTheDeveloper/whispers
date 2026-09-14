@@ -39,10 +39,23 @@ function closeWs(ws: WebSocket): Promise<void> {
   return new Promise((r) => { ws.once('close', () => r()); ws.close(); });
 }
 
+/** Drives world setup to completion — the stub returns done:true once the host speaks. */
+async function finishWorldSetup(ws: WebSocket, q: MessageQueue) {
+  sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
+  // createGame() doesn't consume the DM's opening greeting (done: false), which
+  // may still be sitting in the queue's buffer ahead of the reply to the message
+  // we just sent — drain until we see the reply that actually answers it.
+  let reply: any;
+  do {
+    reply = await q.waitFor('dm-chat-reply', 15_000) as any;
+  } while (!reply.done);
+  expect(reply.done).toBe(true);
+}
+
 describe('DM session survives a page refresh', () => {
   it('hands the host a session token it can come back with', async () => {
     const { ws, joined } = await createGame();
-    expect(joined.isHost).toBe(true);
+    expect(joined.isOwner).toBe(true);
     expect(typeof joined.sessionToken).toBe('string');
     expect((joined.sessionToken as string).length).toBeGreaterThan(16);
     await closeWs(ws);
@@ -58,7 +71,7 @@ describe('DM session survives a page refresh', () => {
     sendMsg(ws2, { type: 'rejoin', joinCode, sessionToken } as any);
     const rejoined = await q2.waitFor('room-joined', 10_000) as any;
 
-    expect(rejoined.isHost).toBe(true);
+    expect(rejoined.isOwner).toBe(true);
     expect(rejoined.joinCode).toBe(joinCode);
     await closeWs(ws2);
   }, 20_000);
@@ -153,7 +166,7 @@ describe('Rejoin cannot be used to take over another seat', () => {
     sendMsg(attacker, { type: 'rejoin', joinCode, playerName: 'Host' } as any);
     const reply = await aq.waitForAny(['room-joined', 'error'], 10_000) as any;
 
-    expect(reply.type === 'room-joined' && reply.isHost).not.toBe(true);
+    expect(reply.type === 'room-joined' && reply.isOwner).not.toBe(true);
     await closeWs(attacker);
     await closeWs(ws);
   }, 20_000);
@@ -237,5 +250,39 @@ describe('A stale socket closing does not evict the reconnected seat', () => {
 
     await closeWs(playerWs);
     await closeWs(hostWs2);
+  }, 40_000);
+});
+
+describe('Table role governs DM authority', () => {
+  it('reports ownership and an unset table role to the creator', async () => {
+    const { ws, joined } = await createGame();
+    expect(joined.isOwner).toBe(true);
+    expect(joined.tableRole).toBeNull();
+    await closeWs(ws);
+  }, 20_000);
+
+  it('refuses character approval from an owner who chose to play', async () => {
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
+    const { joinCode } = joined;
+
+    await finishWorldSetup(hostWs, hostQ);
+
+    sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
+    await hostQ.waitFor('room-joined', 10_000); // re-sent with the new role
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+
+    // The owner is playing, so this approval must not take effect.
+    sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+
+    await expect(pq.waitFor('character-submitted', 3_000)).rejects.toThrow(/Timeout/);
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
   }, 40_000);
 });

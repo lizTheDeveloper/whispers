@@ -9,13 +9,14 @@ import { getDb, getDataDir } from './db.js';
 import {
   createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
-  saveSetupChat, loadSetupChat, setCampaignPhase,
+  saveSetupChat, loadSetupChat, setCampaignPhase, setHostTableRole,
   type PendingCharacterRow,
 } from './room.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
 import { NegotiationRoom } from './negotiation.js';
+import { hasDmAuthority, isWorldAuthor } from './seat.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import type { CampaignMaterial } from '../shared/types.js';
 
@@ -102,7 +103,7 @@ interface ConnectedPlayer {
   sessionToken: string;
   playerName: string;
   characterId: string | null;
-  isHost: boolean;
+  isOwner: boolean;
   setupChat: Array<{ role: string; content: string }>;
   charChat: Array<{ role: string; content: string }>;
 }
@@ -130,7 +131,7 @@ function socketFor(joinCode: string, sessionToken: string): WebSocket | null {
 }
 
 function hostSocket(joinCode: string): WebSocket | null {
-  const h = rooms.get(joinCode)?.find(p => p.isHost);
+  const h = rooms.get(joinCode)?.find(p => p.isOwner);
   return h && h.ws.readyState === WebSocket.OPEN ? h.ws : null;
 }
 
@@ -182,7 +183,7 @@ function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Ca
  */
 function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Campaign, joinCode: string): void {
   const db = getDb();
-  const players = (rooms.get(joinCode) ?? []).filter(p => !p.isHost).map(p => p.playerName);
+  const players = (rooms.get(joinCode) ?? []).filter(p => !p.isOwner).map(p => p.playerName);
   const approved = db.prepare('SELECT COUNT(*) AS c FROM characters WHERE campaign_id = ?').get(campaign.id) as { c: number };
   send(ws, {
     type: 'lobby-state',
@@ -212,18 +213,19 @@ wss.on('connection', (ws) => {
       });
       const session = createSession(db, { campaignId, joinCode, playerName: 'Host', isHost: true });
       currentJoinCode = joinCode;
-      currentPlayer = { ws, sessionToken: session.token, playerName: 'Host', characterId: null, isHost: true, setupChat: [], charChat: [] };
+      currentPlayer = { ws, sessionToken: session.token, playerName: 'Host', characterId: null, isOwner: true, setupChat: [], charChat: [] };
       rooms.set(joinCode, [currentPlayer]);
+
+      const campaign = joinRoom(db, joinCode);
       send(ws, {
         type: 'room-joined',
-        campaignId, joinCode, isHost: true,
+        campaignId, joinCode, isOwner: true, tableRole: campaign ? campaign.hostTableRole : null,
         sessionToken: session.token,
         gameName: msg.name,
         playerName: 'Host',
         phase: 'lobby',
       });
 
-      const campaign = joinRoom(db, joinCode);
       if (campaign) sendDmSettings(ws, campaign);
 
       const dm = new DmAgent(db);
@@ -241,13 +243,13 @@ wss.on('connection', (ws) => {
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
       const session = createSession(db, { campaignId: campaign.id, joinCode: msg.joinCode, playerName: msg.playerName, isHost: false });
       currentJoinCode = msg.joinCode;
-      currentPlayer = { ws, sessionToken: session.token, playerName: msg.playerName, characterId: null, isHost: false, setupChat: [], charChat: [] };
+      currentPlayer = { ws, sessionToken: session.token, playerName: msg.playerName, characterId: null, isOwner: false, setupChat: [], charChat: [] };
       const players = rooms.get(msg.joinCode) ?? [];
       players.push(currentPlayer);
       rooms.set(msg.joinCode, players);
       send(ws, {
         type: 'room-joined',
-        campaignId: campaign.id, joinCode: msg.joinCode, isHost: false,
+        campaignId: campaign.id, joinCode: msg.joinCode, isOwner: false, tableRole: campaign.hostTableRole,
         sessionToken: session.token,
         gameName: campaign.name,
         playerName: msg.playerName,
@@ -274,7 +276,7 @@ wss.on('connection', (ws) => {
       }
 
       const playerName = session.playerName;
-      const isHost = session.isHost;
+      const isOwner = session.isHost;
       currentJoinCode = msg.joinCode;
 
       const players = rooms.get(msg.joinCode) ?? [];
@@ -284,29 +286,29 @@ wss.on('connection', (ws) => {
 
       if (existing) {
         existing.ws = ws;
-        existing.isHost = isHost;
+        existing.isOwner = isOwner;
         currentPlayer = existing;
       } else {
         currentPlayer = {
           ws, sessionToken: session.token, playerName,
           characterId: session.characterId,
-          isHost, setupChat: [], charChat: [],
+          isOwner, setupChat: [], charChat: [],
         };
         players.push(currentPlayer);
       }
       touchSession(db, session.token);
-      console.log(`[server] "${playerName}" rejoined room ${msg.joinCode} as ${isHost ? 'host' : 'player'}`);
+      console.log(`[server] "${playerName}" rejoined room ${msg.joinCode} as ${isOwner ? 'host' : 'player'}`);
 
       send(ws, {
         type: 'room-joined',
-        campaignId: campaign.id, joinCode: msg.joinCode, isHost: currentPlayer.isHost,
+        campaignId: campaign.id, joinCode: msg.joinCode, isOwner: currentPlayer.isOwner, tableRole: campaign.hostTableRole,
         sessionToken: currentPlayer.sessionToken,
         gameName: campaign.name,
         playerName,
         phase: campaign.phase,
       });
 
-      if (currentPlayer.isHost) {
+      if (currentPlayer.isOwner) {
         currentPlayer.setupChat = loadSetupChat(db, campaign.id);
         sendDmSettings(ws, campaign);
         sendLobbyState(ws, campaign, msg.joinCode);
@@ -393,9 +395,28 @@ wss.on('connection', (ws) => {
       }
     }
 
-    if (msg.type === 'host-approve-character' && currentJoinCode && currentPlayer?.isHost) {
+    if (msg.type === 'choose-table-role' && currentJoinCode && isWorldAuthor(currentPlayer)) {
+      if (msg.role !== 'dm' && msg.role !== 'player') return;
+      const campaign = joinRoom(db, currentJoinCode);
+      if (!campaign) return;
+      if (campaign.phase !== 'lobby') {
+        send(ws, { type: 'error', message: 'The table role is fixed once the game opens.' });
+        return;
+      }
+      setHostTableRole(db, campaign.id, msg.role);
+      send(ws, {
+        type: 'room-joined',
+        campaignId: campaign.id, joinCode: currentJoinCode,
+        isOwner: true, tableRole: msg.role,
+        sessionToken: currentPlayer!.sessionToken,
+        gameName: campaign.name, playerName: currentPlayer!.playerName,
+        phase: campaign.phase,
+      });
+    }
+
+    if (msg.type === 'host-approve-character' && currentJoinCode) {
       const hostCampaign = joinRoom(db, currentJoinCode);
-      if (!hostCampaign) return;
+      if (!hostCampaign || !hasDmAuthority(currentPlayer, hostCampaign.hostTableRole)) return;
       const pending = listPendingCharacters(db, hostCampaign.id).find(p => p.id === msg.characterId);
       if (!pending) return;
       const initialState = JSON.stringify({
@@ -417,9 +438,9 @@ wss.on('connection', (ws) => {
       deletePendingCharacter(db, msg.characterId);
     }
 
-    if (msg.type === 'host-reject-character' && currentJoinCode && currentPlayer?.isHost) {
+    if (msg.type === 'host-reject-character' && currentJoinCode) {
       const hostCampaign = joinRoom(db, currentJoinCode);
-      if (!hostCampaign) return;
+      if (!hostCampaign || !hasDmAuthority(currentPlayer, hostCampaign.hostTableRole)) return;
       const pending = listPendingCharacters(db, hostCampaign.id).find(p => p.id === msg.characterId);
       if (!pending) return;
       const playerWs = socketFor(currentJoinCode, pending.sessionToken);
@@ -453,7 +474,7 @@ wss.on('connection', (ws) => {
       }
     }
 
-    if (msg.type === 'dm-chat' && currentJoinCode && currentPlayer?.isHost) {
+    if (msg.type === 'dm-chat' && currentJoinCode && currentPlayer && isWorldAuthor(currentPlayer)) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
       currentPlayer.setupChat.push({ role: 'user', content: msg.text });
@@ -474,14 +495,14 @@ wss.on('connection', (ws) => {
       }
     }
 
-    if (msg.type === 'update-dm-settings' && currentJoinCode && currentPlayer?.isHost) {
+    if (msg.type === 'update-dm-settings' && currentJoinCode && isWorldAuthor(currentPlayer)) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
       db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")
         .run(msg.dmInstructions, msg.dmCustomPrompt, campaign.id);
     }
 
-    if (msg.type === 'start-game' && currentJoinCode && currentPlayer?.isHost) {
+    if (msg.type === 'start-game' && currentJoinCode && isWorldAuthor(currentPlayer)) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
       const players = rooms.get(currentJoinCode);
@@ -490,7 +511,7 @@ wss.on('connection', (ws) => {
       const gameLoop = new GameLoop(
         db, campaign.id,
         (m) => broadcast(jc, m),
-        (m) => { const host = players.find(p => p.isHost); if (host) send(host.ws, m); },
+        (m) => { const host = players.find(p => p.isOwner); if (host) send(host.ws, m); },
         { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
       );
       gameLoops.set(jc, gameLoop);
@@ -506,7 +527,7 @@ wss.on('connection', (ws) => {
       loop?.handleWhisper(whisperText);
     }
 
-    if (msg.type === 'end-game' && currentJoinCode && currentPlayer?.isHost) {
+    if (msg.type === 'end-game' && currentJoinCode && isWorldAuthor(currentPlayer)) {
       const jc = currentJoinCode;
       const endedCampaign = joinRoom(db, jc);
       if (endedCampaign) setCampaignPhase(db, endedCampaign.id, 'ended');
