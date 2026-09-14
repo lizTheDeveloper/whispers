@@ -1,5 +1,5 @@
 import type {
-  CharacterDefinition, CharacterState, DiceResult, GamePhase,
+  CharacterDefinition, CharacterReadiness, CharacterState, DiceResult, GamePhase,
 } from './types.js';
 
 export type ClientMessage =
@@ -7,6 +7,7 @@ export type ClientMessage =
   | { type: 'create'; name: string; dmPreset: string; scenarioId: string | null; systemId: string; houseRules: string | null }
   | { type: 'submit-character'; definition: CharacterDefinition }
   | { type: 'char-chat'; text: string }
+  | { type: 'confirm-character' }
   | { type: 'rejoin'; joinCode: string; sessionToken: string }
   | { type: 'whisper'; text: string }
   | { type: 'dm-answer'; text: string }
@@ -50,6 +51,10 @@ export type ServerMessage =
   | { type: 'world-seed-draft'; seed: import('./types.js').WorldSeed; accepted: boolean }
   | { type: 'world-readiness'; readiness: import('./types.js').WorldReadiness; influences: string[] }
   | { type: 'char-chat-reply'; text: string; definition: CharacterDefinition | null }
+  | { type: 'world-introduction'; text: string }
+  | { type: 'character-preview'; definition: CharacterDefinition; readiness: CharacterReadiness }
+  | { type: 'character-readiness'; readiness: CharacterReadiness }
+  | { type: 'interview-replay'; transcript: Array<{ role: string; content: string }>; definition: CharacterDefinition | null }
   | { type: 'material-uploaded'; material: import('./types.js').CampaignMaterial }
   | { type: 'token-usage'; used: number; remaining: number | null }
   | { type: 'error'; message: string };

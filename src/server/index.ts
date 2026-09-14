@@ -24,8 +24,12 @@ import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor } from './seat.js';
+import {
+  getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewStatus, getInterviewBySession,
+} from './character-interview.js';
+import { checkCharacterReadiness } from './character-readiness.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
-import type { CampaignMaterial } from '../shared/types.js';
+import type { CampaignMaterial, CharacterDefinition } from '../shared/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
@@ -112,7 +116,6 @@ interface ConnectedPlayer {
   characterId: string | null;
   isOwner: boolean;
   setupChat: Array<{ role: string; content: string }>;
-  charChat: Array<{ role: string; content: string }>;
 }
 
 const rooms = new Map<string, ConnectedPlayer[]>();
@@ -312,6 +315,53 @@ function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Ca
   });
 }
 
+/**
+ * The player's first sight of the world, sent once character creation opens.
+ * Written in the fiction, not as a briefing (see DmAgent.introduceWorld) — it
+ * must exist before a player is asked who they are, but it must never BLOCK
+ * that: introduceWorld calls the LLM with no schema, so any failure here
+ * (timeout, outage, malformed proxy response) is caught, logged, and sends
+ * nothing rather than stall or corrupt character creation.
+ */
+async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/types.js').Campaign): Promise<void> {
+  try {
+    const db = getDb();
+    const seed = getWorldSeed(db, campaign.id);
+    if (!seed) {
+      console.warn(`[world-introduction] no world seed yet for campaign ${campaign.id}`);
+      return;
+    }
+    const dm = new DmAgent(db);
+    const text = await dm.introduceWorld({
+      preset: campaign.dmPreset,
+      influences: getInfluences(db, campaign.id),
+      seed,
+    });
+    send(ws, { type: 'world-introduction', text });
+  } catch (e) {
+    console.error('[world-introduction] failed:', e);
+  }
+}
+
+/**
+ * Deep, key-order-independent structural equality. Used to decide whether a
+ * submit-character definition is the one an interview actually produced —
+ * JSON.stringify alone would false-negative on key-order differences
+ * introduced by the client re-serializing what it received.
+ */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function definitionsMatch(a: CharacterDefinition, b: unknown): boolean {
+  return stableStringify(a) === stableStringify(b);
+}
+
 wss.on('connection', (ws) => {
   const db = getDb();
   let currentJoinCode: string | null = null;
@@ -335,7 +385,7 @@ wss.on('connection', (ws) => {
       });
       const session = createSession(db, { campaignId, joinCode, playerName: 'Host', isHost: true });
       currentJoinCode = joinCode;
-      currentPlayer = { ws, sessionToken: session.token, playerName: 'Host', characterId: null, isOwner: true, setupChat: [], charChat: [] };
+      currentPlayer = { ws, sessionToken: session.token, playerName: 'Host', characterId: null, isOwner: true, setupChat: [] };
       rooms.set(joinCode, [currentPlayer]);
 
       const campaign = joinRoom(db, joinCode);
@@ -369,7 +419,7 @@ wss.on('connection', (ws) => {
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
       const session = createSession(db, { campaignId: campaign.id, joinCode: msg.joinCode, playerName: msg.playerName, isHost: false });
       currentJoinCode = msg.joinCode;
-      currentPlayer = { ws, sessionToken: session.token, playerName: msg.playerName, characterId: null, isOwner: false, setupChat: [], charChat: [] };
+      currentPlayer = { ws, sessionToken: session.token, playerName: msg.playerName, characterId: null, isOwner: false, setupChat: [] };
       const players = rooms.get(msg.joinCode) ?? [];
       players.push(currentPlayer);
       rooms.set(msg.joinCode, players);
@@ -382,6 +432,9 @@ wss.on('connection', (ws) => {
         phase: campaign.phase,
       });
       broadcast(msg.joinCode, { type: 'player-joined', playerName: msg.playerName, characterId: null });
+      if (campaign.phase === 'character-creation') {
+        await sendWorldIntroduction(ws, campaign);
+      }
     }
 
     if (msg.type === 'rejoin') {
@@ -418,7 +471,7 @@ wss.on('connection', (ws) => {
         currentPlayer = {
           ws, sessionToken: session.token, playerName,
           characterId: session.characterId,
-          isOwner, setupChat: [], charChat: [],
+          isOwner, setupChat: [],
         };
         players.push(currentPlayer);
       }
@@ -456,6 +509,15 @@ wss.on('connection', (ws) => {
           if (neg && !neg.isClosed()) neg.replayTo(ws);
         }
         broadcast(msg.joinCode, { type: 'player-joined', playerName, characterId: currentPlayer.characterId });
+
+        if (campaign.phase === 'character-creation') {
+          const interview = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken);
+          if (interview && interview.transcript.length > 0) {
+            send(ws, { type: 'interview-replay', transcript: interview.transcript, definition: interview.definition });
+          } else {
+            await sendWorldIntroduction(ws, campaign);
+          }
+        }
       }
 
       send(ws, { type: 'phase-change', phase: campaign.phase });
@@ -476,6 +538,20 @@ wss.on('connection', (ws) => {
       if (shapeError) {
         send(ws, { type: 'error', message: shapeError });
         return;
+      }
+      // The submit gate only applies to a definition that actually came from
+      // an interview — the "Build here" and "Paste markdown" tabs have no
+      // interview record and must keep submitting exactly as before. A
+      // definition "came from" an interview when it structurally matches the
+      // one the interview derived; the model does not get to decide an
+      // interview is finished, so an unconfirmed match is refused here even
+      // though it already passed shape validation.
+      if (currentPlayer?.sessionToken) {
+        const interview = getInterviewBySession(db, submitCampaign.id, currentPlayer.sessionToken);
+        if (interview?.definition && interview.status !== 'confirmed' && definitionsMatch(interview.definition, msg.definition)) {
+          send(ws, { type: 'error', message: 'Confirm your character before submitting it.' });
+          return;
+        }
       }
       const campaign = submitCampaign;
       const dm = new DmAgent(db);
@@ -602,31 +678,71 @@ wss.on('connection', (ws) => {
         .catch(e => console.error('[negotiation] message handling failed:', e));
     }
 
-    if (msg.type === 'char-chat' && currentJoinCode && currentPlayer) {
+    if (msg.type === 'char-chat' && currentJoinCode && currentPlayer?.sessionToken) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
-      if (campaign.phase === 'lobby') {
-        send(ws, { type: 'error', message: 'The DM is still building the world — character creation opens when it is ready.' });
+      // Widened from "refuse only in lobby" — an interview left reachable
+      // during playing/ended was never intended; character creation is only
+      // open during the character-creation phase.
+      if (campaign.phase !== 'character-creation') {
+        send(ws, { type: 'error', message: 'Character creation is not open right now.' });
         return;
       }
-      currentPlayer.charChat.push({ role: 'user', content: msg.text });
+      if (!isValidLongField(msg.text) || !msg.text.trim()) {
+        send(ws, { type: 'error', message: 'That message was too long to send.' });
+        return;
+      }
+
+      const interview = getOrCreateInterview(db, campaign.id, currentPlayer.sessionToken);
+      appendInterviewTurn(db, interview.id, { role: 'user', content: msg.text });
+
       const dm = new DmAgent(db);
       try {
+        const before = checkCharacterReadiness(interview.definition);
+        const history = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
         const reply = await dm.interviewForCharacter({
           systemId: campaign.systemId,
           preset: campaign.dmPreset,
           playerName: currentPlayer.playerName,
           influences: getInfluences(db, campaign.id),
           seed: getWorldSeed(db, campaign.id),
-          history: currentPlayer.charChat,
-          unmet: [],
+          history,
+          unmet: before.detail,
         });
-        currentPlayer.charChat.push({ role: 'assistant', content: reply.reply });
-        send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
+        appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
+
+        const readiness = checkCharacterReadiness(reply.definition);
+        if (reply.definition && readiness.ready) {
+          setInterviewDefinition(db, interview.id, reply.definition);
+          send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
+          send(ws, { type: 'character-preview', definition: reply.definition, readiness });
+        } else {
+          // A proposed-but-incomplete sheet is NOT shown as a definition — the
+          // model does not get to decide the interview is finished.
+          send(ws, { type: 'char-chat-reply', text: reply.reply, definition: null });
+          send(ws, { type: 'character-readiness', readiness });
+        }
       } catch (e) {
         console.error('[char-chat] error:', e);
-        send(ws, { type: 'char-chat-reply', text: 'I had trouble building your character — could you rephrase or give me more details?', definition: null });
+        send(ws, { type: 'char-chat-reply', text: 'I had trouble following that — could you say it another way?', definition: null });
       }
+    }
+
+    if (msg.type === 'confirm-character' && currentJoinCode && currentPlayer?.sessionToken) {
+      const campaign = joinRoom(db, currentJoinCode);
+      if (!campaign) return;
+      const interview = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken);
+      if (!interview?.definition) {
+        send(ws, { type: 'error', message: 'There is no character to confirm yet.' });
+        return;
+      }
+      const readiness = checkCharacterReadiness(interview.definition);
+      if (!readiness.ready) {
+        send(ws, { type: 'error', message: 'That character is not finished yet.' });
+        return;
+      }
+      setInterviewStatus(db, interview.id, 'confirmed');
+      send(ws, { type: 'character-preview', definition: interview.definition, readiness });
     }
 
     if (msg.type === 'dm-chat' && currentJoinCode && currentPlayer && isWorldAuthor(currentPlayer)) {
@@ -767,6 +883,12 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'world-seed-draft', seed: parsed.data, accepted: true });
         if (advanced) {
           broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
+          // Every player already at the table meets the world the moment it
+          // opens, rather than waiting for their first char-chat message.
+          const others = (rooms.get(currentJoinCode) ?? []).filter(p => !p.isOwner);
+          for (const p of others) {
+            await sendWorldIntroduction(p.ws, campaign);
+          }
         }
         sendReadiness(ws, joinRoom(db, currentJoinCode)!);
       } catch (e) {

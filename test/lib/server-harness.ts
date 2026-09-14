@@ -52,9 +52,8 @@ export const LLM_STUB_REPLIES = {
       stunts: ['Steady Hand: +2 to Will against fear.'],
     },
   },
-  worldIntroduction: {
-    text: 'The lamp has been lit every night for thirty years. Tonight the relief keeper did not arrive, and the chapel below has no bell to ring.',
-  },
+  worldIntroduction:
+    'The lamp has been lit every night for thirty years. Tonight the relief keeper did not arrive, and the chapel below has no bell to ring.',
 };
 
 export interface Harness {
@@ -106,7 +105,7 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
         if (body.includes('You are a world builder for a TTRPG')) {
           text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
         } else if (body.includes('introducing a player to a world')) {
-          text = JSON.stringify(LLM_STUB_REPLIES.worldIntroduction);
+          text = LLM_STUB_REPLIES.worldIntroduction;
         } else if (body.includes('character creation API')) {
           // The interview turns "done" once the player has answered twice, so a
           // test can drive it deterministically instead of guessing turn counts.
