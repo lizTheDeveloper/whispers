@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { dataPath, safeDataFile } from '../src/server/data-paths.js';
-import { composePresetSections } from '../src/server/agents/dm.js';
+import { composePresetSections, assembleSystemPrompt } from '../src/server/agents/dm.js';
 
 describe('data path resolution', () => {
   it('finds the DM preset files that ship with the repo', () => {
@@ -70,11 +70,31 @@ describe('preset sections compose', () => {
 });
 
 describe('dmCustomPrompt augments rather than replaces', () => {
-  it('keeps the preset head and CRITICAL section when a custom prompt exists', () => {
+  it('keeps the preset personality when a custom prompt is present', () => {
     const { head, critical } = composePresetSections('trickster');
-    // The composed sections are independent of dmCustomPrompt by construction:
-    // buildSystemPrompt starts from them unconditionally.
-    expect(head.length).toBeGreaterThan(100);
-    expect(critical).toContain('CRITICAL:');
+    const presetOpening = head.slice(0, 60).trim();
+
+    const withCustom = assembleSystemPrompt({
+      preset: 'trickster',
+      dmCustomPrompt: 'SENTINEL-CUSTOM-PROMPT',
+      houseRules: null,
+      dmInstructions: null,
+      campaignMaterials: null,
+    });
+
+    // Both must be present. Replacing the preset drops the first.
+    expect(withCustom.systemPrompt).toContain(presetOpening);
+    expect(withCustom.systemPrompt).toContain('SENTINEL-CUSTOM-PROMPT');
+    expect(withCustom.systemPrompt).toContain(critical.trim());
+    expect(withCustom.criticalReminder).not.toBe('');
+    expect(withCustom.narrationHint).not.toBe('');
+  });
+
+  it('is otherwise identical to the no-custom-prompt case', () => {
+    const withoutCustom = assembleSystemPrompt({
+      preset: 'trickster', dmCustomPrompt: null, houseRules: null, dmInstructions: null, campaignMaterials: null,
+    });
+    expect(withoutCustom.systemPrompt).not.toContain('SENTINEL-CUSTOM-PROMPT');
+    expect(withoutCustom.criticalReminder).not.toBe('');
   });
 });

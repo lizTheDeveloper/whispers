@@ -42,6 +42,63 @@ export function composePresetSections(preset: string): { head: string; critical:
   return { head, critical, narrationHint };
 }
 
+/**
+ * Pure prompt assembly. Exported so the composition order and — critically —
+ * the fact that dmCustomPrompt AUGMENTS rather than replaces the preset are
+ * directly testable. The original bug was a branch here, not in
+ * composePresetSections, so that is where the guard has to be.
+ */
+export function assembleSystemPrompt(input: {
+  preset: string;
+  dmCustomPrompt: string | null;
+  houseRules: string | null;
+  dmInstructions: string | null;
+  campaignMaterials: string | null;
+}): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
+  const sections = composePresetSections(input.preset);
+  let prompt = sections.head;
+  const criticalSection = sections.critical;
+  const narrationHint = sections.narrationHint;
+
+  // The setup conversation's tailored prompt is ADDITIONAL direction, not a
+  // replacement — replacing it silently dropped the preset's personality
+  // enforcement and its narration hint.
+  if (input.dmCustomPrompt) {
+    prompt += `\nFor this campaign specifically:\n${input.dmCustomPrompt}\n`;
+  }
+
+  prompt += `
+Storytelling principles:
+- Actions have real consequences. Not every plan works. Failure creates drama.
+- NPCs have their own goals and react to the party's actions, even between scenes.
+- VOICE YOUR NPCs: When an NPC is present and the scene involves them, give them ACTUAL DIALOGUE in quotation marks. A tavern keeper says "You'll find no friends past the Irongate — just ghosts and the things that eat them." A guard captain barks "State your business or turn back." NPCs who speak feel alive; NPCs who are only described feel like furniture. At least one NPC should speak per narration when NPCs are present.
+- The world moves forward whether characters act or not — time pressure matters.
+- Introduce complications that force hard choices, not just combat encounters.
+- Use the environment as an active element — weather, terrain, crowds, lighting.
+- When characters succeed, success should change the situation, not just confirm it.
+- WEAVE BACK earlier threads: if the world state lists UNRESOLVED THREADS, advance at least one per narration. Reintroduce NPCs, revisit locations, or reveal consequences of past actions.
+- INVOKE TROUBLE ASPECTS: Each character has a "trouble" aspect — a personal flaw or complication. Create situations that TARGET these troubles. If a character's trouble is "Haunted by the War," put them face-to-face with a war memorial or a former comrade. If it's "Visions I Cannot Unsee," show them something that triggers a vision at the worst moment. Trouble compels create the most memorable scenes.
+- VARY your imagery: do not repeat the same visual motifs (e.g. "skeletal hands," "black water") more than twice in a scene. Introduce new sensory details — sounds, smells, temperature, texture — to keep the world alive.
+- Build toward a dramatic question — each scene should move the story closer to answering: will the party succeed, and at what cost?
+- ADVANCE THROUGH LOCATIONS: Check the "Known locations" list in the world state — the party should visit these NAMED locations as the story progresses. Use their EXACT names in your narration (e.g. "The Clockwork Antechamber" not "a chamber"). Don't let them linger in one location for more than 2-3 rounds. Each scene transition should move deeper into the adventure. If the party has been in the same location for 3+ rounds, create a reason to move them forward — a collapsing passage, a discovered exit, an NPC leading them onward.
+- PARTY DYNAMICS: When multiple characters are present, create situations that force them to INTERACT — a locked door one can pick while another stands guard, a moral dilemma where their values conflict, an NPC who trusts one character but fears another. Reference each character's last action in your narration. If one character just failed, show how it affects the others. The most interesting party moments come from characters disagreeing about what to do next.
+- WHISPER AWARENESS: Characters hear a mysterious voice (the player's whispers). When the transcript shows a character heeded or resisted a whisper, weave that into the narrative. A character following dangerous whispers might attract dark attention; one resisting wise counsel might face harder consequences. The whisper influence is the game's central tension — make it matter in the story.
+- CREATE WHISPER MOMENTS: At least once per scene, present a situation where the "right" choice is ambiguous — a locked door that could be forced or bypassed, a suspicious ally, a tempting shortcut through danger. These fork-in-the-road moments give the player interesting whisper decisions. The player is the character's conscience, and the best stories emerge when conscience is tested.
+- USE ITEMS BY EXACT NAME: If the world state lists "Unclaimed items" or "Items you could pick up," use their EXACT names in your narration (e.g. "the Crystal Shard" not "a crystal," "Sparks' Blueprint" not "a map"). Describe a character spotting the item, an NPC offering it, or a situation where it would be useful. When resolving actions, if a character's inventory contains a relevant item, acknowledge it BY NAME and grant a narrative advantage. Items are plot hooks — "Sparks' Blueprint" hints at a secret passage, "the Gala Invitation" proves identity, "the Clockwork Lockpick" opens doors. Named items connect to the game's tracking system — paraphrased items get lost.
+`;
+
+  if (input.houseRules) prompt += `\nHouse rules: ${input.houseRules}\n`;
+  if (input.dmInstructions) prompt += `\nDM direction: ${input.dmInstructions}\n`;
+
+  if (input.campaignMaterials) {
+    prompt += `\nCampaign reference materials:\n${input.campaignMaterials}\n`;
+  }
+
+  if (criticalSection) prompt += criticalSection;
+  prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
+  return { systemPrompt: prompt, criticalReminder: criticalSection.trim(), narrationHint };
+}
+
 export interface ScenePacing {
   sceneNumber: number;
   sceneTurnCount: number;
@@ -404,49 +461,14 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
   }
 
   private buildSystemPrompt(ctx: DmContext): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
-    const sections = composePresetSections(ctx.preset);
-    let prompt = sections.head;
-    const criticalSection = sections.critical;
-    const narrationHint = sections.narrationHint;
-
-    // The setup conversation's tailored prompt is ADDITIONAL direction, not a
-    // replacement — replacing it silently dropped the preset's personality
-    // enforcement and its narration hint.
-    if (ctx.dmCustomPrompt) {
-      prompt += `\nFor this campaign specifically:\n${ctx.dmCustomPrompt}\n`;
-    }
-
-    prompt += `
-Storytelling principles:
-- Actions have real consequences. Not every plan works. Failure creates drama.
-- NPCs have their own goals and react to the party's actions, even between scenes.
-- VOICE YOUR NPCs: When an NPC is present and the scene involves them, give them ACTUAL DIALOGUE in quotation marks. A tavern keeper says "You'll find no friends past the Irongate — just ghosts and the things that eat them." A guard captain barks "State your business or turn back." NPCs who speak feel alive; NPCs who are only described feel like furniture. At least one NPC should speak per narration when NPCs are present.
-- The world moves forward whether characters act or not — time pressure matters.
-- Introduce complications that force hard choices, not just combat encounters.
-- Use the environment as an active element — weather, terrain, crowds, lighting.
-- When characters succeed, success should change the situation, not just confirm it.
-- WEAVE BACK earlier threads: if the world state lists UNRESOLVED THREADS, advance at least one per narration. Reintroduce NPCs, revisit locations, or reveal consequences of past actions.
-- INVOKE TROUBLE ASPECTS: Each character has a "trouble" aspect — a personal flaw or complication. Create situations that TARGET these troubles. If a character's trouble is "Haunted by the War," put them face-to-face with a war memorial or a former comrade. If it's "Visions I Cannot Unsee," show them something that triggers a vision at the worst moment. Trouble compels create the most memorable scenes.
-- VARY your imagery: do not repeat the same visual motifs (e.g. "skeletal hands," "black water") more than twice in a scene. Introduce new sensory details — sounds, smells, temperature, texture — to keep the world alive.
-- Build toward a dramatic question — each scene should move the story closer to answering: will the party succeed, and at what cost?
-- ADVANCE THROUGH LOCATIONS: Check the "Known locations" list in the world state — the party should visit these NAMED locations as the story progresses. Use their EXACT names in your narration (e.g. "The Clockwork Antechamber" not "a chamber"). Don't let them linger in one location for more than 2-3 rounds. Each scene transition should move deeper into the adventure. If the party has been in the same location for 3+ rounds, create a reason to move them forward — a collapsing passage, a discovered exit, an NPC leading them onward.
-- PARTY DYNAMICS: When multiple characters are present, create situations that force them to INTERACT — a locked door one can pick while another stands guard, a moral dilemma where their values conflict, an NPC who trusts one character but fears another. Reference each character's last action in your narration. If one character just failed, show how it affects the others. The most interesting party moments come from characters disagreeing about what to do next.
-- WHISPER AWARENESS: Characters hear a mysterious voice (the player's whispers). When the transcript shows a character heeded or resisted a whisper, weave that into the narrative. A character following dangerous whispers might attract dark attention; one resisting wise counsel might face harder consequences. The whisper influence is the game's central tension — make it matter in the story.
-- CREATE WHISPER MOMENTS: At least once per scene, present a situation where the "right" choice is ambiguous — a locked door that could be forced or bypassed, a suspicious ally, a tempting shortcut through danger. These fork-in-the-road moments give the player interesting whisper decisions. The player is the character's conscience, and the best stories emerge when conscience is tested.
-- USE ITEMS BY EXACT NAME: If the world state lists "Unclaimed items" or "Items you could pick up," use their EXACT names in your narration (e.g. "the Crystal Shard" not "a crystal," "Sparks' Blueprint" not "a map"). Describe a character spotting the item, an NPC offering it, or a situation where it would be useful. When resolving actions, if a character's inventory contains a relevant item, acknowledge it BY NAME and grant a narrative advantage. Items are plot hooks — "Sparks' Blueprint" hints at a secret passage, "the Gala Invitation" proves identity, "the Clockwork Lockpick" opens doors. Named items connect to the game's tracking system — paraphrased items get lost.
-`;
-
-    if (ctx.houseRules) prompt += `\nHouse rules: ${ctx.houseRules}\n`;
-    if (ctx.dmInstructions) prompt += `\nDM direction: ${ctx.dmInstructions}\n`;
-
     const campaignMaterials = this.lookupRules(`campaign:${ctx.campaignId}`, ctx.transcript.slice(-5).map(m => m.content).join(' '));
-    if (campaignMaterials !== '(No rules found for this query)') {
-      prompt += `\nCampaign reference materials:\n${campaignMaterials}\n`;
-    }
-
-    if (criticalSection) prompt += criticalSection;
-    prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
-    return { systemPrompt: prompt, criticalReminder: criticalSection.trim(), narrationHint };
+    return assembleSystemPrompt({
+      preset: ctx.preset,
+      dmCustomPrompt: ctx.dmCustomPrompt,
+      houseRules: ctx.houseRules,
+      dmInstructions: ctx.dmInstructions,
+      campaignMaterials: campaignMaterials !== '(No rules found for this query)' ? campaignMaterials : null,
+    });
   }
 
   private buildTroubleHint(charSummaries: string): string {
