@@ -46,9 +46,11 @@ async function finishWorldSetup(ws: WebSocket, q: MessageQueue) {
   // may still be sitting in the queue's buffer ahead of the reply to the message
   // we just sent — drain until we see the reply that actually answers it.
   let reply: any;
+  let attempts = 0;
   do {
     reply = await q.waitFor('dm-chat-reply', 15_000) as any;
-  } while (!reply.done);
+    attempts++;
+  } while (!reply.done && attempts < 5);
   expect(reply.done).toBe(true);
 }
 
@@ -281,6 +283,28 @@ describe('Table role governs DM authority', () => {
     sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
 
     await expect(pq.waitFor('character-submitted', 3_000)).rejects.toThrow(/Timeout/);
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 40_000);
+
+  it('lets an owner with default (unset) table role approve a character', async () => {
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
+    const { joinCode } = joined;
+
+    await finishWorldSetup(hostWs, hostQ);
+    // hostTableRole stays null here — defaults to 'dm' authority.
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+
+    sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+    const submitted = await pq.waitFor('character-submitted', 10_000) as any;
+    expect(submitted.characterId).toBe(review.characterId);
 
     await closeWs(playerWs);
     await closeWs(hostWs);
