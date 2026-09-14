@@ -50,12 +50,33 @@ describe('seedWorld', () => {
     expect(summary).toContain('relief keeper');
   });
 
-  it('is idempotent — seeding twice does not duplicate locations', () => {
-    const { campaignId } = createRoom(db, { name: 'Twice', dmPreset: 'chronicler', systemId: 'fate-core' });
-    seedWorld(db, campaignId, seed);
-    seedWorld(db, campaignId, seed);
+  it('is idempotent — seeding twice does not duplicate locations, entities, items, or events', () => {
+    const once = createRoom(db, { name: 'Once', dmPreset: 'chronicler', systemId: 'fate-core' });
+    seedWorld(db, once.campaignId, seed);
+    const countRows = (table: string, campaignId: string): number =>
+      (db.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE campaign_id = ?`).get(campaignId) as { c: number }).c;
+    const baseline = {
+      locations: countRows('locations', once.campaignId),
+      entities: countRows('entities', once.campaignId),
+      items: countRows('items', once.campaignId),
+      events: countRows('events', once.campaignId),
+    };
+
+    const twice = createRoom(db, { name: 'Twice', dmPreset: 'chronicler', systemId: 'fate-core' });
+    seedWorld(db, twice.campaignId, seed);
+    seedWorld(db, twice.campaignId, seed);
+
+    expect(countRows('locations', twice.campaignId)).toBe(baseline.locations);
+    expect(countRows('entities', twice.campaignId)).toBe(baseline.entities);
+    expect(countRows('items', twice.campaignId)).toBe(baseline.items);
+    // Events have no name-based dedup in applyDiff (unlike locations/entities/
+    // items) — a seeded plot hook always has outcome: null, so applyDiff's
+    // reconciliation branch (guarded by `if (evt.outcome)`) never runs for it
+    // and every re-seed would otherwise add a fresh duplicate row.
+    expect(countRows('events', twice.campaignId)).toBe(baseline.events);
+
     const wb = new WorldBible(db);
-    expect(wb.getAllLocationNames(campaignId).length).toBe(2);
+    expect(wb.getAllLocationNames(twice.campaignId).length).toBe(2);
   });
 
   it('creates locations even though in-play updates cannot', () => {

@@ -296,6 +296,19 @@ export class WorldBible {
     return rows.map(r => r.name as string);
   }
 
+  /**
+   * Descriptions of this campaign's unresolved (outcome IS NULL) events.
+   * Events have no name-based identity the way locations/entities/items do,
+   * so callers that need to dedupe an incoming event against what already
+   * exists (e.g. re-applying a world seed) compare against this list on
+   * trimmed, case-insensitive description — consistent with the
+   * `COLLATE NOCASE` name dedup used elsewhere in this class.
+   */
+  getUnresolvedEventDescriptions(campaignId: string): string[] {
+    const rows = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL').all(campaignId) as any[];
+    return rows.map(r => r.description as string);
+  }
+
   snapToKnownLocation(campaignId: string, name: string): string | null {
     const exact = this.getLocationByName(campaignId, name);
     if (exact) return exact.name;

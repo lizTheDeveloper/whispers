@@ -12,9 +12,24 @@ import type { WorldSeed } from '../shared/types.js';
  * out so the world can exist before a game starts — a player has to be able to
  * meet the world before they build a character for it. This is the only caller
  * that passes allowNewLocations: true; in-play updates must not create places.
+ *
+ * Locations, entities, and items are deduped by name inside applyDiff, so
+ * re-seeding an identical seed is safe for those categories. Events are not:
+ * applyDiff's event-reconciliation branch only runs for events that arrive
+ * with an outcome, and a seeded plot hook always has outcome: null, so a
+ * second seedWorld call would otherwise add a second, identical unresolved
+ * event every time. That reconciliation logic is shared with the in-play
+ * fact extractor, so rather than touch its semantics, seedWorld does its own
+ * dedup here: drop any plot hook whose description already exists for this
+ * campaign as an unresolved event before building the diff.
  */
 export function seedWorld(db: Database.Database, campaignId: string, seed: WorldSeed): void {
   const worldBible = new WorldBible(db);
+  const existingUnresolved = new Set(
+    worldBible.getUnresolvedEventDescriptions(campaignId).map(d => d.trim().toLowerCase())
+  );
+  const newHooks = seed.plotHooks.filter(hook => !existingUnresolved.has(hook.trim().toLowerCase()));
+
   worldBible.applyDiff(campaignId, {
     newLocations: seed.locations.map(l => ({ name: l.name, description: l.description, terrain: l.terrain ?? null })),
     newEntities: seed.npcs.map(n => ({
@@ -24,7 +39,7 @@ export function seedWorld(db: Database.Database, campaignId: string, seed: World
       disposition: n.disposition ?? null,
     })),
     newItems: seed.items.map(i => ({ name: i.name, description: i.description, properties: {} })),
-    newEvents: seed.plotHooks.map(hook => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
+    newEvents: newHooks.map(hook => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
     newRelationships: [],
   }, { allowNewLocations: true });
 }
