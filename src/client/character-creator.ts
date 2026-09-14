@@ -108,13 +108,13 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
 
       <div class="tab-panel hidden" id="panel-form">
         <div class="form-grid">
-          <label>Name <input type="text" id="char-name" value="Sigmund the Bold" /></label>
-          <label>High Concept <input type="text" id="char-concept" value="Reformed Thief with a Heart of Gold" /></label>
-          <label>Trouble <input type="text" id="char-trouble" value="Can't Resist a Locked Door" /></label>
-          <label>Aspect 1 <input type="text" id="char-aspect1" value="Quick Hands" /></label>
-          <label>Aspect 2 <input type="text" id="char-aspect2" value="Loyal to a Fault" /></label>
-          <label>Aspect 3 <input type="text" id="char-aspect3" value="Haunted by the Past" /></label>
-          <label>Personality <textarea id="char-personality" rows="3">Cautious but impulsive when gold is involved.</textarea></label>
+          <label>Name <input type="text" id="char-name" placeholder="Sigmund the Bold" /></label>
+          <label>High Concept <input type="text" id="char-concept" placeholder="Reformed Thief with a Heart of Gold" /></label>
+          <label>Trouble <input type="text" id="char-trouble" placeholder="Can't Resist a Locked Door" /></label>
+          <label>Aspect 1 <input type="text" id="char-aspect1" placeholder="Quick Hands" /></label>
+          <label>Aspect 2 <input type="text" id="char-aspect2" placeholder="Loyal to a Fault" /></label>
+          <label>Aspect 3 <input type="text" id="char-aspect3" placeholder="Haunted by the Past" /></label>
+          <label>Personality <textarea id="char-personality" rows="3" placeholder="Cautious but impulsive when gold is involved."></textarea></label>
           <label>Backstory <textarea id="char-backstory" rows="5" placeholder="Write your character's story..."></textarea></label>
         </div>
         <h3 class="skill-heading">Skills <span class="skill-hint">(FATE pyramid: 1×Great, 2×Good, 3×Fair, 4×Average)</span></h3>
@@ -153,7 +153,7 @@ Born in the slums of Veridian...
   `;
 
   const pyramidEl = root.querySelector('#skill-pyramid') as HTMLElement;
-  renderSkillPyramid(pyramidEl, { Burglary: 4, Stealth: 3, Notice: 3, Athletics: 2, Deceive: 2, Contacts: 2, Fight: 1, Rapport: 1, Investigate: 1, Will: 1 });
+  renderSkillPyramid(pyramidEl);
 
   const tabs = root.querySelectorAll<HTMLButtonElement>('.creator-tabs .tab');
   const formPanel = root.querySelector('#panel-form') as HTMLElement;
@@ -457,9 +457,6 @@ Born in the slums of Veridian...
     if (getActiveTab() === 'paste') {
       const chars = parseCharacters(markdownArea.value).filter(c => c.name);
       for (const def of chars) {
-        if (!Object.keys(def.skills).length) {
-          def.skills = { Notice: 2, Fight: 1, Stealth: 1 };
-        }
         ws.send({ type: 'submit-character', definition: def });
       }
       pendingCount = chars.length;
@@ -470,11 +467,6 @@ Born in the slums of Veridian...
         : 'Awaiting DM review...';
     } else {
       const skills = readSkillPyramid(pyramidEl);
-      if (Object.keys(skills).length === 0) {
-        skills['Notice'] = 2;
-        skills['Fight'] = 1;
-        skills['Stealth'] = 1;
-      }
       const stuntsRaw = (root.querySelector('#char-stunts') as HTMLTextAreaElement).value.trim();
       const stunts = stuntsRaw ? stuntsRaw.split('\n').map(s => s.trim()).filter(Boolean) : [];
       const definition: CharacterDefinition = {
