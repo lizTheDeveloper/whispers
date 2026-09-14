@@ -1351,3 +1351,147 @@ button:disabled {
   gap: 0.35rem;
   width: 100%;
 }
+
+/* ---- Table role, influences, readiness (DM lobby sidebar) ---- */
+.role-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.role-btn {
+  width: 100%;
+  text-align: left;
+  font-size: 0.85rem;
+}
+.role-btn.active {
+  color: var(--ember);
+  border-color: rgba(255, 107, 53, 0.4);
+  background: var(--ember-glow);
+}
+.role-current {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.influence-list, .readiness-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.influence-list li {
+  padding: 0.4rem 0.7rem;
+  background: rgba(0, 212, 255, 0.04);
+  border-left: 2px solid rgba(0, 212, 255, 0.2);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--signal);
+  font-size: 0.88rem;
+  animation: entry-in 0.3s ease-out;
+}
+.influence-list li.influence-empty {
+  color: var(--text-dim);
+  background: rgba(122, 122, 158, 0.04);
+  border-left-color: rgba(122, 122, 158, 0.15);
+  font-style: italic;
+}
+
+.readiness-item {
+  padding: 0.4rem 0.7rem;
+  background: rgba(255, 107, 53, 0.04);
+  border-left: 2px solid rgba(255, 107, 53, 0.2);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.readiness-met {
+  padding: 0.4rem 0.7rem;
+  background: rgba(0, 255, 136, 0.06);
+  border-left: 2px solid rgba(0, 255, 136, 0.3);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--biolume);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+/* ---- World seed review panel (DM lobby main column) ---- */
+.world-seed-panel {
+  margin-top: 1.5rem;
+  background: linear-gradient(160deg, var(--surface) 0%, var(--void-deep) 100%);
+  padding: 1.5rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 107, 53, 0.1);
+  box-shadow: var(--shadow-card);
+  animation: entry-in 0.4s ease-out;
+}
+.world-seed-panel h2 {
+  font-size: 1.2rem;
+  color: var(--ember);
+  margin-bottom: 0.75rem;
+}
+.seed-premise {
+  color: var(--star-white);
+  line-height: 1.65;
+  margin-bottom: 1.25rem;
+}
+.seed-section {
+  margin-bottom: 1.1rem;
+}
+.seed-section h3 {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.5rem;
+}
+.seed-section ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.seed-section li {
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius);
+  line-height: 1.5;
+  font-size: 0.9rem;
+}
+.seed-section li strong {
+  color: var(--star-white);
+}
+.seed-npc-meta {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.seed-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.seed-actions {
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.seed-note-row {
+  margin-bottom: 0.75rem;
+}
+.seed-note-row input {
+  width: 100%;
+}
+.seed-buttons {
+  display: flex;
+  gap: 0.6rem;
+}
+.seed-accepted-line {
+  color: var(--biolume);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-seed-panel, .influence-list li, .seed-section li { animation: none; }
+}

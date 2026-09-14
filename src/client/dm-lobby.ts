@@ -1,6 +1,10 @@
 import type { WsClient } from './ws-client.js';
 import { renderNegotiationChat } from './negotiation-chat.js';
 import { dmUrl, playUrl } from './session-store.js';
+import type { GamePhase, TableRole, WorldReadiness, WorldSeed, WorldSeedItem, WorldSeedLocation, WorldSeedNpc } from '../shared/types.js';
+
+/** Mirrors MIN_INFLUENCES in src/server/world-readiness.ts — display only, the server owns the actual gate. */
+const MIN_INFLUENCES = 3;
 
 export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string, campaignId: string): void {
   root.innerHTML = `
@@ -19,9 +23,30 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
           </div>
           <div id="upload-status" class="upload-status hidden"></div>
         </div>
+
+        <div id="world-seed-panel" class="world-seed-panel hidden"></div>
       </div>
 
       <div class="dm-lobby-sidebar">
+        <div class="sidebar-section" id="table-role-section">
+          <h3>Table Role</h3>
+          <div class="role-buttons">
+            <button id="role-dm-btn" class="role-btn ghost-btn">I'm running this game</button>
+            <button id="role-player-btn" class="role-btn ghost-btn">I'm playing in it</button>
+          </div>
+          <p class="role-current" id="role-current-line"></p>
+        </div>
+
+        <div class="sidebar-section">
+          <h3 id="influences-heading">Influences</h3>
+          <ul id="influence-list" class="influence-list"></ul>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>Readiness</h3>
+          <ul id="readiness-list" class="readiness-list"></ul>
+        </div>
+
         <div class="sidebar-section">
           <h3>Join Code</h3>
           <div class="join-code-display">${joinCode}</div>
@@ -70,10 +95,22 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   const copyPlayerLinkBtn = root.querySelector('#copy-player-link') as HTMLButtonElement;
   const startHint = root.querySelector('#start-hint') as HTMLElement;
 
+  const tableRoleSection = root.querySelector('#table-role-section') as HTMLElement;
+  const roleDmBtn = root.querySelector('#role-dm-btn') as HTMLButtonElement;
+  const rolePlayerBtn = root.querySelector('#role-player-btn') as HTMLButtonElement;
+  const roleCurrentLine = root.querySelector('#role-current-line') as HTMLElement;
+  const influencesHeading = root.querySelector('#influences-heading') as HTMLElement;
+  const influenceList = root.querySelector('#influence-list') as HTMLUListElement;
+  const readinessList = root.querySelector('#readiness-list') as HTMLUListElement;
+  const seedPanel = root.querySelector('#world-seed-panel') as HTMLElement;
+
   let playerCount = 0;
   let approvedCount = 0;
   let dmReady = false;
   let uploadToken = '';
+  let phase: GamePhase = 'lobby';
+  let hostTableRole: TableRole | null = null;
+  let currentSeed: WorldSeed | null = null;
 
   function addChatMessage(text: string, sender: 'dm' | 'host') {
     const bubble = document.createElement('div');
@@ -180,6 +217,227 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     }
   }
 
+  // ─── Table role ───
+
+  function renderTableRole() {
+    roleDmBtn.classList.toggle('active', hostTableRole === 'dm');
+    rolePlayerBtn.classList.toggle('active', hostTableRole === 'player');
+    if (hostTableRole === 'dm') {
+      roleCurrentLine.textContent = "You're running this game — the seat at the head of the table.";
+    } else if (hostTableRole === 'player') {
+      roleCurrentLine.textContent = "You're playing in it — the AI DM runs the table.";
+    } else {
+      roleCurrentLine.textContent = 'Choose your seat before the table opens.';
+    }
+  }
+
+  function updateTableRoleVisibility() {
+    tableRoleSection.classList.toggle('hidden', phase !== 'lobby');
+  }
+
+  roleDmBtn.addEventListener('click', () => ws.send({ type: 'choose-table-role', role: 'dm' }));
+  rolePlayerBtn.addEventListener('click', () => ws.send({ type: 'choose-table-role', role: 'player' }));
+
+  ws.on('room-joined', (msg) => {
+    if (msg.type !== 'room-joined') return;
+    hostTableRole = msg.tableRole;
+    renderTableRole();
+  });
+
+  // ─── Influences ───
+
+  function renderInfluences(influences: string[]) {
+    influencesHeading.textContent = `Influences (${influences.length}/${MIN_INFLUENCES})`;
+    influenceList.replaceChildren();
+    if (influences.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'influence-empty';
+      li.textContent = 'None named yet — the DM will ask.';
+      influenceList.appendChild(li);
+      return;
+    }
+    for (const influence of influences) {
+      const li = document.createElement('li');
+      li.textContent = influence;
+      influenceList.appendChild(li);
+    }
+  }
+
+  // ─── Readiness ───
+
+  function renderReadiness(readiness: WorldReadiness | null) {
+    readinessList.replaceChildren();
+    if (!readiness) {
+      const li = document.createElement('li');
+      li.className = 'readiness-item';
+      li.textContent = 'Keep chatting with the DM to get the world moving.';
+      readinessList.appendChild(li);
+      return;
+    }
+    if (readiness.ready) {
+      const li = document.createElement('li');
+      li.className = 'readiness-met';
+      li.textContent = 'Ready to open the table';
+      readinessList.appendChild(li);
+      return;
+    }
+    for (const line of readiness.detail) {
+      const li = document.createElement('li');
+      li.className = 'readiness-item';
+      li.textContent = line;
+      readinessList.appendChild(li);
+    }
+  }
+
+  // ─── World seed review panel ───
+
+  function buildSeedList<T>(title: string, items: T[], renderItem: (item: T) => HTMLLIElement): HTMLElement {
+    const section = document.createElement('div');
+    section.className = 'seed-section';
+    const h3 = document.createElement('h3');
+    h3.textContent = title;
+    section.appendChild(h3);
+    if (items.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'seed-empty';
+      empty.textContent = 'None yet.';
+      section.appendChild(empty);
+      return section;
+    }
+    const ul = document.createElement('ul');
+    for (const item of items) ul.appendChild(renderItem(item));
+    section.appendChild(ul);
+    return section;
+  }
+
+  function locationItem(loc: WorldSeedLocation): HTMLLIElement {
+    const li = document.createElement('li');
+    const strong = document.createElement('strong');
+    strong.textContent = loc.name;
+    li.appendChild(strong);
+    const desc = document.createElement('span');
+    desc.textContent = loc.terrain ? ` — ${loc.description} (${loc.terrain})` : ` — ${loc.description}`;
+    li.appendChild(desc);
+    return li;
+  }
+
+  function npcItem(npc: WorldSeedNpc): HTMLLIElement {
+    const li = document.createElement('li');
+    const strong = document.createElement('strong');
+    strong.textContent = npc.name;
+    li.appendChild(strong);
+    const desc = document.createElement('span');
+    desc.textContent = ` — ${npc.description}`;
+    li.appendChild(desc);
+    const metaParts: string[] = [];
+    if (npc.disposition) metaParts.push(`disposition: ${npc.disposition}`);
+    if (npc.motivation) metaParts.push(`wants: ${npc.motivation}`);
+    if (metaParts.length > 0) {
+      const meta = document.createElement('span');
+      meta.className = 'seed-npc-meta';
+      meta.textContent = ` (${metaParts.join('; ')})`;
+      li.appendChild(meta);
+    }
+    return li;
+  }
+
+  function plotHookItem(hook: string): HTMLLIElement {
+    const li = document.createElement('li');
+    li.textContent = hook;
+    return li;
+  }
+
+  function itemItem(item: WorldSeedItem): HTMLLIElement {
+    const li = document.createElement('li');
+    const strong = document.createElement('strong');
+    strong.textContent = item.name;
+    li.appendChild(strong);
+    const desc = document.createElement('span');
+    desc.textContent = ` — ${item.description}`;
+    li.appendChild(desc);
+    return li;
+  }
+
+  function renderSeed(seed: WorldSeed, accepted: boolean) {
+    currentSeed = seed;
+    seedPanel.classList.remove('hidden');
+    seedPanel.replaceChildren();
+
+    const heading = document.createElement('h2');
+    heading.textContent = 'The World';
+    seedPanel.appendChild(heading);
+
+    const premise = document.createElement('p');
+    premise.className = 'seed-premise';
+    premise.textContent = seed.premise;
+    seedPanel.appendChild(premise);
+
+    seedPanel.appendChild(buildSeedList('Locations', seed.locations, locationItem));
+    seedPanel.appendChild(buildSeedList('NPCs', seed.npcs, npcItem));
+    seedPanel.appendChild(buildSeedList('Plot Hooks', seed.plotHooks, plotHookItem));
+    seedPanel.appendChild(buildSeedList('Items', seed.items, itemItem));
+
+    const actions = document.createElement('div');
+    actions.className = 'seed-actions';
+
+    if (accepted) {
+      const confirm = document.createElement('p');
+      confirm.className = 'seed-accepted-line';
+      confirm.textContent = 'World accepted — the table is open.';
+      actions.appendChild(confirm);
+    } else {
+      const noteRow = document.createElement('div');
+      noteRow.className = 'seed-note-row';
+      const noteInput = document.createElement('input');
+      noteInput.type = 'text';
+      noteInput.id = 'seed-note-input';
+      noteInput.placeholder = "Optional note for the redraft (e.g. 'more grounded, less magic')";
+      noteRow.appendChild(noteInput);
+      actions.appendChild(noteRow);
+
+      const btnRow = document.createElement('div');
+      btnRow.className = 'seed-buttons';
+
+      const acceptBtn = document.createElement('button');
+      acceptBtn.id = 'accept-seed-btn';
+      acceptBtn.textContent = 'Accept this world';
+      acceptBtn.addEventListener('click', () => {
+        if (!currentSeed) return;
+        acceptBtn.disabled = true;
+        redraftBtn.disabled = true;
+        ws.send({ type: 'accept-world-seed', seed: currentSeed });
+      });
+
+      const redraftBtn = document.createElement('button');
+      redraftBtn.id = 'redraft-seed-btn';
+      redraftBtn.className = 'ghost-btn';
+      redraftBtn.textContent = 'Draft it again';
+      redraftBtn.addEventListener('click', () => {
+        acceptBtn.disabled = true;
+        redraftBtn.disabled = true;
+        redraftBtn.textContent = 'Drafting...';
+        const note = noteInput.value.trim();
+        ws.send({ type: 'regenerate-world-seed', note: note.length > 0 ? note : undefined });
+      });
+
+      btnRow.append(acceptBtn, redraftBtn);
+      actions.appendChild(btnRow);
+    }
+
+    seedPanel.appendChild(actions);
+  }
+
+  function resetSeedButtons() {
+    const acceptBtn = seedPanel.querySelector('#accept-seed-btn') as HTMLButtonElement | null;
+    const redraftBtn = seedPanel.querySelector('#redraft-seed-btn') as HTMLButtonElement | null;
+    if (acceptBtn) acceptBtn.disabled = false;
+    if (redraftBtn) { redraftBtn.disabled = false; redraftBtn.textContent = 'Draft it again'; }
+  }
+
+  renderTableRole();
+  renderInfluences([]);
+  renderReadiness(null);
+
   function addPlayerToList(playerName: string) {
     if (playerList.querySelector(`li[data-name="${CSS.escape(playerName)}"]`)) return;
     const waiting = playerList.querySelector('.waiting');
@@ -211,6 +469,31 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     dmReady = msg.dmReady;
     approvedCount = msg.approvedCount;
     updateStartButton();
+
+    phase = msg.phase;
+    hostTableRole = msg.hostTableRole;
+    renderTableRole();
+    updateTableRoleVisibility();
+    renderInfluences(msg.influences);
+    renderReadiness(msg.readiness);
+  });
+
+  ws.on('phase-change', (msg) => {
+    if (msg.type !== 'phase-change') return;
+    phase = msg.phase;
+    updateTableRoleVisibility();
+  });
+
+  ws.on('world-readiness', (msg) => {
+    if (msg.type !== 'world-readiness') return;
+    renderInfluences(msg.influences);
+    renderReadiness(msg.readiness);
+    resetSeedButtons();
+  });
+
+  ws.on('world-seed-draft', (msg) => {
+    if (msg.type !== 'world-seed-draft') return;
+    renderSeed(msg.seed, msg.accepted);
   });
 
   ws.on('player-left', (msg) => {
@@ -306,5 +589,6 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     if (msg.type !== 'error') return;
     hideTyping();
     chatSend.disabled = false;
+    resetSeedButtons();
   });
 }
