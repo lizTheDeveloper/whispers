@@ -297,7 +297,11 @@ Born in the slums of Veridian...
 
   ws.on('character-validated', (msg) => {
     if (msg.type !== 'character-validated') return;
-    const feedback = root.querySelector('#dm-feedback') as HTMLElement;
+    // Handlers are never off()'d, so a stale one can still fire after this
+    // view is gone (e.g. after phase-change swaps in the game view). Self-
+    // disarm rather than deref a query that now returns null.
+    const feedback = root.querySelector('#dm-feedback') as HTMLElement | null;
+    if (!feedback) return;
     feedback.classList.remove('hidden');
     if (msg.approved) {
       approvedCount++;
@@ -326,7 +330,8 @@ Born in the slums of Veridian...
 
   ws.on('negotiation-opened', (msg) => {
     if (msg.type !== 'negotiation-opened') return;
-    const feedback = root.querySelector('#dm-feedback') as HTMLElement;
+    const feedback = root.querySelector('#dm-feedback') as HTMLElement | null;
+    if (!feedback) return;
     feedback.classList.remove('hidden');
     feedback.textContent = 'AI DM approved your character. Entering negotiation with the host...';
     feedback.className = 'feedback';
@@ -347,6 +352,12 @@ Born in the slums of Veridian...
     if (msg.type !== 'error') return;
     if (msg.message.includes('session is no longer valid')) return;
 
+    // Handlers are never off()'d, so this can still fire after the player
+    // has moved on to another view (phase-change swapped root's contents
+    // out from under it). Self-disarm rather than deref a stale query.
+    const feedback = root.querySelector('#dm-feedback') as HTMLElement | null;
+    if (!feedback) return;
+
     submitBtn.disabled = false;
     submitBtn.textContent = defaultSubmitLabel;
 
@@ -357,7 +368,6 @@ Born in the slums of Veridian...
     const typing = chatLog.querySelector('#char-typing');
     if (typing) typing.remove();
 
-    const feedback = root.querySelector('#dm-feedback') as HTMLElement;
     feedback.classList.remove('hidden');
     feedback.classList.add('rejected');
     feedback.textContent = msg.message;

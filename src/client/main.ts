@@ -91,7 +91,8 @@ async function init() {
 
   const stored = getStoredSession(route.joinCode, route.view === 'dm' ? 'dm' : 'player');
   if (stored) {
-    root.innerHTML = `<div class="lobby"><h1>Whispers</h1><p class="subtitle">Rejoining ${stored.gameName}…</p></div>`;
+    root.innerHTML = `<div class="lobby"><h1>Whispers</h1><p class="subtitle" id="rejoin-subtitle"></p></div>`;
+    (root.querySelector('#rejoin-subtitle') as HTMLElement).textContent = `Rejoining ${stored.gameName}…`;
     ws.setSession(stored.joinCode, stored.sessionToken);
     ws.send({ type: 'rejoin', joinCode: stored.joinCode, sessionToken: stored.sessionToken });
     return;

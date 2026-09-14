@@ -7,7 +7,7 @@ import type { WsClient } from './ws-client.js';
 export function renderWaitingRoom(root: HTMLElement, ws: WsClient, gameName: string, joinCode: string): void {
   root.innerHTML = `
     <div class="waiting-room">
-      <h1>${gameName || 'Whispers'}</h1>
+      <h1 id="waiting-room-title"></h1>
       <p class="subtitle">You're in. The DM is building the world.</p>
       <div id="ws-status" class="ws-status ws-connected">Connected</div>
 
@@ -24,35 +24,34 @@ export function renderWaitingRoom(root: HTMLElement, ws: WsClient, gameName: str
     </div>
   `;
 
+  (root.querySelector('#waiting-room-title') as HTMLElement).textContent = gameName || 'Whispers';
+
   const list = root.querySelector('#waiting-player-list') as HTMLUListElement;
 
-  function setPlayers(names: string[]) {
-    list.innerHTML = '';
-    if (names.length === 0) {
-      list.innerHTML = '<li class="waiting">Just you so far...</li>';
-      return;
-    }
-    for (const name of names) {
-      const li = document.createElement('li');
-      li.textContent = name;
-      list.appendChild(li);
-    }
+  // Both 'lobby-state' (sent on join/rejoin, includes the sender) and
+  // 'player-joined' (broadcast to everyone, also includes the sender) can
+  // report the same player. Route both through one helper keyed on
+  // dataset.name so the dedupe actually sees what got rendered — see
+  // dm-lobby.ts's addPlayerToList for the same shape.
+  function addPlayer(name: string) {
+    if (list.querySelector(`li[data-name="${CSS.escape(name)}"]`)) return;
+    const waiting = list.querySelector('.waiting');
+    if (waiting) waiting.remove();
+    const li = document.createElement('li');
+    li.textContent = name;
+    li.dataset.name = name;
+    list.appendChild(li);
   }
 
   ws.on('lobby-state', (msg) => {
     if (msg.type !== 'lobby-state') return;
-    setPlayers(msg.players);
+    list.innerHTML = '<li class="waiting">Just you so far...</li>';
+    for (const name of msg.players) addPlayer(name);
   });
 
   ws.on('player-joined', (msg) => {
     if (msg.type !== 'player-joined') return;
-    if (list.querySelector(`li[data-name="${CSS.escape(msg.playerName)}"]`)) return;
-    const waiting = list.querySelector('.waiting');
-    if (waiting) waiting.remove();
-    const li = document.createElement('li');
-    li.textContent = msg.playerName;
-    li.dataset.name = msg.playerName;
-    list.appendChild(li);
+    addPlayer(msg.playerName);
   });
 
   const statusEl = root.querySelector('#ws-status') as HTMLElement;

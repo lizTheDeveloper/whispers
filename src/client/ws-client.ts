@@ -40,8 +40,14 @@ export class WsClient {
       this.ws.onerror = () => reject(new Error('WebSocket connection failed'));
       this.ws.onmessage = (evt) => {
         const msg: ServerMessage = JSON.parse(evt.data as string);
-        this.handlers.get(msg.type)?.forEach(h => h(msg));
-        this.globalHandlers.forEach(h => h(msg));
+        // A throwing handler must not starve the handlers registered after
+        // it — Set.forEach propagates exceptions and aborts iteration.
+        this.handlers.get(msg.type)?.forEach(h => {
+          try { h(msg); } catch (e) { console.error('[ws] handler failed for', msg.type, e); }
+        });
+        this.globalHandlers.forEach(h => {
+          try { h(msg); } catch (e) { console.error('[ws] handler failed for', msg.type, e); }
+        });
       };
       this.ws.onclose = () => {
         this.ws = null;
@@ -83,7 +89,9 @@ export class WsClient {
   }
 
   private notifyStatus(connected: boolean): void {
-    this.statusHandlers.forEach(h => h(connected));
+    this.statusHandlers.forEach(h => {
+      try { h(connected); } catch (e) { console.error('[ws] status handler failed', e); }
+    });
   }
 
   private scheduleReconnect(): void {
