@@ -50,6 +50,9 @@ function rowToRecord(row: any): InterviewRecord {
  * The transcript lived in process memory until now, so a browser refresh threw
  * away the whole conversation. It is also worth keeping for its own sake: the
  * raw answers say things about a character that the derived sheet does not.
+ *
+ * This does a read then a conditional write, same shape as appendInterviewTurn
+ * below — see that function's docstring for why it is safe here too.
  */
 export function getOrCreateInterview(db: Database.Database, campaignId: string, sessionToken: string): InterviewRecord {
   const existing = getInterviewBySession(db, campaignId, sessionToken);
@@ -66,6 +69,19 @@ export function getInterviewBySession(db: Database.Database, campaignId: string,
   return row ? rowToRecord(row) : null;
 }
 
+/**
+ * Reads the transcript, appends one turn, writes it back — a read-modify-write
+ * with no locking around it. That is safe only because better-sqlite3 is fully
+ * synchronous and this function never awaits: once called, it runs to
+ * completion before Node processes anything else, so no other message handler
+ * can interleave a read or write in between. This is a different situation from
+ * the races this project already fixed (advancePhaseIfLobby, room.ts;
+ * setWorldSeedIfNotAccepted, world-seed.ts) — those had an `await` sitting
+ * between the read and the write, which is what let a second call interleave.
+ * If this function (or getOrCreateInterview above) ever becomes internally
+ * async, or this service ever runs as more than one process against the same
+ * database file, that guarantee breaks and this needs real locking.
+ */
 export function appendInterviewTurn(db: Database.Database, id: string, turn: InterviewTurn): void {
   const row = db.prepare('SELECT transcript FROM character_interviews WHERE id = ?').get(id) as any;
   if (!row) return;

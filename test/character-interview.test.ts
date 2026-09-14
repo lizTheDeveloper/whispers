@@ -76,6 +76,14 @@ describe('interview persistence', () => {
     expect(read.transcript).toEqual([]);
   });
 
+  it('degrades to a null definition rather than throwing on corrupt JSON', () => {
+    const c = newCampaign();
+    const rec = mod.getOrCreateInterview(db, c, 'tok');
+    db.prepare('UPDATE character_interviews SET definition = ? WHERE id = ?').run('not json{', rec.id);
+    const read = mod.getInterviewBySession(db, c, 'tok')!;
+    expect(read.definition).toBeNull();
+  });
+
   it('returns null for a session that has no interview', () => {
     expect(mod.getInterviewBySession(db, newCampaign(), 'nobody')).toBeNull();
   });
