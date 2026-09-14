@@ -333,8 +333,13 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'submit-character' && currentJoinCode) {
-      const campaign = joinRoom(db, currentJoinCode);
-      if (!campaign) return;
+      const submitCampaign = joinRoom(db, currentJoinCode);
+      if (!submitCampaign) return;
+      if (submitCampaign.phase === 'lobby') {
+        send(ws, { type: 'error', message: 'The DM is still building the world — character creation opens when it is ready.' });
+        return;
+      }
+      const campaign = submitCampaign;
       const dm = new DmAgent(db);
       const charId = randomBytes(16).toString('hex');
 
@@ -462,6 +467,10 @@ wss.on('connection', (ws) => {
     if (msg.type === 'char-chat' && currentJoinCode && currentPlayer) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
+      if (campaign.phase === 'lobby') {
+        send(ws, { type: 'error', message: 'The DM is still building the world — character creation opens when it is ready.' });
+        return;
+      }
       currentPlayer.charChat.push({ role: 'user', content: msg.text });
       const dm = new DmAgent(db);
       try {
@@ -485,6 +494,12 @@ wss.on('connection', (ws) => {
         if (reply.done && reply.dmInstructions) {
           db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")
             .run(reply.dmInstructions, reply.dmCustomPrompt, campaign.id);
+          // World setup is what opens the table. Build step 2 replaces this
+          // trigger with server-verified readiness plus seed acceptance.
+          if (campaign.phase === 'lobby') {
+            setCampaignPhase(db, campaign.id, 'character-creation');
+            broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
+          }
         }
         saveSetupChat(db, campaign.id, currentPlayer.setupChat);
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: reply.done });

@@ -94,8 +94,10 @@ describe('DM session survives a page refresh', () => {
 
 describe('Character submissions reach the DM even if the DM is away', () => {
   it('surfaces a character submitted while the host is disconnected once the host returns', async () => {
-    const { ws: hostWs, joined } = await createGame();
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
     const { joinCode, sessionToken } = joined;
+
+    await finishWorldSetup(hostWs, hostQ);
 
     // DM refreshes / drops off.
     await closeWs(hostWs);
@@ -177,6 +179,8 @@ describe('Rejoin cannot be used to take over another seat', () => {
     const { ws: hostWs, q: hostQ, joined } = await createGame();
     const { joinCode } = joined;
 
+    await finishWorldSetup(hostWs, hostQ);
+
     const attacker = await connectWs(port);
     const aq = new MessageQueue(attacker);
     sendMsg(attacker, { type: 'rejoin', joinCode, playerName: 'Host' } as any);
@@ -238,6 +242,8 @@ describe('A stale socket closing does not evict the reconnected seat', () => {
     sendMsg(hostWs2, { type: 'rejoin', joinCode, sessionToken } as any);
     await hq2.waitFor('room-joined', 10_000);
 
+    await finishWorldSetup(hostWs2, hq2);
+
     await closeWs(hostWs1);
 
     const playerWs = await connectWs(port);
@@ -267,10 +273,12 @@ describe('Table role governs DM authority', () => {
     const { ws: hostWs, q: hostQ, joined } = await createGame();
     const { joinCode } = joined;
 
-    await finishWorldSetup(hostWs, hostQ);
-
+    // Table role is fixed once the game opens, so it must be chosen while
+    // the campaign is still in the lobby, before world setup completes.
     sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
     await hostQ.waitFor('room-joined', 10_000); // re-sent with the new role
+
+    await finishWorldSetup(hostWs, hostQ);
 
     const playerWs = await connectWs(port);
     const pq = new MessageQueue(playerWs);
