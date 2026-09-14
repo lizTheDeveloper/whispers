@@ -149,6 +149,15 @@ export interface WorldReadiness {
   detail: string[];
 }
 
+export type CharacterReadinessItem = 'name' | 'highConcept' | 'trouble' | 'aspects' | 'skills' | 'stunts';
+
+export interface CharacterReadiness {
+  ready: boolean;
+  unmet: CharacterReadinessItem[];
+  /** Human-readable, one per unmet item, in the same order. Shown to the player and fed back to the model. */
+  detail: string[];
+}
+
 export interface RoomState {
   campaignId: string;
   joinCode: string;
