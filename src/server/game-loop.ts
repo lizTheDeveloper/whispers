@@ -1,9 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import { DmAgent } from './agents/dm.js';
+import { safeDataFile } from './data-paths.js';
 import { CharacterAgent } from './agents/character.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
@@ -1059,18 +1058,9 @@ export class GameLoop {
   }
 
   private async seedScenario(scenarioId: string): Promise<void> {
-    if (!/^[a-z0-9-]{1,64}$/.test(scenarioId)) {
-      console.warn(`[game-loop] Invalid scenario id: ${scenarioId}`);
-      return;
-    }
     try {
-      const base = dirname(fileURLToPath(import.meta.url));
-      const scenariosDir = resolve(base, '../../data/scenarios');
-      const scenarioPath = resolve(scenariosDir, `${scenarioId}.json`);
-      if (!scenarioPath.startsWith(scenariosDir + '/')) {
-        console.warn(`[game-loop] Scenario path traversal blocked: ${scenarioId}`);
-        return;
-      }
+      const scenarioPath = safeDataFile('scenarios', scenarioId, '.json');
+      if (!scenarioPath) { console.warn(`[game-loop] Scenario not found: ${scenarioId}`); return; }
       const scenario = JSON.parse(readFileSync(scenarioPath, 'utf-8'));
 
       const diff = {

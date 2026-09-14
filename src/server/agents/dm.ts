@@ -1,22 +1,17 @@
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { callLlm } from './llm-client.js';
 import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema } from './schemas.js';
 import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
+import { safeDataFile } from '../data-paths.js';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, TranscriptMessage, DiceResult } from '../../shared/types.js';
 
 const presetCache = new Map<string, string>();
 function loadPresetText(presetName: string): string | null {
-  if (!/^[a-z0-9-]{1,64}$/.test(presetName)) return null;
   if (presetCache.has(presetName)) return presetCache.get(presetName)!;
-  const base = dirname(fileURLToPath(import.meta.url));
-  const presetsDir = resolve(base, '../../data/dm-presets');
-  const p = resolve(presetsDir, `${presetName}.txt`);
-  if (!p.startsWith(presetsDir + '/')) return null;
-  if (!existsSync(p)) return null;
+  const p = safeDataFile('dm-presets', presetName, '.txt');
+  if (!p) return null;
   const text = readFileSync(p, 'utf-8').trim();
   presetCache.set(presetName, text);
   return text;

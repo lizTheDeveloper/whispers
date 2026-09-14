@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { getDb, getDataDir } from './db.js';
+import { safeDataFile } from './data-paths.js';
 import {
   createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
@@ -39,8 +40,8 @@ const uploadTokens = new Map<string, { campaignId: string; expires: number }>();
 app.get('/healthz', (_req, res) => { res.json({ status: 'ok' }); });
 
 function loadPresetPrompt(presetName: string): string {
-  const presetPath = join(getDataDir(), 'dm-presets', `${presetName}.txt`);
-  if (existsSync(presetPath)) return readFileSync(presetPath, 'utf-8').trim();
+  const p = safeDataFile('dm-presets', presetName, '.txt');
+  if (p) return readFileSync(p, 'utf-8').trim();
   return `You are a TTRPG Dungeon Master with the "${presetName}" personality. Run the game faithfully.`;
 }
 
