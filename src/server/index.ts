@@ -273,7 +273,7 @@ wss.on('connection', (ws) => {
       if (campaign) sendDmSettings(ws, campaign);
 
       const dm = new DmAgent(db);
-      dm.setupChat(msg.dmPreset, []).then(reply => {
+      dm.setupChat({ preset: msg.dmPreset, systemId: msg.systemId, history: [], unmet: [] }).then(reply => {
         if (currentPlayer) {
           currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
           saveSetupChat(db, campaignId, currentPlayer.setupChat);
@@ -546,7 +546,12 @@ wss.on('connection', (ws) => {
       currentPlayer.setupChat.push({ role: 'user', content: msg.text });
       const dm = new DmAgent(db);
       try {
-        const reply = await dm.setupChat(campaign.dmPreset, currentPlayer.setupChat);
+        const reply = await dm.setupChat({
+          preset: campaign.dmPreset,
+          systemId: campaign.systemId,
+          history: currentPlayer.setupChat,
+          unmet: [],
+        });
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
         if (reply.done && reply.dmInstructions) {
           db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")

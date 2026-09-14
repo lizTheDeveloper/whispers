@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { callLlm } from './llm-client.js';
-import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema } from './schemas.js';
+import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema, WorldSeedSchema } from './schemas.js';
 import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { safeDataFile } from '../data-paths.js';
 import type Database from 'better-sqlite3';
-import type { CharacterDefinition, TranscriptMessage, DiceResult } from '../../shared/types.js';
+import type { CharacterDefinition, TranscriptMessage, DiceResult, WorldSeed } from '../../shared/types.js';
 
 const presetCache = new Map<string, string>();
 function loadPresetText(presetName: string): string | null {
@@ -328,28 +328,82 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     });
   }
 
-  async setupChat(presetName: string, history: Array<{ role: string; content: string }>): Promise<DmSetupReply> {
-    const systemPrompt = `You are a TTRPG Dungeon Master helping set up a new game. Your base personality is "${presetName}".
+  async setupChat(opts: {
+    preset: string;
+    systemId: string;
+    history: Array<{ role: string; content: string }>;
+    unmet: string[];
+  }): Promise<DmSetupReply> {
+    const ruleContext = this.lookupRules(opts.systemId, 'setting tone genre campaign');
+    const unmetBlock = opts.unmet.length > 0
+      ? `\n\nStill missing before this game can open:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nWork these into the conversation naturally. Do not present them as a form.`
+      : '';
 
-Have a natural conversation with the game host to figure out:
-1. What TTRPG system to use (suggest free ones: FATE Core, Dungeon World, Cairn, MORK BORG, Knave, Basic Fantasy RPG — or they can upload their own rulebook)
-2. What kind of adventure/setting/tone they want
+    const systemPrompt = `You are a TTRPG Dungeon Master helping set up a new game. Your base personality is "${opts.preset}".
+
+Have a natural conversation with the game host to build their world with them:
+1. What kind of adventure, setting, and tone they want
+2. STYLISTIC INFLUENCES — at least three. Books, films, games, records, painters, anything. Ask what this world should FEEL like, and offer candidates drawn from what they have already told you. Three is the minimum because one is a costume and two is a comparison; three forces a specific intersection.
 3. Any house rules or special requests
-4. How many players to expect
 
-Be conversational and enthusiastic. Ask one or two questions at a time, not a checklist.
-If they upload materials, acknowledge them.
-When you have enough info, set "done": true and fill in dmInstructions (summary of their preferences) and dmCustomPrompt (your tailored system prompt for running this game).
-Until you have enough info, set "done": false and dmInstructions/dmCustomPrompt to null.
+Be conversational and enthusiastic. Ask one or two questions at a time, never a checklist.
+Accumulate every influence the host names into "influences" — return the full list every time, not just new ones.
+When you have enough to build a world, set "done": true and fill in dmInstructions (a summary of how they want this run) and dmCustomPrompt (your tailored direction for running it).
+Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.
 
-Respond as JSON: { "reply": "your message", "done": false, "dmInstructions": null, "dmCustomPrompt": null }`;
+Rules reference for their chosen system:
+${ruleContext}${unmetBlock}
+
+Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }`;
+
+    return callLlm({
+      messages: [{ role: 'system', content: systemPrompt }, ...opts.history],
+      schema: DmSetupReplySchema,
+    });
+  }
+
+  /**
+   * Turn the setup conversation into a starting world. The host reviews this
+   * before anyone plays, so err toward concrete and specific — a place with a
+   * name and a problem beats a genre.
+   */
+  async draftWorldSeed(opts: {
+    preset: string;
+    systemId: string;
+    influences: string[];
+    dmInstructions: string;
+    history: Array<{ role: string; content: string }>;
+    existing: WorldSeed | null;
+  }): Promise<WorldSeed> {
+    const transcript = opts.history.map(m => `[${m.role}] ${m.content}`).join('\n');
+    const existingBlock = opts.existing
+      ? `\n\nYou previously drafted this world. Revise it — keep what works, change what the conversation asks for:\n${JSON.stringify(opts.existing, null, 2)}`
+      : '';
+
+    const systemPrompt = `You are a world builder for a TTRPG. You output ONLY JSON. No prose, no roleplay, no markdown.
+
+Build a starting world from the host's setup conversation.
+
+Stylistic influences to honour (these shape VOICE and texture, not plot): ${opts.influences.join(' × ')}
+
+Requirements:
+- premise: one or two sentences naming the situation the players arrive into
+- locations: at least 3, each with a name, a concrete description, and a terrain word
+- npcs: at least 3, each with a name, a description, a disposition, and a motivation that could put them in someone's way
+- plotHooks: at least 3 unresolved situations, phrased as things that are already happening
+- items: 0 or more notable objects
+
+Make places and people specific enough to walk into. Avoid generic fantasy furniture unless the influences call for it.
+
+Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
 
     return callLlm({
       messages: [
         { role: 'system', content: systemPrompt },
-        ...history,
+        { role: 'user', content: `Setup conversation:\n${transcript}\n\nDM direction: ${opts.dmInstructions}${existingBlock}\n\nBuild the world.` },
       ],
-      schema: DmSetupReplySchema,
+      schema: WorldSeedSchema,
+      temperature: 0.8,
     });
   }
 

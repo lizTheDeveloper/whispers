@@ -6,8 +6,35 @@ import { getFreePort } from './ws-helpers.js';
 
 export const LLM_STUB_REPLIES = {
   validation: { approved: true, feedback: 'Solid sheet.', modifications: null },
-  setupOpen: { reply: 'What kind of game are we running?', done: false, dmInstructions: null, dmCustomPrompt: null },
-  setupDone: { reply: 'Got it — I have what I need.', done: true, dmInstructions: 'A haunted lighthouse, spooky but hopeful.', dmCustomPrompt: 'You are running a haunted lighthouse game.' },
+  setupOpen: {
+    reply: 'What kind of game are we running?',
+    done: false,
+    influences: [],
+    dmInstructions: null,
+    dmCustomPrompt: null,
+  },
+  setupDone: {
+    reply: 'Got it — I have what I need.',
+    done: true,
+    influences: ['Le Guin', 'Annihilation', 'Disco Elysium'],
+    dmInstructions: 'A haunted lighthouse, spooky but hopeful.',
+    dmCustomPrompt: 'You are running a haunted lighthouse game.',
+  },
+  worldSeed: {
+    premise: 'A lighthouse keeps something out, not in.',
+    locations: [
+      { name: 'The Lamp Room', description: 'Glass, salt, and a light that must not go out.', terrain: 'interior' },
+      { name: 'The Tidal Stair', description: 'Steps cut into wet rock, passable twice a day.', terrain: 'coast' },
+      { name: 'Cormorant Town', description: 'Nine houses and a chapel with no bell.', terrain: 'village' },
+    ],
+    npcs: [
+      { name: 'Maren', description: 'The keeper, thirty years at the lamp.', disposition: 'wary', motivation: 'Keep the light lit.' },
+      { name: 'The Cartwright', description: 'Brings supplies, never stays for dark.', disposition: 'friendly', motivation: 'Get paid and get home.' },
+      { name: 'Iselin', description: 'The relief keeper who never arrived.', disposition: 'unknown', motivation: 'Unknown.' },
+    ],
+    plotHooks: ['The relief keeper never arrived.', 'The chapel bell was removed, not lost.', 'Something answers the light.'],
+    items: [{ name: 'Brass Key', description: 'Warm to the touch, always.' }],
+  },
 };
 
 export interface Harness {
@@ -56,7 +83,9 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
         let text: string;
-        if (body.includes('character sheet validation API')) {
+        if (body.includes('You are a world builder for a TTRPG')) {
+          text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
+        } else if (body.includes('character sheet validation API')) {
           text = JSON.stringify(LLM_STUB_REPLIES.validation);
         } else if (body.includes('helping set up a new game')) {
           const hostSpoke = body.includes('"role":"user"');
