@@ -147,6 +147,24 @@ export function setCampaignPhase(db: Database.Database, campaignId: string, phas
   db.prepare("UPDATE campaigns SET phase = ?, updated_at = datetime('now') WHERE id = ?").run(phase, campaignId);
 }
 
+/**
+ * Atomically advances a campaign out of 'lobby' into 'character-creation',
+ * but only if it is still in 'lobby' at the moment of the write. Message
+ * handlers on a socket are not serialized, so a stale in-handler read of
+ * campaign.phase is not safe to gate a write on — two dm-chat calls in
+ * flight, or a dm-chat racing a start-game, could otherwise both believe
+ * they own the transition, or clobber a later phase with an earlier one.
+ * Returns whether this call was the one that actually advanced the phase,
+ * so the caller only broadcasts a phase-change once, from the write that
+ * really happened.
+ */
+export function advancePhaseIfLobby(db: Database.Database, campaignId: string): boolean {
+  const result = db.prepare(
+    "UPDATE campaigns SET phase = 'character-creation', updated_at = datetime('now') WHERE id = ? AND phase = 'lobby'"
+  ).run(campaignId);
+  return result.changes === 1;
+}
+
 export function setHostTableRole(db: Database.Database, campaignId: string, role: TableRole): void {
   db.prepare("UPDATE campaigns SET host_table_role = ?, updated_at = datetime('now') WHERE id = ?")
     .run(role, campaignId);

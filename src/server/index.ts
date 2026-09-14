@@ -9,7 +9,7 @@ import { getDb, getDataDir } from './db.js';
 import {
   createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
-  saveSetupChat, loadSetupChat, setCampaignPhase, setHostTableRole,
+  saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
   type PendingCharacterRow,
 } from './room.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
@@ -404,7 +404,7 @@ wss.on('connection', (ws) => {
       if (msg.role !== 'dm' && msg.role !== 'player') return;
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
-      if (campaign.phase !== 'lobby') {
+      if (campaign.phase === 'playing' || campaign.phase === 'ended') {
         send(ws, { type: 'error', message: 'The table role is fixed once the game opens.' });
         return;
       }
@@ -496,8 +496,11 @@ wss.on('connection', (ws) => {
             .run(reply.dmInstructions, reply.dmCustomPrompt, campaign.id);
           // World setup is what opens the table. Build step 2 replaces this
           // trigger with server-verified readiness plus seed acceptance.
-          if (campaign.phase === 'lobby') {
-            setCampaignPhase(db, campaign.id, 'character-creation');
+          // The write is atomic and conditional on the DB row still being
+          // 'lobby' (not the stale in-handler `campaign` snapshot) because
+          // message handlers on a socket are not serialized — a second
+          // dm-chat, or a start-game, can race this one to the write.
+          if (advancePhaseIfLobby(db, campaign.id)) {
             broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
           }
         }

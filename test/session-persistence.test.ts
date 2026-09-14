@@ -273,12 +273,10 @@ describe('Table role governs DM authority', () => {
     const { ws: hostWs, q: hostQ, joined } = await createGame();
     const { joinCode } = joined;
 
-    // Table role is fixed once the game opens, so it must be chosen while
-    // the campaign is still in the lobby, before world setup completes.
+    await finishWorldSetup(hostWs, hostQ);
+
     sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
     await hostQ.waitFor('room-joined', 10_000); // re-sent with the new role
-
-    await finishWorldSetup(hostWs, hostQ);
 
     const playerWs = await connectWs(port);
     const pq = new MessageQueue(playerWs);

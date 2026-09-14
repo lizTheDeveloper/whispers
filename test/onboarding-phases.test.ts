@@ -123,4 +123,43 @@ describe('Character creation is gated behind the world', () => {
     await closeWs(playerWs);
     await closeWs(hostWs);
   }, 40_000);
+
+  // start-game has no phase gate of its own and does the whole 'playing'
+  // write synchronously (no await before it), while dm-chat's phase advance
+  // sits behind a real network round trip to the (stubbed) LLM. Firing both
+  // back to back on the same socket, without awaiting the first, reproduces
+  // exactly the interleaving the review flagged: the dm-chat handler resumes
+  // and tries to advance the phase *after* start-game has already moved it
+  // to 'playing'. The conditional write in advancePhaseIfLobby must refuse
+  // to clobber that with 'character-creation'.
+  it('does not let a late-resolving dm-chat roll the phase backwards over a start-game that already ran', async () => {
+    const { ws: hostWs, joined } = await createGame();
+
+    sendMsg(hostWs, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
+    sendMsg(hostWs, { type: 'start-game' });
+
+    // Wait for both in-flight handlers to finish before inspecting state.
+    const ws2 = await connectWs(port);
+    const q2 = new MessageQueue(ws2);
+    sendMsg(ws2, { type: 'join', joinCode: joined.joinCode, playerName: 'Referee' });
+    const pJoined = await q2.waitFor('room-joined', 15_000) as any;
+
+    expect(pJoined.phase).toBe('playing');
+
+    await closeWs(ws2);
+    await closeWs(hostWs);
+  }, 30_000);
+
+  it('lets the host choose a table role after world setup has completed', async () => {
+    const { ws: hostWs, q: hostQ } = await createGame();
+    await finishWorldSetup(hostWs, hostQ);
+
+    sendMsg(hostWs, { type: 'choose-table-role', role: 'player' });
+    const reply = await hostQ.waitForAny(['room-joined', 'error'], 10_000) as any;
+
+    expect(reply.type).toBe('room-joined');
+    expect(reply.tableRole).toBe('player');
+
+    await closeWs(hostWs);
+  }, 30_000);
 });
