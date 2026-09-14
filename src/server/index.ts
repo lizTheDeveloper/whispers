@@ -670,7 +670,8 @@ function verifyDataDir(): void {
   const missing: string[] = [];
   if (!safeDataFile('dm-presets', 'chronicler', '.txt')) missing.push('dm-presets/');
   if (!existsSync(dataPath('systems'))) missing.push('systems/');
-  if (missing.length > 0) {
+  if (!safeDataFile('scenarios', 'collapsed-mine', '.json')) missing.push('scenarios/');
+  if (missing.length > 0 && process.env.NODE_ENV !== 'test') {
     console.error(`[server] DATA DIRECTORY INCOMPLETE at ${getDataDir()} — missing: ${missing.join(', ')}. DM presets and rules lookups will silently degrade. Set DATA_DIR to the directory containing dm-presets/, scenarios/, and systems/.`);
   }
 }
