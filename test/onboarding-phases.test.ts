@@ -31,11 +31,21 @@ async function createGame() {
   return { ws, q, joined };
 }
 
-/** Drives world setup to completion — the stub returns done:true once the host speaks. */
+/**
+ * Drives world setup to completion — the stub returns done:true once the
+ * host speaks. The server broadcasts the resulting phase-change to
+ * everyone in the room, including the host's own socket, and it arrives
+ * *before* the dm-chat-reply (the broadcast is sent first in the handler).
+ * Draining it here too keeps it from sitting unread in `q`'s buffer, where
+ * it would otherwise be handed back — stale — to a later, unrelated
+ * `q.waitFor('phase-change')`/`waitForAny([..., 'phase-change'])` call.
+ */
 async function finishWorldSetup(ws: WebSocket, q: MessageQueue) {
   sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
   const reply = await q.waitFor('dm-chat-reply', 15_000) as any;
   expect(reply.done).toBe(true);
+  const phase = await q.waitFor('phase-change', 15_000) as any;
+  expect(phase.phase).toBe('character-creation');
 }
 
 describe('Character creation is gated behind the world', () => {
@@ -124,29 +134,37 @@ describe('Character creation is gated behind the world', () => {
     await closeWs(hostWs);
   }, 40_000);
 
-  // start-game has no phase gate of its own and does the whole 'playing'
-  // write synchronously (no await before it), while dm-chat's phase advance
-  // sits behind a real network round trip to the (stubbed) LLM. Firing both
-  // back to back on the same socket, without awaiting the first, reproduces
-  // exactly the interleaving the review flagged: the dm-chat handler resumes
-  // and tries to advance the phase *after* start-game has already moved it
-  // to 'playing'. The conditional write in advancePhaseIfLobby must refuse
-  // to clobber that with 'character-creation'.
-  it('does not let a late-resolving dm-chat roll the phase backwards over a start-game that already ran', async () => {
-    const { ws: hostWs, joined } = await createGame();
+  // dm-chat's phase advance sits behind a real network round trip to the
+  // (stubbed) LLM, so two dm-chat calls fired back to back on the same
+  // socket, without awaiting the first, both resume believing 'lobby' is
+  // still current and both try to advance the phase. advancePhaseIfLobby's
+  // conditional write (phase = 'lobby' in the WHERE clause) must let exactly
+  // one of them win, and the handler must broadcast phase-change only from
+  // the write that actually happened — otherwise the phase could be pushed
+  // through twice, or a losing racer could clobber a later phase.
+  //
+  // This replaces an earlier version of this test that raced dm-chat against
+  // start-game and depended on start-game succeeding with zero approved
+  // characters. Task 6 makes that a hard error, so the property is now
+  // proven with two concurrent dm-chat calls instead — same mechanism
+  // (advancePhaseIfLobby), no dependency on start-game or party size.
+  it('advances phase exactly once when two dm-chat calls race the same transition', async () => {
+    const { ws: hostWs, q: hostQ } = await createGame();
 
     sendMsg(hostWs, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
-    sendMsg(hostWs, { type: 'start-game' });
+    sendMsg(hostWs, { type: 'dm-chat', text: 'Two messages, same beat.' });
 
-    // Wait for both in-flight handlers to finish before inspecting state.
-    const ws2 = await connectWs(port);
-    const q2 = new MessageQueue(ws2);
-    sendMsg(ws2, { type: 'join', joinCode: joined.joinCode, playerName: 'Referee' });
-    const pJoined = await q2.waitFor('room-joined', 15_000) as any;
+    // Both handlers must still resolve their reply.
+    await hostQ.waitFor('dm-chat-reply', 15_000);
+    await hostQ.waitFor('dm-chat-reply', 15_000);
 
-    expect(pJoined.phase).toBe('playing');
+    const first = await hostQ.waitFor('phase-change', 10_000) as any;
+    expect(first.phase).toBe('character-creation');
 
-    await closeWs(ws2);
+    // No second phase-change should ever arrive — the loser of the race
+    // must not broadcast.
+    await expect(hostQ.waitFor('phase-change', 500)).rejects.toThrow();
+
     await closeWs(hostWs);
   }, 30_000);
 
@@ -162,4 +180,51 @@ describe('Character creation is gated behind the world', () => {
 
     await closeWs(hostWs);
   }, 30_000);
+});
+
+describe('Starting a game requires a party', () => {
+  it('refuses to start with no approved characters', async () => {
+    const { ws: hostWs, q: hostQ } = await createGame();
+    await finishWorldSetup(hostWs, hostQ);
+
+    sendMsg(hostWs, { type: 'start-game' });
+    const reply = await hostQ.waitForAny(['error', 'phase-change'], 10_000) as any;
+
+    expect(reply.type).toBe('error');
+    expect(reply.message).toMatch(/character/i);
+
+    await closeWs(hostWs);
+  }, 40_000);
+
+  it('starts once a character is live', async () => {
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
+    await finishWorldSetup(hostWs, hostQ);
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+    sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+    await pq.waitFor('character-submitted', 10_000);
+
+    sendMsg(hostWs, { type: 'start-game' });
+    const phase = await hostQ.waitFor('phase-change', 15_000) as any;
+    expect(phase.phase).toBe('playing');
+
+    // start-game hands off to a GameLoop that recurses on its own (turns,
+    // scenes, whispers) with nothing in this test driving it forward. Left
+    // alone it keeps making LLM calls against the stub for the rest of the
+    // process's life — including after this test file's afterAll closes the
+    // harness's http servers, which then makes those calls fail loudly. End
+    // the game so the loop's `stopped` flag is set and it unwinds instead of
+    // outliving the test.
+    sendMsg(hostWs, { type: 'end-game' });
+    const ended = await hostQ.waitFor('phase-change', 20_000) as any;
+    expect(ended.phase).toBe('ended');
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
 });

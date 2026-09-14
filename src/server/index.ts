@@ -10,6 +10,7 @@ import {
   createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
   saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
+  countLiveCharacters,
   type PendingCharacterRow,
 } from './room.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
@@ -523,6 +524,12 @@ wss.on('connection', (ws) => {
     if (msg.type === 'start-game' && currentJoinCode && isWorldAuthor(currentPlayer)) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
+      // An empty party makes runScene recurse forever: every safety valve is
+      // keyed off counters that only advance inside the per-character loop.
+      if (countLiveCharacters(db, campaign.id) === 0) {
+        send(ws, { type: 'error', message: 'You need at least one approved character before the game can start.' });
+        return;
+      }
       const players = rooms.get(currentJoinCode);
       if (!players) return;
       const jc = currentJoinCode;

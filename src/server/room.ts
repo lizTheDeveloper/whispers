@@ -148,6 +148,19 @@ export function setCampaignPhase(db: Database.Database, campaignId: string, phas
 }
 
 /**
+ * With no live characters, GameLoop.start() sets initiativeOrder to an empty
+ * array, so the per-character turn loop that advances currentTurn and
+ * sceneTurnCount never runs — and every safety valve in runScene
+ * (roundCount, forceSceneEnd, allowSceneEnd, the session hard limit) is
+ * keyed off exactly those counters. Nothing can stop it. start-game must
+ * refuse before that loop is ever created.
+ */
+export function countLiveCharacters(db: Database.Database, campaignId: string): number {
+  const row = db.prepare('SELECT COUNT(*) AS c FROM characters WHERE campaign_id = ?').get(campaignId) as { c: number };
+  return row.c;
+}
+
+/**
  * Atomically advances a campaign out of 'lobby' into 'character-creation',
  * but only if it is still in 'lobby' at the moment of the write. Message
  * handlers on a socket are not serialized, so a stale in-handler read of
