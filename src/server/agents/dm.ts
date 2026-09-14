@@ -54,6 +54,7 @@ export function assembleSystemPrompt(input: {
   houseRules: string | null;
   dmInstructions: string | null;
   campaignMaterials: string | null;
+  influences: string[];
 }): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
   const sections = composePresetSections(input.preset);
   let prompt = sections.head;
@@ -65,6 +66,10 @@ export function assembleSystemPrompt(input: {
   // enforcement and its narration hint.
   if (input.dmCustomPrompt) {
     prompt += `\nFor this campaign specifically:\n${input.dmCustomPrompt}\n`;
+  }
+
+  if (input.influences.length > 0) {
+    prompt += `\nStylistic influences for this world — these shape VOICE and texture, never plot. Let them show in word choice, rhythm, and what the narration notices:\n${input.influences.map(i => `- ${i}`).join('\n')}\n`;
   }
 
   prompt += `
@@ -121,6 +126,7 @@ interface DmContext {
   worldSummary: string;
   transcript: TranscriptMessage[];
   systemId: string;
+  influences: string[];
 }
 
 export class DmAgent {
@@ -522,6 +528,7 @@ When you have enough info: {"reply": "summary", "definition": {"name": "...", "h
       houseRules: ctx.houseRules,
       dmInstructions: ctx.dmInstructions,
       campaignMaterials: campaignMaterials !== '(No rules found for this query)' ? campaignMaterials : null,
+      influences: ctx.influences,
     });
   }
 

@@ -83,6 +83,30 @@ describe('World setup gates the table', () => {
     await closeWs(ws);
   }, 40_000);
 
+  it('round-trips the named influences into lobby-state after setup', async () => {
+    const { ws, q, joined } = await createGame();
+    sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });
+    const draft = await q.waitFor('world-seed-draft', 20_000) as any;
+    await drainDmChatReadiness(q);
+
+    sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
+    await q.waitFor('room-joined', 10_000);
+
+    sendMsg(ws, { type: 'accept-world-seed', seed: draft.seed } as any);
+    await q.waitFor('phase-change', 15_000);
+    await closeWs(ws);
+
+    // Reconnecting is what rebuilds lobby-state from durable storage — this
+    // proves the influences named during setup were actually persisted, not
+    // just echoed back on the live socket that named them.
+    const ws2 = await connectWs(port);
+    const q2 = new MessageQueue(ws2);
+    sendMsg(ws2, { type: 'rejoin', joinCode: joined.joinCode, sessionToken: joined.sessionToken } as any);
+    const lobby = await q2.waitFor('lobby-state', 15_000) as any;
+    expect(lobby.influences).toEqual(LLM_STUB_REPLIES.setupDone.influences);
+    await closeWs(ws2);
+  }, 40_000);
+
   it('refuses a seed that does not meet the checklist', async () => {
     const { ws, q } = await createGame();
     sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse.' });

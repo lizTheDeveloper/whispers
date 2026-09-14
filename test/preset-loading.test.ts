@@ -120,6 +120,7 @@ describe('dmCustomPrompt augments rather than replaces', () => {
       houseRules: null,
       dmInstructions: null,
       campaignMaterials: null,
+      influences: [],
     });
 
     // Both must be present. Replacing the preset drops the first.
@@ -132,9 +133,46 @@ describe('dmCustomPrompt augments rather than replaces', () => {
 
   it('is otherwise identical to the no-custom-prompt case', () => {
     const withoutCustom = assembleSystemPrompt({
-      preset: 'trickster', dmCustomPrompt: null, houseRules: null, dmInstructions: null, campaignMaterials: null,
+      preset: 'trickster', dmCustomPrompt: null, houseRules: null, dmInstructions: null, campaignMaterials: null, influences: [],
     });
     expect(withoutCustom.systemPrompt).not.toContain('SENTINEL-CUSTOM-PROMPT');
     expect(withoutCustom.criticalReminder).not.toBe('');
+  });
+});
+
+describe('influences reach the system prompt', () => {
+  it('places each influence between dmCustomPrompt and the storytelling principles', () => {
+    const { systemPrompt } = assembleSystemPrompt({
+      preset: 'trickster',
+      dmCustomPrompt: 'SENTINEL-CUSTOM-PROMPT',
+      houseRules: null,
+      dmInstructions: null,
+      campaignMaterials: null,
+      influences: ['Dark Souls item descriptions', 'The Wicker Man (1973)', 'Gene Wolfe'],
+    });
+
+    for (const influence of ['Dark Souls item descriptions', 'The Wicker Man (1973)', 'Gene Wolfe']) {
+      expect(systemPrompt).toContain(influence);
+    }
+
+    const customIdx = systemPrompt.indexOf('SENTINEL-CUSTOM-PROMPT');
+    const influenceIdx = systemPrompt.indexOf('Dark Souls item descriptions');
+    const principlesIdx = systemPrompt.indexOf('Storytelling principles:');
+    expect(customIdx).toBeGreaterThan(-1);
+    expect(influenceIdx).toBeGreaterThan(customIdx);
+    expect(principlesIdx).toBeGreaterThan(influenceIdx);
+  });
+
+  it('omits the section entirely when there are no influences', () => {
+    const { systemPrompt } = assembleSystemPrompt({
+      preset: 'trickster',
+      dmCustomPrompt: null,
+      houseRules: null,
+      dmInstructions: null,
+      campaignMaterials: null,
+      influences: [],
+    });
+
+    expect(systemPrompt).not.toContain('Stylistic influences');
   });
 });

@@ -4,6 +4,7 @@ import { DmAgent } from './agents/dm.js';
 import { CharacterAgent } from './agents/character.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
+import { getInfluences } from './room.js';
 import { loadStockScenario, seedWorld } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
 import { callLlm } from './agents/llm-client.js';
@@ -149,6 +150,7 @@ export class GameLoop {
         worldSummary,
         transcript: this.transcript,
         systemId: campaign.system_id,
+        influences: getInfluences(this.db, this.campaignId),
       },
       pacing: {
         sceneNumber: this.state.currentScene,
@@ -510,6 +512,7 @@ export class GameLoop {
           preset: campaign.dm_preset, houseRules: campaign.house_rules,
           dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
           campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
+          influences: getInfluences(this.db, this.campaignId),
         },
         decision.spokenWords
           ? `${decision.chosenAction} — says: "${decision.spokenWords}"`
