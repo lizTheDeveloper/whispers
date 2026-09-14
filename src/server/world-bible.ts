@@ -297,15 +297,23 @@ export class WorldBible {
   }
 
   /**
-   * Descriptions of this campaign's unresolved (outcome IS NULL) events.
-   * Events have no name-based identity the way locations/entities/items do,
-   * so callers that need to dedupe an incoming event against what already
+   * Descriptions of every event ever recorded for this campaign, resolved or
+   * not. Events have no name-based identity the way locations/entities/items
+   * do, so callers that need to dedupe an incoming event against what already
    * exists (e.g. re-applying a world seed) compare against this list on
    * trimmed, case-insensitive description — consistent with the
    * `COLLATE NOCASE` name dedup used elsewhere in this class.
+   *
+   * Deliberately includes resolved events, not just unresolved ones: this is
+   * used by re-seed paths (accept-world-seed, regenerate-world-seed), and a
+   * plot hook the table already resolved and closed must not come back as a
+   * "fresh" unresolved event just because a later draft repeats its wording.
+   * Locations, entities, and items dedupe by identity regardless of state
+   * for the same reason — only events had a state-scoped filter here, and
+   * that was fine until re-seeding existed at all.
    */
-  getUnresolvedEventDescriptions(campaignId: string): string[] {
-    const rows = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL').all(campaignId) as any[];
+  getEventDescriptions(campaignId: string): string[] {
+    const rows = this.db.prepare('SELECT description FROM events WHERE campaign_id = ?').all(campaignId) as any[];
     return rows.map(r => r.description as string);
   }
 

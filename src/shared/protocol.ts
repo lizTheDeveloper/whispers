@@ -15,6 +15,8 @@ export type ClientMessage =
   | { type: 'update-dm-settings'; dmCustomPrompt: string | null; dmInstructions: string | null }
   | { type: 'dm-chat'; text: string }
   | { type: 'choose-table-role'; role: import('./types.js').TableRole }
+  | { type: 'accept-world-seed'; seed: import('./types.js').WorldSeed }
+  | { type: 'regenerate-world-seed'; note?: string }
   | { type: 'host-approve-character'; characterId: string }
   | { type: 'host-reject-character'; characterId: string; reason: string }
   | { type: 'negotiation-message'; characterId: string; text: string }
@@ -23,7 +25,7 @@ export type ClientMessage =
 
 export type ServerMessage =
   | { type: 'room-joined'; campaignId: string; joinCode: string; isOwner: boolean; tableRole: import('./types.js').TableRole | null; sessionToken: string; gameName: string; playerName: string; phase: GamePhase }
-  | { type: 'lobby-state'; players: string[]; setupChat: Array<{ role: string; content: string }>; dmReady: boolean; approvedCount: number }
+  | { type: 'lobby-state'; players: string[]; setupChat: Array<{ role: string; content: string }>; dmReady: boolean; approvedCount: number; phase: GamePhase; influences: string[]; hostTableRole: import('./types.js').TableRole | null; readiness: import('./types.js').WorldReadiness }
   | { type: 'room-state'; state: import('./types.js').RoomState }
   | { type: 'player-joined'; playerName: string; characterId: string | null }
   | { type: 'player-left'; playerName: string }
@@ -45,6 +47,8 @@ export type ServerMessage =
   | { type: 'character-state-update'; characterId: string; state: CharacterState }
   | { type: 'dm-settings'; presetName: string; presetPrompt: string; dmCustomPrompt: string | null; dmInstructions: string | null; materials: import('./types.js').CampaignMaterial[]; uploadToken: string }
   | { type: 'dm-chat-reply'; text: string; done: boolean }
+  | { type: 'world-seed-draft'; seed: import('./types.js').WorldSeed; accepted: boolean }
+  | { type: 'world-readiness'; readiness: import('./types.js').WorldReadiness; influences: string[] }
   | { type: 'char-chat-reply'; text: string; definition: CharacterDefinition | null }
   | { type: 'material-uploaded'; material: import('./types.js').CampaignMaterial }
   | { type: 'token-usage'; used: number; remaining: number | null }

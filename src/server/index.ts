@@ -11,9 +11,14 @@ import {
   createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
   saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
-  countLiveCharacters, beginPlayIfReady,
+  countLiveCharacters, beginPlayIfReady, getInfluences, setInfluences,
   type PendingCharacterRow,
 } from './room.js';
+import {
+  getWorldSeed, setWorldSeed, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
+} from './world-seed.js';
+import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
+import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
@@ -217,6 +222,27 @@ function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Ca
 }
 
 /**
+ * The single definition of "is this world ready to open the table", read off
+ * the database rather than trusted from any in-handler snapshot. Everything
+ * that decides whether to draft a seed, accept one, or advance the phase goes
+ * through this.
+ */
+function currentReadiness(campaign: import('../shared/types.js').Campaign) {
+  const db = getDb();
+  return checkWorldReadiness({
+    influences: getInfluences(db, campaign.id),
+    seed: getWorldSeed(db, campaign.id),
+    dmInstructions: campaign.dmInstructions,
+    hostTableRole: campaign.hostTableRole,
+    seedAccepted: isSeedAccepted(db, campaign.id),
+  });
+}
+
+function sendReadiness(ws: WebSocket, campaign: import('../shared/types.js').Campaign): void {
+  send(ws, { type: 'world-readiness', readiness: currentReadiness(campaign), influences: getInfluences(getDb(), campaign.id) });
+}
+
+/**
  * Rebuild a reconnecting participant's screen from durable state. Without this
  * a refresh leaves the DM staring at an empty lobby even once their host role
  * is restored.
@@ -231,6 +257,10 @@ function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Ca
     setupChat: loadSetupChat(db, campaign.id),
     dmReady: Boolean(campaign.dmInstructions),
     approvedCount: approved.c,
+    phase: campaign.phase,
+    influences: getInfluences(db, campaign.id),
+    hostTableRole: campaign.hostTableRole,
+    readiness: currentReadiness(campaign),
   });
 }
 
@@ -359,6 +389,9 @@ wss.on('connection', (ws) => {
       if (currentPlayer.isOwner) {
         currentPlayer.setupChat = loadSetupChat(db, campaign.id);
         sendDmSettings(ws, campaign);
+        const seed = getWorldSeed(db, campaign.id);
+        if (seed) send(ws, { type: 'world-seed-draft', seed, accepted: isSeedAccepted(db, campaign.id) });
+        sendReadiness(ws, campaign);
         sendLobbyState(ws, campaign, msg.joinCode);
         // Anything submitted while the DM was away is waiting here.
         for (const pending of listPendingCharacters(db, campaign.id)) {
@@ -543,35 +576,121 @@ wss.on('connection', (ws) => {
     if (msg.type === 'dm-chat' && currentJoinCode && currentPlayer && isWorldAuthor(currentPlayer)) {
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
+      // Once the world is accepted it is no longer up for renegotiation by
+      // chat — otherwise a stray message rewrites a world players are already
+      // building characters against.
+      if (campaign.phase !== 'lobby') {
+        send(ws, { type: 'error', message: 'The world is set. Start the game when your players are ready.' });
+        return;
+      }
       currentPlayer.setupChat.push({ role: 'user', content: msg.text });
       const dm = new DmAgent(db);
       try {
+        const before = currentReadiness(campaign);
         const reply = await dm.setupChat({
           preset: campaign.dmPreset,
           systemId: campaign.systemId,
           history: currentPlayer.setupChat,
-          unmet: [],
+          unmet: before.detail,
         });
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
+
+        const influences = normalizeInfluences(reply.influences);
+        if (influences.length > 0) setInfluences(db, campaign.id, influences);
+
         if (reply.done && reply.dmInstructions) {
           db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")
             .run(reply.dmInstructions, reply.dmCustomPrompt, campaign.id);
-          // World setup is what opens the table. Build step 2 replaces this
-          // trigger with server-verified readiness plus seed acceptance.
-          // The write is atomic and conditional on the DB row still being
-          // 'lobby' (not the stale in-handler `campaign` snapshot) because
-          // message handlers on a socket are not serialized — a second
-          // dm-chat, or a start-game, can race this one to the write.
-          if (advancePhaseIfLobby(db, campaign.id)) {
-            broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
-          }
         }
         saveSetupChat(db, campaign.id, currentPlayer.setupChat);
+
+        const after = joinRoom(db, currentJoinCode);
+        if (!after) return;
+
+        // Draft a world as soon as there is enough to build one. The phase does
+        // NOT advance here any more — only accepting the seed opens the table.
+        const readiness = currentReadiness(after);
+        const needsSeed = readiness.unmet.includes('seed');
+        const canDraft = getInfluences(db, after.id).length >= MIN_INFLUENCES && Boolean(after.dmInstructions);
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: reply.done });
+        sendReadiness(ws, after);
+
+        if (needsSeed && canDraft) {
+          const stock = after.scenarioId ? loadStockScenario(after.scenarioId) : null;
+          const seed = await dm.draftWorldSeed({
+            preset: after.dmPreset,
+            systemId: after.systemId,
+            influences: getInfluences(db, after.id),
+            dmInstructions: after.dmInstructions ?? '',
+            history: currentPlayer.setupChat,
+            existing: getWorldSeed(db, after.id) ?? stock?.seed ?? null,
+          });
+          setWorldSeed(db, after.id, seed);
+          send(ws, { type: 'world-seed-draft', seed, accepted: false });
+          sendReadiness(ws, joinRoom(db, currentJoinCode)!);
+        }
       } catch (e) {
         console.error('[dm-chat] error:', e);
         currentPlayer.setupChat.pop();
         send(ws, { type: 'dm-chat-reply', text: 'Sorry, I lost my train of thought. Could you repeat that?', done: false });
+      }
+    }
+
+    if (msg.type === 'accept-world-seed' && currentJoinCode && isWorldAuthor(currentPlayer)) {
+      const campaign = joinRoom(db, currentJoinCode);
+      if (!campaign) return;
+      if (campaign.phase !== 'lobby') { send(ws, { type: 'error', message: 'The table is already open.' }); return; }
+
+      const parsed = WorldSeedSchema.safeParse(msg.seed);
+      if (!parsed.success) { send(ws, { type: 'error', message: 'That world could not be read. Ask the DM to redraft it.' }); return; }
+      setWorldSeed(db, campaign.id, parsed.data);
+
+      // Check readiness with the seed the host is actually accepting, and with
+      // acceptance assumed — so the only thing left to decide is whether the
+      // rest of the checklist passes.
+      const readiness = checkWorldReadiness({
+        influences: getInfluences(db, campaign.id),
+        seed: parsed.data,
+        dmInstructions: campaign.dmInstructions,
+        hostTableRole: campaign.hostTableRole,
+        seedAccepted: true,
+      });
+      if (!readiness.ready) {
+        send(ws, { type: 'world-readiness', readiness, influences: getInfluences(db, campaign.id) });
+        return;
+      }
+
+      markSeedAccepted(db, campaign.id);
+      seedWorld(db, campaign.id, parsed.data);
+      send(ws, { type: 'world-seed-draft', seed: parsed.data, accepted: true });
+      if (advancePhaseIfLobby(db, campaign.id)) {
+        broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
+      }
+      sendReadiness(ws, joinRoom(db, currentJoinCode)!);
+    }
+
+    if (msg.type === 'regenerate-world-seed' && currentJoinCode && isWorldAuthor(currentPlayer)) {
+      const campaign = joinRoom(db, currentJoinCode);
+      if (!campaign) return;
+      if (campaign.phase !== 'lobby') { send(ws, { type: 'error', message: 'The table is already open.' }); return; }
+      const dm = new DmAgent(db);
+      try {
+        const history = [...currentPlayer!.setupChat];
+        if (msg.note) history.push({ role: 'user', content: `Redraft the world: ${msg.note}` });
+        const seed = await dm.draftWorldSeed({
+          preset: campaign.dmPreset,
+          systemId: campaign.systemId,
+          influences: getInfluences(db, campaign.id),
+          dmInstructions: campaign.dmInstructions ?? '',
+          history,
+          existing: getWorldSeed(db, campaign.id),
+        });
+        setWorldSeed(db, campaign.id, seed);
+        send(ws, { type: 'world-seed-draft', seed, accepted: false });
+        sendReadiness(ws, joinRoom(db, currentJoinCode)!);
+      } catch (e) {
+        console.error('[regenerate-world-seed] failed:', e);
+        send(ws, { type: 'error', message: 'The DM could not redraft the world. Try again.' });
       }
     }
 

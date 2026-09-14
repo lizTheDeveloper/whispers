@@ -17,18 +17,25 @@ import type { WorldSeed } from '../shared/types.js';
  * re-seeding an identical seed is safe for those categories. Events are not:
  * applyDiff's event-reconciliation branch only runs for events that arrive
  * with an outcome, and a seeded plot hook always has outcome: null, so a
- * second seedWorld call would otherwise add a second, identical unresolved
- * event every time. That reconciliation logic is shared with the in-play
- * fact extractor, so rather than touch its semantics, seedWorld does its own
- * dedup here: drop any plot hook whose description already exists for this
- * campaign as an unresolved event before building the diff.
+ * second seedWorld call would otherwise add a second, identical event every
+ * time. That reconciliation logic is shared with the in-play fact extractor,
+ * so rather than touch its semantics, seedWorld does its own dedup here: drop
+ * any plot hook whose description already exists for this campaign as an
+ * event — resolved or not.
+ *
+ * Deduping against resolved events too (not just unresolved ones) matters
+ * now that accept-world-seed and regenerate-world-seed can call seedWorld
+ * more than once for the same campaign: without it, re-seeding could
+ * resurrect a plot hook the table already played out and resolved as a
+ * brand-new open thread, which is worse than the duplicate-row bug this
+ * dedup originally existed to prevent.
  */
 export function seedWorld(db: Database.Database, campaignId: string, seed: WorldSeed): void {
   const worldBible = new WorldBible(db);
-  const existingUnresolved = new Set(
-    worldBible.getUnresolvedEventDescriptions(campaignId).map(d => d.trim().toLowerCase())
+  const existingEvents = new Set(
+    worldBible.getEventDescriptions(campaignId).map(d => d.trim().toLowerCase())
   );
-  const newHooks = seed.plotHooks.filter(hook => !existingUnresolved.has(hook.trim().toLowerCase()));
+  const newHooks = seed.plotHooks.filter(hook => !existingEvents.has(hook.trim().toLowerCase()));
 
   worldBible.applyDiff(campaignId, {
     newLocations: seed.locations.map(l => ({ name: l.name, description: l.description, terrain: l.terrain ?? null })),

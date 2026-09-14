@@ -3,25 +3,29 @@ import type { WebSocket } from 'ws';
 import { sendMsg, type MessageQueue } from './ws-helpers.js';
 
 /**
- * Drives world setup to completion — the LLM stub returns done:true once the
- * host speaks. Different createGame() helpers across test files don't agree
- * on whether they've already drained the DM's opening greeting (done: false)
- * off the queue before calling this, so it retries until it sees the reply
- * that actually answers the dm-chat we just sent.
+ * Drives world setup all the way to an open table.
+ *
+ * Accepting a drafted world seed is what opens the table now, not the model
+ * saying "done" in dm-chat — dm-chat only drafts a seed once the conversation
+ * has enough (influences, a premise, dmInstructions). So this sends a single
+ * dm-chat, waits for the drafted seed, claims the DM chair (accepting a seed
+ * requires a table role), then accepts that seed and waits for the resulting
+ * phase-change.
+ *
+ * Different createGame() helpers across test files don't agree on whether
+ * they've already drained the DM's opening greeting (done: false) off the
+ * queue before calling this, so the dm-chat-reply wait below tolerates an
+ * extra one still sitting in the buffer by draining until it sees a reply
+ * that isn't the greeting — done: true, per the LLM stub, once the host has
+ * spoken at all.
  *
  * The server broadcasts the resulting phase-change to everyone in the room,
- * including the host's own socket, and it arrives *before* the dm-chat-reply
- * (the broadcast is sent first in the handler). Draining it here too keeps
- * it from sitting unread in `q`'s buffer, where it would otherwise be handed
- * back — stale — to a later, unrelated `q.waitFor('phase-change')`/
- * `waitForAny([..., 'phase-change'])` call.
- *
- * Some callers (e.g. a rejoin right before this runs) leave an earlier,
- * unrelated phase-change sitting in the buffer too — a 'rejoin' reply always
- * sends one for whatever phase the campaign is *currently* in, which can
- * still be 'lobby'. So this drains phase-change messages the same way it
- * drains dm-chat-reply: until it sees the one that actually says
- * 'character-creation'.
+ * including the host's own socket. Some callers (e.g. a rejoin right before
+ * this runs) leave an earlier, unrelated phase-change sitting in the buffer
+ * too — a 'rejoin' reply always sends one for whatever phase the campaign is
+ * *currently* in, which can still be 'lobby'. So this drains phase-change
+ * messages the same way it drains dm-chat-reply: until it sees the one that
+ * actually says 'character-creation'.
  *
  * This was previously duplicated in test/onboarding-phases.test.ts and
  * test/session-persistence.test.ts, and the two copies had already diverged
@@ -40,11 +44,19 @@ export async function finishWorldSetup(ws: WebSocket, q: MessageQueue): Promise<
   } while (!reply.done && attempts < 5);
   expect(reply.done).toBe(true);
 
+  const draft = await q.waitFor('world-seed-draft', 20_000) as any;
+  expect(draft.accepted).toBe(false);
+
+  sendMsg(ws, { type: 'choose-table-role', role: 'dm' } as any);
+  await q.waitFor('room-joined', 10_000);
+
+  sendMsg(ws, { type: 'accept-world-seed', seed: draft.seed } as any);
+
   let phase: any;
-  attempts = 0;
+  let phaseAttempts = 0;
   do {
     phase = await q.waitFor('phase-change', 15_000);
-    attempts++;
-  } while (phase.phase !== 'character-creation' && attempts < 5);
+    phaseAttempts++;
+  } while (phase.phase !== 'character-creation' && phaseAttempts < 5);
   expect(phase.phase).toBe('character-creation');
 }
