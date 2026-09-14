@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -69,5 +72,29 @@ describe('database schema', () => {
       db.prepare('INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)')
         .run('ch1', 'nonexistent', '{}', '{}')
     ).toThrow();
+  });
+});
+
+describe('migrate() idempotency', () => {
+  it('running migrate() twice against the same file adds host_table_role exactly once', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'whispers-db-test-'));
+    const prevDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = dataDir;
+    try {
+      const { getDb, closeDb } = await import('../src/server/db.js');
+      getDb();
+      closeDb();
+
+      expect(() => getDb()).not.toThrow();
+
+      const cols = getDb().pragma('table_info(campaigns)') as Array<{ name: string }>;
+      expect(cols.filter(c => c.name === 'host_table_role')).toHaveLength(1);
+
+      closeDb();
+    } finally {
+      if (prevDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = prevDataDir;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });

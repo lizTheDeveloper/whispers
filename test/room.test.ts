@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
+import { getDb } from '../src/server/db.js';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -49,5 +50,23 @@ describe('room management', () => {
       codes.add(joinCode);
     }
     expect(codes.size).toBe(20);
+  });
+});
+
+describe('host table role', () => {
+  it('is null on a fresh campaign and survives a round trip once set', async () => {
+    const { createRoom, joinRoom, setHostTableRole } = await import('../src/server/room.js');
+    const db = getDb();
+    const { campaignId, joinCode } = createRoom(db, {
+      name: 'Role Test', dmPreset: 'chronicler', systemId: 'fate-core',
+    });
+
+    expect(joinRoom(db, joinCode)?.hostTableRole).toBeNull();
+
+    setHostTableRole(db, campaignId, 'player');
+    expect(joinRoom(db, joinCode)?.hostTableRole).toBe('player');
+
+    setHostTableRole(db, campaignId, 'dm');
+    expect(joinRoom(db, joinCode)?.hostTableRole).toBe('dm');
   });
 });

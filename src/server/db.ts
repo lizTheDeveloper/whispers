@@ -188,6 +188,9 @@ function migrate(db: Database.Database): void {
   if (!colNames.has('phase')) {
     db.exec("ALTER TABLE campaigns ADD COLUMN phase TEXT NOT NULL DEFAULT 'lobby'");
   }
+  if (!colNames.has('host_table_role')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN host_table_role TEXT');
+  }
 
   const cpCols = db.pragma('table_info(checkpoints)') as Array<{ name: string }>;
   if (!cpCols.some(c => c.name === 'transcript')) {

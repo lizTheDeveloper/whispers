@@ -10,6 +10,7 @@ export interface Campaign {
   dmInstructions: string | null;
   dmCustomPrompt: string | null;
   phase: GamePhase;
+  hostTableRole: TableRole | null;
   createdAt: string;
   updatedAt: string;
 }

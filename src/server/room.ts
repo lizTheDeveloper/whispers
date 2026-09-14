@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { Campaign, CharacterDefinition } from '../shared/types.js';
+import type { Campaign, CharacterDefinition, TableRole } from '../shared/types.js';
 
 function generateJoinCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -45,6 +45,7 @@ export function joinRoom(db: Database.Database, joinCode: string): Campaign | nu
     dmInstructions: row.dm_instructions ?? null,
     dmCustomPrompt: row.dm_custom_prompt ?? null,
     phase: row.phase ?? 'lobby',
+    hostTableRole: row.host_table_role ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -144,4 +145,9 @@ export function loadSetupChat(db: Database.Database, campaignId: string): Array<
 
 export function setCampaignPhase(db: Database.Database, campaignId: string, phase: string): void {
   db.prepare("UPDATE campaigns SET phase = ?, updated_at = datetime('now') WHERE id = ?").run(phase, campaignId);
+}
+
+export function setHostTableRole(db: Database.Database, campaignId: string, role: TableRole): void {
+  db.prepare("UPDATE campaigns SET host_table_role = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(role, campaignId);
 }
