@@ -29,7 +29,7 @@ import {
 } from './character-interview.js';
 import { checkCharacterReadiness } from './character-readiness.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
-import type { CampaignMaterial, CharacterDefinition } from '../shared/types.js';
+import type { CampaignMaterial } from '../shared/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
@@ -323,9 +323,21 @@ function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Ca
  * (timeout, outage, malformed proxy response) is caught, logged, and sends
  * nothing rather than stall or corrupt character creation.
  */
-async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/types.js').Campaign): Promise<void> {
+async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/types.js').Campaign, sessionToken: string): Promise<void> {
   try {
     const db = getDb();
+    // The interview record is the natural home for this text, and once
+    // generated it must never be regenerated: the client auto-rejoins on
+    // any socket blip, and a reconnect before the player's first message
+    // would otherwise hand back a fresh temperature-0.9 generation — a
+    // different first sight of the same world every time. It was also the
+    // one part of this conversation that was not otherwise persisted.
+    const interview = getOrCreateInterview(db, campaign.id, sessionToken);
+    const stored = interview.transcript[0];
+    if (stored) {
+      send(ws, { type: 'world-introduction', text: stored.content });
+      return;
+    }
     const seed = getWorldSeed(db, campaign.id);
     if (!seed) {
       console.warn(`[world-introduction] no world seed yet for campaign ${campaign.id}`);
@@ -337,29 +349,11 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
       influences: getInfluences(db, campaign.id),
       seed,
     });
+    appendInterviewTurn(db, interview.id, { role: 'assistant', content: text });
     send(ws, { type: 'world-introduction', text });
   } catch (e) {
     console.error('[world-introduction] failed:', e);
   }
-}
-
-/**
- * Deep, key-order-independent structural equality. Used to decide whether a
- * submit-character definition is the one an interview actually produced —
- * JSON.stringify alone would false-negative on key-order differences
- * introduced by the client re-serializing what it received.
- */
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>).sort();
-    return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function definitionsMatch(a: CharacterDefinition, b: unknown): boolean {
-  return stableStringify(a) === stableStringify(b);
 }
 
 wss.on('connection', (ws) => {
@@ -433,7 +427,7 @@ wss.on('connection', (ws) => {
       });
       broadcast(msg.joinCode, { type: 'player-joined', playerName: msg.playerName, characterId: null });
       if (campaign.phase === 'character-creation') {
-        await sendWorldIntroduction(ws, campaign);
+        await sendWorldIntroduction(ws, campaign, session.token);
       }
     }
 
@@ -511,16 +505,35 @@ wss.on('connection', (ws) => {
         broadcast(msg.joinCode, { type: 'player-joined', playerName, characterId: currentPlayer.characterId });
 
         if (campaign.phase === 'character-creation') {
+          // The introduction now lives as the interview's own first turn, so
+          // "has this player actually done anything beyond meet the world"
+          // is "is there a user turn in the transcript" — not merely "does a
+          // transcript exist". A transcript containing only the stored
+          // introduction is handled below (replayed, not regenerated), not
+          // here.
           const interview = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken);
-          if (interview && interview.transcript.length > 0) {
+          const hasChatted = interview?.transcript.some(t => t.role === 'user') ?? false;
+          if (hasChatted && interview) {
             send(ws, { type: 'interview-replay', transcript: interview.transcript, definition: interview.definition });
-          } else {
-            await sendWorldIntroduction(ws, campaign);
           }
         }
       }
 
       send(ws, { type: 'phase-change', phase: campaign.phase });
+
+      // Sent last and deliberately not awaited: sendWorldIntroduction makes an
+      // LLM call with its own multi-second/retry timeout, and a slow or
+      // failing proxy must not withhold room-joined/lobby-state/phase-change
+      // — already sent above — from a reconnecting player. The helper owns
+      // its own try/catch, so a failure here just logs, and it replays a
+      // stored introduction rather than regenerating one.
+      if (!currentPlayer.isOwner && campaign.phase === 'character-creation') {
+        const interview = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken);
+        const hasChatted = interview?.transcript.some(t => t.role === 'user') ?? false;
+        if (!hasChatted) {
+          void sendWorldIntroduction(ws, campaign, currentPlayer.sessionToken);
+        }
+      }
     }
 
     if (msg.type === 'submit-character' && currentJoinCode) {
@@ -530,28 +543,37 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: 'The DM is still building the world — character creation opens when it is ready.' });
         return;
       }
+      // The submit gate is keyed on the INTERVIEW, not on whether the
+      // submitted content happens to match it — content matching is
+      // trivially defeated by editing the previewed sheet at all (even a
+      // single-character edit), and once confirmed once it must not stay
+      // permanently open for every later definition. So: if this session has
+      // an interview-derived definition, it must be confirmed before ANY
+      // submission proceeds, and once confirmed the client does not get to
+      // supply its own copy of an interview character — the server submits
+      // the interview's own stored definition, ignoring whatever arrived on
+      // the socket. The "Build here" and "Paste markdown" tabs have no
+      // interview record for this session and are completely unaffected.
+      if (currentPlayer?.sessionToken) {
+        const interview = getInterviewBySession(db, submitCampaign.id, currentPlayer.sessionToken);
+        if (interview?.definition) {
+          if (interview.status !== 'confirmed') {
+            send(ws, { type: 'error', message: 'Confirm the character you were shown before submitting it.' });
+            return;
+          }
+          msg.definition = interview.definition;
+        }
+      }
       // No schema validates msg.definition before this point — it is
-      // whatever JSON arrived on the socket. Reject (don't silently
-      // truncate) anything outside sane bounds before it reaches the LLM,
-      // the DB, or any other client's screen.
+      // whatever JSON arrived on the socket (or, for a confirmed interview
+      // character, the interview's own stored definition, substituted
+      // above). Reject (don't silently truncate) anything outside sane
+      // bounds before it reaches the LLM, the DB, or any other client's
+      // screen.
       const shapeError = validateCharacterDefinitionShape(msg.definition);
       if (shapeError) {
         send(ws, { type: 'error', message: shapeError });
         return;
-      }
-      // The submit gate only applies to a definition that actually came from
-      // an interview — the "Build here" and "Paste markdown" tabs have no
-      // interview record and must keep submitting exactly as before. A
-      // definition "came from" an interview when it structurally matches the
-      // one the interview derived; the model does not get to decide an
-      // interview is finished, so an unconfirmed match is refused here even
-      // though it already passed shape validation.
-      if (currentPlayer?.sessionToken) {
-        const interview = getInterviewBySession(db, submitCampaign.id, currentPlayer.sessionToken);
-        if (interview?.definition && interview.status !== 'confirmed' && definitionsMatch(interview.definition, msg.definition)) {
-          send(ws, { type: 'error', message: 'Confirm your character before submitting it.' });
-          return;
-        }
       }
       const campaign = submitCampaign;
       const dm = new DmAgent(db);
@@ -883,14 +905,21 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'world-seed-draft', seed: parsed.data, accepted: true });
         if (advanced) {
           broadcast(currentJoinCode, { type: 'phase-change', phase: 'character-creation' });
+        }
+        // Sent before the introductions below so the host's own UI is never
+        // waiting on N player LLM calls it has nothing to do with.
+        sendReadiness(ws, joinRoom(db, currentJoinCode)!);
+        if (advanced) {
           // Every player already at the table meets the world the moment it
           // opens, rather than waiting for their first char-chat message.
+          // Fired concurrently and not awaited: one slow or hung generation
+          // must not delay the others', or the host, by piling up N serial
+          // LLM latencies. sendWorldIntroduction owns its own try/catch.
           const others = (rooms.get(currentJoinCode) ?? []).filter(p => !p.isOwner);
           for (const p of others) {
-            await sendWorldIntroduction(p.ws, campaign);
+            void sendWorldIntroduction(p.ws, campaign, p.sessionToken);
           }
         }
-        sendReadiness(ws, joinRoom(db, currentJoinCode)!);
       } catch (e) {
         console.error('[accept-world-seed] failed:', e);
         send(ws, { type: 'error', message: 'Could not open the table with that world. Try again.' });

@@ -216,4 +216,46 @@ describe('the interview end-to-end, over the wire', () => {
     await closeWs(playerWs);
     await closeWs(hostWs);
   }, 60_000);
+
+  // This is the property the whole readiness-coercion design exists for: the
+  // model can hand back a definition it believes is finished, but a thin one
+  // (only `name` filled in) must never reach the client as `definition` —
+  // the server re-derives readiness itself and coerces toward "not ready".
+  // A test that only checks a NULL-definition reply against a stub that
+  // already defaults to null proves passthrough, not coercion — this one
+  // uses a stub fixture with a non-null but incomplete definition so a
+  // regression (e.g. deleting the readiness check on the ready branch) would
+  // actually fail it.
+  it('coerces a thin, model-declared-done definition to definition: null plus the real unmet list', async () => {
+    const { hostWs, joined } = await openTable();
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    await pq.waitFor('world-introduction', 10_000);
+
+    // THIN_SHEET_TRIGGER selects a stub fixture whose definition has only
+    // `name` filled in — everything else is empty — while the model's own
+    // reply text frames it as if it were satisfied.
+    sendMsg(playerWs, { type: 'char-chat', text: 'THIN_SHEET_TRIGGER give me whatever you have so far.' });
+
+    const reply = await pq.waitFor('char-chat-reply', 15_000) as any;
+    expect(reply.definition).toBeNull();
+
+    const readiness = await pq.waitFor('character-readiness', 10_000) as any;
+    expect(readiness.readiness.ready).toBe(false);
+    // `name` is the one field the thin fixture actually filled in — it must
+    // NOT appear as unmet. Everything else must.
+    expect(readiness.readiness.unmet).not.toContain('name');
+    expect(readiness.readiness.unmet).toEqual(
+      expect.arrayContaining(['highConcept', 'trouble', 'aspects', 'skills', 'stunts'])
+    );
+
+    // And no character-preview should ever have been sent for this turn.
+    await expect(pq.waitFor('character-preview', 300)).rejects.toThrow();
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
 });

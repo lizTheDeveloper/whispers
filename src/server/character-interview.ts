@@ -91,8 +91,16 @@ export function appendInterviewTurn(db: Database.Database, id: string, turn: Int
     .run(JSON.stringify(transcript), id);
 }
 
+/**
+ * Every call here means "the interview just derived a (possibly new) sheet" —
+ * so it always resets status back to 'open'. Without this, confirming once
+ * would stay confirmed forever: a player can keep talking after confirming
+ * (they are allowed to change their mind), the model derives a different
+ * ready sheet, and that new sheet must require its own confirmation rather
+ * than silently inheriting the old confirmation.
+ */
 export function setInterviewDefinition(db: Database.Database, id: string, definition: CharacterDefinition): void {
-  db.prepare("UPDATE character_interviews SET definition = ?, updated_at = datetime('now') WHERE id = ?")
+  db.prepare("UPDATE character_interviews SET definition = ?, status = 'open', updated_at = datetime('now') WHERE id = ?")
     .run(JSON.stringify(definition), id);
 }
 

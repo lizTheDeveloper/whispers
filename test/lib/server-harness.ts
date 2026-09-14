@@ -52,6 +52,23 @@ export const LLM_STUB_REPLIES = {
       stunts: ['Steady Hand: +2 to Will against fear.'],
     },
   },
+  // A thin-but-non-null definition — the model believes it is done (it is
+  // not refusing, it filled in the field it has), but only `name` clears the
+  // bar. Used to prove the server coerces this to definition: null on the
+  // wire rather than trusting the model's own "here it is" framing.
+  charInterviewThin: {
+    reply: 'I think I have a name for them, at least.',
+    definition: {
+      name: 'Vesper Ash',
+      highConcept: '',
+      trouble: '',
+      aspects: [],
+      personality: '',
+      backstory: '',
+      skills: {},
+      stunts: [],
+    },
+  },
   worldIntroduction:
     'The lamp has been lit every night for thirty years. Tonight the relief keeper did not arrive, and the chapel below has no bell to ring.',
 };
@@ -107,10 +124,18 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
         } else if (body.includes('introducing a player to a world')) {
           text = LLM_STUB_REPLIES.worldIntroduction;
         } else if (body.includes('character creation API')) {
-          // The interview turns "done" once the player has answered twice, so a
-          // test can drive it deterministically instead of guessing turn counts.
-          const playerTurns = (body.match(/"role":"user"/g) ?? []).length;
-          text = JSON.stringify(playerTurns >= 2 ? LLM_STUB_REPLIES.charInterviewDone : LLM_STUB_REPLIES.charInterviewOpen);
+          // A special marker in the player's own text picks the thin-sheet
+          // fixture regardless of turn count, so a test can trigger it
+          // deterministically without disturbing the two-turn "done" flow
+          // every other interview test relies on.
+          if (body.includes('THIN_SHEET_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.charInterviewThin);
+          } else {
+            // The interview turns "done" once the player has answered twice, so a
+            // test can drive it deterministically instead of guessing turn counts.
+            const playerTurns = (body.match(/"role":"user"/g) ?? []).length;
+            text = JSON.stringify(playerTurns >= 2 ? LLM_STUB_REPLIES.charInterviewDone : LLM_STUB_REPLIES.charInterviewOpen);
+          }
         } else if (body.includes('character sheet validation API')) {
           text = JSON.stringify(LLM_STUB_REPLIES.validation);
         } else if (body.includes('helping set up a new game')) {
