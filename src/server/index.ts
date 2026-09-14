@@ -10,7 +10,7 @@ import {
   createRoom, joinRoom, createSession, getSession, touchSession, setSessionCharacter,
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
   saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
-  countLiveCharacters,
+  countLiveCharacters, beginPlayIfReady,
   type PendingCharacterRow,
 } from './room.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
@@ -163,6 +163,44 @@ function openNegotiation(
   negotiation.open().catch(e => console.error('[negotiation] open failed:', e));
 }
 
+// Sane upper bounds on free-text fields the client controls. This is not the
+// full CharacterDefinition schema (that's a later, planned task) — just a
+// floor against pathological/abusive payloads reaching the DB, the LLM, or
+// (post the innerHTML fixes in game-view.ts) every other client's DOM.
+const MAX_SHORT_FIELD = 256;
+const MAX_LONG_FIELD = 5000;
+const MAX_LIST_ITEMS = 20;
+
+function isValidShortField(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_SHORT_FIELD;
+}
+
+function isValidLongField(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_LONG_FIELD;
+}
+
+/**
+ * Rejects (never truncates) an over-long or malformed character definition.
+ * Silent truncation would hand the player back a character that doesn't
+ * match what they submitted; an explicit error lets them fix and resubmit.
+ */
+function validateCharacterDefinitionShape(def: unknown): string | null {
+  if (!def || typeof def !== 'object') return 'Character definition is missing.';
+  const d = def as Record<string, unknown>;
+  if (!isValidShortField(d.name)) return `Character name must be 1-${MAX_SHORT_FIELD} characters.`;
+  if (!isValidShortField(d.highConcept)) return `High concept must be 1-${MAX_SHORT_FIELD} characters.`;
+  if (!isValidShortField(d.trouble)) return `Trouble must be 1-${MAX_SHORT_FIELD} characters.`;
+  if (!isValidLongField(d.backstory)) return `Backstory must be at most ${MAX_LONG_FIELD} characters.`;
+  if (!isValidLongField(d.personality)) return `Personality must be at most ${MAX_LONG_FIELD} characters.`;
+  if (!Array.isArray(d.aspects) || d.aspects.length > MAX_LIST_ITEMS || !d.aspects.every(isValidShortField)) {
+    return `Aspects must be at most ${MAX_LIST_ITEMS} entries of ${MAX_SHORT_FIELD} characters each.`;
+  }
+  if (!Array.isArray(d.stunts) || d.stunts.length > MAX_LIST_ITEMS || !d.stunts.every(isValidShortField)) {
+    return `Stunts must be at most ${MAX_LIST_ITEMS} entries of ${MAX_SHORT_FIELD} characters each.`;
+  }
+  return null;
+}
+
 function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Campaign): void {
   const uploadToken = randomBytes(32).toString('hex');
   uploadTokens.set(uploadToken, { campaignId: campaign.id, expires: Date.now() + 4 * 60 * 60 * 1000 });
@@ -205,6 +243,10 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(raw.toString()); } catch { return; }
 
     if (msg.type === 'create') {
+      if (!isValidShortField(msg.name)) {
+        send(ws, { type: 'error', message: `Game name must be 1-${MAX_SHORT_FIELD} characters.` });
+        return;
+      }
       const { campaignId, joinCode } = createRoom(db, {
         name: msg.name,
         dmPreset: msg.dmPreset,
@@ -240,6 +282,10 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'join') {
+      if (!isValidShortField(msg.playerName)) {
+        send(ws, { type: 'error', message: `Player name must be 1-${MAX_SHORT_FIELD} characters.` });
+        return;
+      }
       const campaign = joinRoom(db, msg.joinCode);
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
       const session = createSession(db, { campaignId: campaign.id, joinCode: msg.joinCode, playerName: msg.playerName, isHost: false });
@@ -338,6 +384,15 @@ wss.on('connection', (ws) => {
       if (!submitCampaign) return;
       if (submitCampaign.phase === 'lobby') {
         send(ws, { type: 'error', message: 'The DM is still building the world — character creation opens when it is ready.' });
+        return;
+      }
+      // No schema validates msg.definition before this point — it is
+      // whatever JSON arrived on the socket. Reject (don't silently
+      // truncate) anything outside sane bounds before it reaches the LLM,
+      // the DB, or any other client's screen.
+      const shapeError = validateCharacterDefinitionShape(msg.definition);
+      if (shapeError) {
+        send(ws, { type: 'error', message: shapeError });
         return;
       }
       const campaign = submitCampaign;
@@ -533,6 +588,17 @@ wss.on('connection', (ws) => {
       const players = rooms.get(currentJoinCode);
       if (!players) return;
       const jc = currentJoinCode;
+      // Atomic and conditional on the DB row still being 'character-creation'
+      // (not the stale in-handler `campaign` snapshot) for the same reason as
+      // advancePhaseIfLobby: message handlers on a socket are not serialized,
+      // and two DM tabs on the same seat — a workflow the sidebar explicitly
+      // invites via "Bookmark this chair" — can both fire 'start-game'. Only
+      // the call that wins the write may construct a GameLoop; a second one
+      // would orphan-run forever with nothing able to stop it.
+      if (!beginPlayIfReady(db, campaign.id)) {
+        send(ws, { type: 'error', message: 'The game has already started.' });
+        return;
+      }
       const gameLoop = new GameLoop(
         db, campaign.id,
         (m) => broadcast(jc, m),
@@ -540,7 +606,6 @@ wss.on('connection', (ws) => {
         { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
       );
       gameLoops.set(jc, gameLoop);
-      setCampaignPhase(db, campaign.id, 'playing');
       gameLoop.start().catch(e => console.error('Game loop error:', e));
     }
 

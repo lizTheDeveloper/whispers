@@ -368,8 +368,10 @@ Born in the slums of Veridian...
     const typing = chatLog.querySelector('#char-typing');
     if (typing) typing.remove();
 
-    feedback.classList.remove('hidden');
-    feedback.classList.add('rejected');
+    // A previous 'approved' class must not linger under a rejection — set
+    // the full class list rather than adding on top of it, matching
+    // negotiation-opened's approach above.
+    feedback.className = 'feedback rejected';
     feedback.textContent = msg.message;
   });
 }

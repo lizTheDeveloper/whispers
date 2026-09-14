@@ -59,21 +59,47 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       if (stats && stats.length > 0) {
         const card = document.createElement('div');
         card.className = 'narration-entry whisper-stats-card';
-        let html = '<div class="stats-title">Your Influence This Scene</div>';
+
+        const title = document.createElement('div');
+        title.className = 'stats-title';
+        title.textContent = 'Your Influence This Scene';
+        card.appendChild(title);
+
         for (const s of stats) {
+          // s.name is character.definition.name — attacker-controlled (a
+          // player can name a character anything, including markup), so it
+          // must go through textContent, never be concatenated into HTML.
           const total = s.followed + s.partial + s.ignored;
           sessionStats.followed += s.followed;
           sessionStats.partial += s.partial;
           sessionStats.ignored += s.ignored;
           const pct = total > 0 ? Math.round((s.followed / total) * 100) : 0;
           const sign = s.trustDelta >= 0 ? '+' : '';
-          html += `<div class="stats-row">`;
-          html += `<span class="stats-name">${s.name}</span>`;
-          html += `<span class="stats-bar"><span class="stats-fill" style="width:${pct}%"></span></span>`;
-          html += `<span class="stats-detail">${s.followed}/${total} heeded &middot; trust ${sign}${(s.trustDelta * 100).toFixed(0)}%</span>`;
-          html += `</div>`;
+
+          const row = document.createElement('div');
+          row.className = 'stats-row';
+
+          const nameSpan = document.createElement('span');
+          nameSpan.className = 'stats-name';
+          nameSpan.textContent = s.name;
+          row.appendChild(nameSpan);
+
+          const barSpan = document.createElement('span');
+          barSpan.className = 'stats-bar';
+          const fillSpan = document.createElement('span');
+          fillSpan.className = 'stats-fill';
+          fillSpan.style.width = `${pct}%`;
+          barSpan.appendChild(fillSpan);
+          row.appendChild(barSpan);
+
+          const detailSpan = document.createElement('span');
+          detailSpan.className = 'stats-detail';
+          detailSpan.textContent = `${s.followed}/${total} heeded · trust ${sign}${(s.trustDelta * 100).toFixed(0)}%`;
+          row.appendChild(detailSpan);
+
+          card.appendChild(row);
         }
-        card.innerHTML = html;
+
         log.appendChild(card);
         log.scrollTop = log.scrollHeight;
       }
@@ -146,9 +172,17 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     const existingGoals = whisperArea.querySelector('.whisper-goals');
     if (existingGoals) existingGoals.remove();
     if (msg.goals && msg.goals.length > 0) {
+      // msg.goals is LLM-generated text derived from player-influenced
+      // memories — not a trusted constant — so build each tag with
+      // textContent rather than concatenating it into HTML.
       const goalsDiv = document.createElement('div');
       goalsDiv.className = 'whisper-goals';
-      goalsDiv.innerHTML = msg.goals.map(g => `<span class="goal-tag">${g}</span>`).join('');
+      for (const g of msg.goals) {
+        const tag = document.createElement('span');
+        tag.className = 'goal-tag';
+        tag.textContent = g;
+        goalsDiv.appendChild(tag);
+      }
       whisperArea.insertBefore(goalsDiv, whisperInput);
     }
     const existingSuggestions = whisperArea.querySelector('.whisper-suggestions');

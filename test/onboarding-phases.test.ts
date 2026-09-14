@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
 import { startHarness, type Harness } from './lib/server-harness.js';
+import { finishWorldSetup } from './lib/finish-world-setup.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
 import type { WebSocket } from 'ws';
 
@@ -29,23 +30,6 @@ async function createGame() {
   const joined = await q.waitFor('room-joined', 10_000) as any;
   await q.waitFor('dm-chat-reply', 10_000); // the DM's opening greeting
   return { ws, q, joined };
-}
-
-/**
- * Drives world setup to completion — the stub returns done:true once the
- * host speaks. The server broadcasts the resulting phase-change to
- * everyone in the room, including the host's own socket, and it arrives
- * *before* the dm-chat-reply (the broadcast is sent first in the handler).
- * Draining it here too keeps it from sitting unread in `q`'s buffer, where
- * it would otherwise be handed back — stale — to a later, unrelated
- * `q.waitFor('phase-change')`/`waitForAny([..., 'phase-change'])` call.
- */
-async function finishWorldSetup(ws: WebSocket, q: MessageQueue) {
-  sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
-  const reply = await q.waitFor('dm-chat-reply', 15_000) as any;
-  expect(reply.done).toBe(true);
-  const phase = await q.waitFor('phase-change', 15_000) as any;
-  expect(phase.phase).toBe('character-creation');
 }
 
 describe('Character creation is gated behind the world', () => {
@@ -220,6 +204,46 @@ describe('Starting a game requires a party', () => {
     // harness's http servers, which then makes those calls fail loudly. End
     // the game so the loop's `stopped` flag is set and it unwinds instead of
     // outliving the test.
+    sendMsg(hostWs, { type: 'end-game' });
+    const ended = await hostQ.waitFor('phase-change', 20_000) as any;
+    expect(ended.phase).toBe('ended');
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
+
+  // beginPlayIfReady's conditional write (phase = 'character-creation' in the
+  // WHERE clause) must let exactly one 'start-game' construct a GameLoop. A
+  // second one — e.g. from a stale DM tab, which main.ts's "bookmark this
+  // chair" sidebar copy explicitly invites — must be refused, not spawn an
+  // orphaned second loop that keeps narrating forever with nothing able to
+  // stop it.
+  it('refuses a second start-game and never spawns a second GameLoop', async () => {
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
+    await finishWorldSetup(hostWs, hostQ);
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+    sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+    await pq.waitFor('character-submitted', 10_000);
+
+    sendMsg(hostWs, { type: 'start-game' });
+    sendMsg(hostWs, { type: 'start-game' });
+
+    const started = await hostQ.waitFor('phase-change', 15_000) as any;
+    expect(started.phase).toBe('playing');
+
+    const refused = await hostQ.waitFor('error', 10_000) as any;
+    expect(refused.message).toMatch(/already started/i);
+
+    // No second 'playing' phase-change should ever arrive.
+    await expect(hostQ.waitFor('phase-change', 500)).rejects.toThrow();
+
+    // Clean up so the loop this test did start doesn't outlive it.
     sendMsg(hostWs, { type: 'end-game' });
     const ended = await hostQ.waitFor('phase-change', 20_000) as any;
     expect(ended.phase).toBe('ended');

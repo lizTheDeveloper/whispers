@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { getDb } from '../src/server/db.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -54,19 +56,37 @@ describe('room management', () => {
 });
 
 describe('host table role', () => {
+  // db.ts binds DATA_DIR at module load, so the temp dir has to be in place
+  // before the dynamic import below — same pattern as test/db.test.ts. Using
+  // the real getDb() against the project's actual data/whispers.db (the
+  // previous version of this test) writes real campaigns and session tokens
+  // into a file that can ship in the Docker image; this keeps it isolated
+  // and cleans up after itself.
   it('is null on a fresh campaign and survives a round trip once set', async () => {
-    const { createRoom, joinRoom, setHostTableRole } = await import('../src/server/room.js');
-    const db = getDb();
-    const { campaignId, joinCode } = createRoom(db, {
-      name: 'Role Test', dmPreset: 'chronicler', systemId: 'fate-core',
-    });
+    const dataDir = mkdtempSync(join(tmpdir(), 'whispers-room-test-'));
+    const prevDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = dataDir;
+    try {
+      const { getDb, closeDb } = await import('../src/server/db.js');
+      const { createRoom, joinRoom, setHostTableRole } = await import('../src/server/room.js');
+      const db = getDb();
+      const { campaignId, joinCode } = createRoom(db, {
+        name: 'Role Test', dmPreset: 'chronicler', systemId: 'fate-core',
+      });
 
-    expect(joinRoom(db, joinCode)?.hostTableRole).toBeNull();
+      expect(joinRoom(db, joinCode)?.hostTableRole).toBeNull();
 
-    setHostTableRole(db, campaignId, 'player');
-    expect(joinRoom(db, joinCode)?.hostTableRole).toBe('player');
+      setHostTableRole(db, campaignId, 'player');
+      expect(joinRoom(db, joinCode)?.hostTableRole).toBe('player');
 
-    setHostTableRole(db, campaignId, 'dm');
-    expect(joinRoom(db, joinCode)?.hostTableRole).toBe('dm');
+      setHostTableRole(db, campaignId, 'dm');
+      expect(joinRoom(db, joinCode)?.hostTableRole).toBe('dm');
+
+      closeDb();
+    } finally {
+      if (prevDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = prevDataDir;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });

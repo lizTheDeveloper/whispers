@@ -56,7 +56,7 @@ export interface CampaignSession {
   campaignId: string;
   joinCode: string;
   playerName: string;
-  isHost: boolean;
+  isHost: boolean; // durable column name; the in-memory equivalent is `isOwner` (ConnectedPlayer.isOwner)
   characterId: string | null;
 }
 
@@ -174,6 +174,25 @@ export function countLiveCharacters(db: Database.Database, campaignId: string): 
 export function advancePhaseIfLobby(db: Database.Database, campaignId: string): boolean {
   const result = db.prepare(
     "UPDATE campaigns SET phase = 'character-creation', updated_at = datetime('now') WHERE id = ? AND phase = 'lobby'"
+  ).run(campaignId);
+  return result.changes === 1;
+}
+
+/**
+ * Atomically advances a campaign out of 'character-creation' into 'playing',
+ * but only if it is still in 'character-creation' at the moment of the write.
+ * Mirrors advancePhaseIfLobby: a second 'start-game' (e.g. from a stale DM
+ * tab that main.ts's "bookmark this chair" flow explicitly invites) must not
+ * be allowed to construct a second GameLoop against the same campaign — the
+ * old loop's `stopped` flag is per-instance, so an orphaned loop would keep
+ * narrating and writing turns/scenes forever with nothing able to stop it.
+ * Returns whether this call was the one that actually advanced the phase, so
+ * the caller only constructs and starts a GameLoop from the write that
+ * really happened.
+ */
+export function beginPlayIfReady(db: Database.Database, campaignId: string): boolean {
+  const result = db.prepare(
+    "UPDATE campaigns SET phase = 'playing', updated_at = datetime('now') WHERE id = ? AND phase = 'character-creation'"
   ).run(campaignId);
   return result.changes === 1;
 }

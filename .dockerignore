@@ -1,0 +1,10 @@
+node_modules
+dist
+data/*.db
+data/*.db-wal
+data/*.db-shm
+.git
+
+# Local-only files that should never enter a build context.
+.env
+*.log

@@ -187,6 +187,15 @@ function migrate(db: Database.Database): void {
   }
   if (!colNames.has('phase')) {
     db.exec("ALTER TABLE campaigns ADD COLUMN phase TEXT NOT NULL DEFAULT 'lobby'");
+    // Every campaign created before this column existed now reads as 'lobby',
+    // which gates char-chat/submit-character behind a world that was already
+    // built — locking players out of games mid-flight. dm_instructions being
+    // set is this branch's own trigger for advancing out of 'lobby'
+    // (advancePhaseIfLobby fires right after it's written), so any pre-
+    // existing campaign that already has it is backfilled straight to
+    // 'character-creation' instead of being stuck waiting on a DM chat that
+    // already happened.
+    db.exec("UPDATE campaigns SET phase = 'character-creation' WHERE dm_instructions IS NOT NULL AND phase = 'lobby'");
   }
   if (!colNames.has('host_table_role')) {
     db.exec('ALTER TABLE campaigns ADD COLUMN host_table_role TEXT');

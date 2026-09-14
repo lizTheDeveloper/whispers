@@ -65,6 +65,11 @@ ws.on('phase-change', (msg) => {
     if (currentView?.endsWith(':character-creation')) return;
     currentView = `play:${joinCode}:character-creation`;
     renderCharacterCreator(root, ws, joinCode);
+  } else if (msg.phase === 'character-creation' && isOwner) {
+    // The DM lobby is already showing (dm-chat's own done:true handling put
+    // it there) — just keep currentView in sync so a later reconnect doesn't
+    // think it's stale and needlessly re-render it.
+    currentView = `dm:${joinCode}:character-creation`;
   }
 });
 

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { WebSocket } from 'ws';
 import { connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
 import { startHarness, type Harness } from './lib/server-harness.js';
+import { finishWorldSetup } from './lib/finish-world-setup.js';
 import type { CharacterDefinition } from '../src/shared/types.js';
 
 let harness: Harness;
@@ -37,21 +38,6 @@ async function createGame() {
 
 function closeWs(ws: WebSocket): Promise<void> {
   return new Promise((r) => { ws.once('close', () => r()); ws.close(); });
-}
-
-/** Drives world setup to completion — the stub returns done:true once the host speaks. */
-async function finishWorldSetup(ws: WebSocket, q: MessageQueue) {
-  sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
-  // createGame() doesn't consume the DM's opening greeting (done: false), which
-  // may still be sitting in the queue's buffer ahead of the reply to the message
-  // we just sent — drain until we see the reply that actually answers it.
-  let reply: any;
-  let attempts = 0;
-  do {
-    reply = await q.waitFor('dm-chat-reply', 15_000) as any;
-    attempts++;
-  } while (!reply.done && attempts < 5);
-  expect(reply.done).toBe(true);
 }
 
 describe('DM session survives a page refresh', () => {
