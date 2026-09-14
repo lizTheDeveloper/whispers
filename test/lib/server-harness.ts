@@ -35,6 +35,26 @@ export const LLM_STUB_REPLIES = {
     plotHooks: ['The relief keeper never arrived.', 'The chapel bell was removed, not lost.', 'Something answers the light.'],
     items: [{ name: 'Brass Key', description: 'Warm to the touch, always.' }],
   },
+  charInterviewOpen: {
+    reply: 'You are standing at the edge of the tailing field watching the dust come in. What are you thinking about?',
+    definition: null,
+  },
+  charInterviewDone: {
+    reply: 'Here is who I think you are.',
+    definition: {
+      name: 'Vesper Ash',
+      highConcept: 'Lighthouse Keeper Who Stopped Believing',
+      trouble: 'Owes the Ledger Cult a debt she cannot name',
+      aspects: ['Maps are promises', 'Never looks back'],
+      personality: 'Quiet, stubborn, allergic to comfort.',
+      backstory: 'Thirty years at the lamp and one night she did not climb the stair.',
+      skills: { Will: 3, Notice: 2, Lore: 1 },
+      stunts: ['Steady Hand: +2 to Will against fear.'],
+    },
+  },
+  worldIntroduction: {
+    text: 'The lamp has been lit every night for thirty years. Tonight the relief keeper did not arrive, and the chapel below has no bell to ring.',
+  },
 };
 
 export interface Harness {
@@ -85,6 +105,13 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
         let text: string;
         if (body.includes('You are a world builder for a TTRPG')) {
           text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
+        } else if (body.includes('introducing a player to a world')) {
+          text = JSON.stringify(LLM_STUB_REPLIES.worldIntroduction);
+        } else if (body.includes('character creation API')) {
+          // The interview turns "done" once the player has answered twice, so a
+          // test can drive it deterministically instead of guessing turn counts.
+          const playerTurns = (body.match(/"role":"user"/g) ?? []).length;
+          text = JSON.stringify(playerTurns >= 2 ? LLM_STUB_REPLIES.charInterviewDone : LLM_STUB_REPLIES.charInterviewOpen);
         } else if (body.includes('character sheet validation API')) {
           text = JSON.stringify(LLM_STUB_REPLIES.validation);
         } else if (body.includes('helping set up a new game')) {
