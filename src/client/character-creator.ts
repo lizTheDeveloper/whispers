@@ -156,6 +156,8 @@ Born in the slums of Veridian...
   const chatPreview = root.querySelector('#chat-char-preview') as HTMLElement;
   const chatSubmitBtn = root.querySelector('#chat-submit-char') as HTMLButtonElement;
   let chatDefinition: CharacterDefinition | null = null;
+  const defaultSubmitLabel = submitBtn.textContent ?? 'Submit to DM for Approval';
+  const defaultChatSubmitLabel = chatSubmitBtn.textContent ?? 'Submit this character to DM for approval';
 
   function addChatMsg(text: string, sender: 'dm' | 'player') {
     const bubble = document.createElement('div');
@@ -333,5 +335,31 @@ Born in the slums of Veridian...
     negContainer.id = 'negotiation-container';
     root.querySelector('.character-creator')!.appendChild(negContainer);
     renderNegotiationChat(negContainer, ws, msg.characterId, msg.characterName, msg.playerName, false);
+  });
+
+  // A submission or interview can be refused server-side (e.g. the world
+  // isn't built yet — a backstop against a stale tab). Without this, the
+  // submit button is stuck on "Awaiting DM review..." forever and/or the
+  // chat leaves a permanent "DM is thinking..." spinner. main.ts already
+  // handles the 'session is no longer valid' case by routing back to the
+  // lobby, so leave that one alone here.
+  ws.on('error', (msg) => {
+    if (msg.type !== 'error') return;
+    if (msg.message.includes('session is no longer valid')) return;
+
+    submitBtn.disabled = false;
+    submitBtn.textContent = defaultSubmitLabel;
+
+    chatSubmitBtn.disabled = false;
+    chatSubmitBtn.textContent = defaultChatSubmitLabel;
+
+    chatSend.disabled = false;
+    const typing = chatLog.querySelector('#char-typing');
+    if (typing) typing.remove();
+
+    const feedback = root.querySelector('#dm-feedback') as HTMLElement;
+    feedback.classList.remove('hidden');
+    feedback.classList.add('rejected');
+    feedback.textContent = msg.message;
   });
 }

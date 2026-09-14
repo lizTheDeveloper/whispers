@@ -1312,3 +1312,42 @@ button:disabled {
   outline: none;
   border-color: rgba(255, 107, 53, 0.3);
 }
+
+/* ---- Waiting room: shown while the host builds the world ---- */
+.waiting-room {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+.waiting-panel {
+  align-items: center;
+  gap: 1.1rem;
+}
+.waiting-pulse {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: var(--ember-glow);
+  border: 1px solid rgba(255, 107, 53, 0.3);
+  animation: waiting-breathe 2.8s ease-in-out infinite;
+}
+@keyframes waiting-breathe {
+  0%, 100% { transform: scale(0.85); opacity: 0.5; }
+  50%      { transform: scale(1.05); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .waiting-pulse { animation: none; }
+}
+.waiting-note {
+  color: var(--text-dim);
+  line-height: 1.6;
+  max-width: 28rem;
+}
+#waiting-player-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+}

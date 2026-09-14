@@ -3,6 +3,7 @@ import { renderLobby } from './lobby.js';
 import { renderCharacterCreator } from './character-creator.js';
 import { renderGameView } from './game-view.js';
 import { renderDmLobby } from './dm-lobby.js';
+import { renderWaitingRoom } from './waiting-room.js';
 import { getStoredSession, saveSession, removeSession, parseRoute, setRoute } from './session-store.js';
 import type { GamePhase } from '../shared/types.js';
 
@@ -17,16 +18,18 @@ const ws = new WsClient();
 let currentView: string | null = null;
 let isOwner = false;
 
-function renderFor(joinCode: string, campaignId: string, host: boolean, phase: GamePhase): void {
-  const key = `${host ? 'dm' : 'play'}:${joinCode}:${phase}`;
+function renderFor(joinCode: string, campaignId: string, owner: boolean, phase: GamePhase, gameName: string): void {
+  const key = `${owner ? 'dm' : 'play'}:${joinCode}:${phase}`;
   if (currentView === key) return; // silent reconnect — leave the screen alone
   currentView = key;
-  isOwner = host;
+  isOwner = owner;
 
   if (phase === 'playing' || phase === 'ended') {
-    renderGameView(root, ws, host);
-  } else if (host) {
+    renderGameView(root, ws, owner);
+  } else if (owner) {
     renderDmLobby(root, ws, joinCode, campaignId);
+  } else if (phase === 'lobby') {
+    renderWaitingRoom(root, ws, gameName, joinCode);
   } else {
     renderCharacterCreator(root, ws, joinCode);
   }
@@ -46,17 +49,23 @@ ws.on('room-joined', (msg) => {
     lastSeen: Date.now(),
   });
   setRoute({ view: msg.isOwner ? 'dm' : 'play', joinCode: msg.joinCode });
-  renderFor(msg.joinCode, msg.campaignId, msg.isOwner, msg.phase);
+  renderFor(msg.joinCode, msg.campaignId, msg.isOwner, msg.phase, msg.gameName);
 });
 
 ws.on('phase-change', (msg) => {
   if (msg.type !== 'phase-change') return;
-  if (msg.phase !== 'playing') return;
-  if (currentView?.endsWith(':playing')) return;
-  const [, joinCode] = currentView?.split(':') ?? [];
+  const parts = currentView?.split(':') ?? [];
+  const joinCode = parts[1];
   if (!joinCode) return;
-  currentView = `${isOwner ? 'dm' : 'play'}:${joinCode}:playing`;
-  renderGameView(root, ws, isOwner);
+  if (msg.phase === 'playing') {
+    if (currentView?.endsWith(':playing')) return;
+    currentView = `${isOwner ? 'dm' : 'play'}:${joinCode}:playing`;
+    renderGameView(root, ws, isOwner);
+  } else if (msg.phase === 'character-creation' && !isOwner) {
+    if (currentView?.endsWith(':character-creation')) return;
+    currentView = `play:${joinCode}:character-creation`;
+    renderCharacterCreator(root, ws, joinCode);
+  }
 });
 
 ws.on('error', (msg) => {
