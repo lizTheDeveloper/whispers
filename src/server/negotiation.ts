@@ -11,30 +11,37 @@ interface NegotiationEntry {
 
 /**
  * Hard cap on back-and-forth rounds (one DM turn + one character turn, run
- * together once both the host and the player have spoken) before a
- * negotiation force-closes on its own. Without this, two sides that never
- * converge — or simply never stop typing — keep the DM and character agents
- * running forever on every exchange, with no owner but "the conversation
- * happens to end."
+ * together once both the host and the player have spoken) before the AI
+ * agents step back from the negotiation. Each round costs exactly two LLM
+ * calls — one DM-agent turn, one character-agent turn — so this cap bounds
+ * AI spend, not the conversation itself: once it's hit, runAgentTurns()
+ * never runs again for this negotiation, but the host and player keep
+ * talking to each other for free (see stepBackAtCap()). That decoupling is
+ * what makes it safe to set this generously.
  *
- * This project has two existing precedents for "how long is too long for an
- * unbounded LLM back-and-forth": the 35-message scene-transcript compaction
- * threshold and game-loop.ts's 10-round hard cap on a scene's own turn
- * counter (see CLAUDE.md). A sibling game caps a similarly open-ended
- * stuck-dialogue loop at 3 turns. Splitting the difference toward the
- * stricter, same-project precedent: 5 rounds is 10 agent messages (DM +
- * character, twice per round) — the same order of magnitude as the scene
- * cap, generous enough for a real negotiation to actually happen, but bounded
- * so a disagreement that will not resolve itself cannot starve the host of
- * ever having to make the call.
+ * This project's existing precedent for "how long is too long for an
+ * unbounded LLM back-and-forth" is the 35-message scene-transcript
+ * compaction threshold (see CLAUDE.md). 15 rounds is 30 agent messages
+ * (DM + character, twice per round) — just under that threshold, so a
+ * negotiation that runs its full course still fits in one uncompacted
+ * transcript, while giving a real disagreement about a character three
+ * times the room the old 5-round/10-message cap did before human
+ * conversation could no longer be blocked by it anyway.
  */
-export const MAX_NEGOTIATION_ROUNDS = 5;
+export const MAX_NEGOTIATION_ROUNDS = 15;
 
 export class NegotiationRoom {
   private history: NegotiationEntry[] = [];
   private hostSpoke = false;
   private playerSpoke = false;
   private closed = false;
+  /**
+   * Set once the round cap is hit. This is NOT closed — the host and player
+   * keep talking, and handleMessage keeps appending/broadcasting their
+   * messages exactly as before. It only turns off runAgentTurns(): no more
+   * DM-agent or character-agent LLM calls happen for this negotiation, ever.
+   */
+  private steppedBack = false;
   private round = 0;
 
   /**
@@ -85,9 +92,14 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
     if (this.hostSpoke && this.playerSpoke) {
       this.hostSpoke = false;
       this.playerSpoke = false;
+      // Once stepped back, the AI never speaks again for this negotiation —
+      // the round counter and runAgentTurns() are both permanently retired,
+      // but the host/player exchange above already happened and keeps
+      // happening on every future call.
+      if (this.steppedBack) return;
       this.round++;
       if (this.round > MAX_NEGOTIATION_ROUNDS) {
-        this.closeAtCap();
+        this.stepBackAtCap();
         return;
       }
       await this.runAgentTurns();
@@ -95,6 +107,7 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
   }
 
   isClosed(): boolean { return this.closed; }
+  isSteppedBack(): boolean { return this.steppedBack; }
 
   isParticipant(ws: WebSocket): 'host' | 'player' | null {
     if (ws === this.resolveHostWs()) return 'host';
@@ -125,26 +138,30 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
   close(): void { this.closed = true; }
 
   /**
-   * Reaching the round cap ends the DISCUSSION, not the DECISION — it never
-   * calls makeCharacterLive or anything like it. Auto-approving here would
-   * mean the model decides the outcome of a stuck negotiation, which is
-   * exactly the authority this feature exists to keep with the host. The
-   * Approve/Reject buttons on the host's panel remain live after this: the
-   * negotiation is closed, the character is not.
+   * Reaching the round cap retires the AI, not the DISCUSSION and not the
+   * DECISION. It never calls makeCharacterLive or anything like it, and it
+   * never calls close() — the negotiation is NOT closed, `isClosed()` still
+   * reads false, and negotiation-message keeps flowing between the host and
+   * player exactly as before. Auto-approving or auto-closing here would mean
+   * a timeout — not the host — decides the outcome of a stuck negotiation,
+   * which is exactly the authority this feature exists to keep with the
+   * host. The Approve/Reject buttons on the host's panel remain live after
+   * this, same as always: only the AI stepped back.
    */
-  private closeAtCap(): void {
-    if (this.closed) return;
+  private stepBackAtCap(): void {
+    if (this.steppedBack) return;
+    this.steppedBack = true;
     this.addAndBroadcast(
       'dm-agent',
       'DM',
-      `We've reached the ${MAX_NEGOTIATION_ROUNDS}-round limit for this discussion. The negotiation is closed — it's up to the host to approve or reject the character from here.`,
+      `We've reached the ${MAX_NEGOTIATION_ROUNDS}-round limit for AI participation in this discussion. The AI DM and ${this.definition.name} are stepping back now, but the two of you can keep talking — the host approves or rejects the character whenever ready.`,
     );
     // Structured, alongside the prose line above: negotiation-message is free
     // text a client can only ever log, not act on. A client needs something
-    // it can switch on to disable its input box — without this, both sides
-    // keep a live input that silently discards everything typed into it.
-    this.sendToBoth({ type: 'negotiation-closed', characterId: this.characterId });
-    this.close();
+    // it can switch on to tell "AI stepped back" apart from "negotiation
+    // closed" — those are different UI states (input stays live vs. input
+    // disables) and must not share one signal.
+    this.sendToBoth({ type: 'negotiation-ai-stepped-back', characterId: this.characterId });
   }
 
   /**

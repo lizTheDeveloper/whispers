@@ -789,7 +789,7 @@ describe('AI DM approves characters when the host is playing', () => {
   });
 
   describe('a negotiation that can end', () => {
-    it('caps agent turns at the round limit, broadcasts a closure, and does not auto-approve', async () => {
+    it('steps the AI back at the round cap but keeps the humans talking, does not auto-approve, and only closes on the host\'s own decision', async () => {
       const { ws: hostWs, q: hostQ, joined } = await createGame();
       const { joinCode } = joined;
 
@@ -812,11 +812,11 @@ describe('AI DM approves characters when the host is playing', () => {
 
       // Drive one round past the cap. Each round in-bounds must produce
       // exactly one dm-agent turn and one char-agent turn; the round that
-      // crosses the cap must produce neither — only a closure notice — which
-      // is the falsifiable core of this test: a handler that kept calling
-      // runAgentTurns regardless of the cap would still pass a weaker
-      // assertion like "a message was sent," but fails this one on the
-      // round MAX_NEGOTIATION_ROUNDS + 1's missing char-agent turn.
+      // crosses the cap must produce neither agent turn — only a step-back
+      // notice — which is the falsifiable core of this test: a handler that
+      // kept calling runAgentTurns regardless of the cap would still pass a
+      // weaker assertion like "a notice arrived," but fails the bounded
+      // charAgentTurns count asserted below.
       let charAgentTurns = 0;
       for (let round = 1; round <= MAX_NEGOTIATION_ROUNDS + 1; round++) {
         sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: `Host says round ${round}` });
@@ -834,33 +834,76 @@ describe('AI DM approves characters when the host is playing', () => {
           expect(charTurn.sender).toBe('char-agent');
           charAgentTurns++;
         } else {
-          const closure = await hostQ.waitFor('negotiation-message', 15_000) as any;
-          expect(closure.sender).toBe('dm-agent');
-          expect(closure.text).toMatch(/closed|limit/i);
-          // No char-agent turn ran for the round that crossed the cap.
+          // The cap round produces a step-back notice from the DM agent —
+          // its last words for this negotiation — and no char-agent turn
+          // at all.
+          const notice = await hostQ.waitFor('negotiation-message', 15_000) as any;
+          expect(notice.sender).toBe('dm-agent');
+          expect(notice.text).toMatch(/step|limit/i);
           await expect(hostQ.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
 
-          // Structured, alongside the prose above — this is what a client
-          // actually switches on to disable its input box; the prose line is
-          // free text a client can only ever log, never act on. Sent to both
-          // sides (sendToBoth), not just the host.
-          const hostClosed = await hostQ.waitFor('negotiation-closed', 5_000) as any;
-          expect(hostClosed.characterId).toBe(review.characterId);
-          const playerClosed = await pq.waitFor('negotiation-closed', 5_000) as any;
-          expect(playerClosed.characterId).toBe(review.characterId);
+          // The structured, client-actionable signal for "the AI has
+          // stepped back" — distinct from negotiation-closed, which stays
+          // reserved for a genuine close (approve/reject/revoke/teardown).
+          // Sent to both sides.
+          const hostSteppedBack = await hostQ.waitFor('negotiation-ai-stepped-back', 5_000) as any;
+          expect(hostSteppedBack.characterId).toBe(review.characterId);
+          const playerSteppedBack = await pq.waitFor('negotiation-ai-stepped-back', 5_000) as any;
+          expect(playerSteppedBack.characterId).toBe(review.characterId);
         }
       }
+      // Bounded, not merely "a notice arrived": exactly MAX_NEGOTIATION_ROUNDS
+      // char-agent turns ever ran, proving the agents actually stopped at
+      // the cap rather than a closure message just being squeezed in
+      // alongside them.
       expect(charAgentTurns).toBe(MAX_NEGOTIATION_ROUNDS);
+      // negotiation-closed is STATE 2's signal and must not have fired —
+      // hitting the round cap steps the AI back, it does not close anything.
+      await expect(hostQ.waitFor('negotiation-closed', 2_000)).rejects.toThrow(/Timeout/);
 
-      // The negotiation is fully closed, not merely "quiet": a further
-      // exchange produces no broadcast of any kind, not even the human
-      // messages' own echo.
-      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'still there?' });
+      // The AI stopped, but the humans did not: a message from either side
+      // still goes through and still reaches the OTHER party, at zero LLM
+      // cost. Clear each queue's backlog first so these assertions can't be
+      // satisfied by a stale message left over from the loop above.
+      hostQ.clear();
+      pq.clear();
+
+      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'Still with us?' });
+      // sendToBoth means the sender's own socket also gets an echo — drain
+      // it on hostQ too, or it sits ahead of the player's reply consumed
+      // below and makes that assertion look at the wrong message.
+      const hostSeesOwnEcho = await hostQ.waitFor('negotiation-message', 10_000) as any;
+      expect(hostSeesOwnEcho.sender).toBe('host');
+      const playerSeesHost = await pq.waitFor('negotiation-message', 10_000) as any;
+      expect(playerSeesHost.sender).toBe('host');
+      expect(playerSeesHost.text).toBe('Still with us?');
+
+      sendMsg(playerWs, { type: 'negotiation-message', characterId: review.characterId, text: 'Yes, still here.' });
+      const playerSeesOwnEcho = await pq.waitFor('negotiation-message', 10_000) as any;
+      expect(playerSeesOwnEcho.sender).toBe('player');
+      const hostSeesPlayer = await hostQ.waitFor('negotiation-message', 10_000) as any;
+      expect(hostSeesPlayer.sender).toBe('player');
+      expect(hostSeesPlayer.text).toBe('Yes, still here.');
+
+      // That exchange did not wake the AI back up: no further agent turn,
+      // no further step-back notice.
       await expect(hostQ.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
 
       // Do NOT auto-approve at the cap — the decision stays with the host.
       await expect(pq.waitFor('character-submitted', 2_000)).rejects.toThrow(/Timeout/);
       await expect(hostQ.waitFor('character-submitted', 2_000)).rejects.toThrow(/Timeout/);
+
+      // Only the host's own decision genuinely closes the negotiation.
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await hostQ.waitFor('character-submitted', 10_000);
+      await pq.waitFor('character-validated', 10_000);
+
+      // Past that decision, a further human message is refused — WITH a
+      // message, not silently — and never reaches the other party.
+      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'one more thing' });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/closed/i);
+      await expect(pq.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
 
       await closeWs(playerWs);
       await closeWs(hostWs);

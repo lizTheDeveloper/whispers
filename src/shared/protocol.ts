@@ -39,6 +39,7 @@ export type ServerMessage =
   | { type: 'negotiation-message'; characterId: string; sender: 'dm-agent' | 'host' | 'player' | 'char-agent'; senderName: string; text: string }
   | { type: 'negotiation-opened'; characterId: string; characterName: string; playerName: string }
   | { type: 'negotiation-closed'; characterId: string }
+  | { type: 'negotiation-ai-stepped-back'; characterId: string }
   | { type: 'character-roster'; characters: Array<{ id: string; name: string }> }
   | { type: 'phase-change'; phase: GamePhase }
   | { type: 'narration'; text: string; sceneNumber: number; locationName?: string; isEpilogue?: boolean }

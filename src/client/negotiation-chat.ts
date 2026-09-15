@@ -102,11 +102,23 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     addMessage(msg.senderName, msg.sender, msg.text);
   });
 
-  // The round cap closes the DISCUSSION, not the decision — approve/reject
-  // stay live (see negotiation.ts's closeAtCap). Without this, the input box
-  // stays live too: everything typed into it after the cap vanishes with no
-  // local echo, because the server's negotiation-message handler silently
-  // drops anything sent to a closed negotiation.
+  // negotiation-ai-stepped-back and negotiation-closed are two distinct
+  // states, not one overloaded signal (see negotiation.ts's
+  // stepBackAtCap/close). Stepped-back: the AI hit its round cap and will
+  // never speak again in this negotiation, but the host and player keep
+  // talking — the input stays live. Closed: the negotiation is genuinely
+  // over (approve/reject/revoke/teardown) — the input disables, as it
+  // always has.
+  ws.on('negotiation-ai-stepped-back', (msg) => {
+    if (msg.type !== 'negotiation-ai-stepped-back') return;
+    if (msg.characterId !== characterId) return;
+    const notice = document.createElement('div');
+    notice.className = 'negotiation-bubble system';
+    notice.textContent = 'The AI has stepped back from this discussion — you can keep talking directly. The host approves or rejects the character when ready.';
+    log.appendChild(notice);
+    log.scrollTop = log.scrollHeight;
+  });
+
   ws.on('negotiation-closed', (msg) => {
     if (msg.type !== 'negotiation-closed') return;
     if (msg.characterId !== characterId) return;
