@@ -682,6 +682,7 @@ describe('AI DM approves characters when the host is playing', () => {
     it('does not reopen a negotiation on reconnect once the host has switched to playing — no approver, no negotiation', async () => {
       const { ws: hostWs, q: hostQ, joined } = await createGame();
       const { joinCode } = joined;
+      const campaignId = joined.campaignId as string;
       const hostSessionToken = joined.sessionToken as string;
 
       await finishWorldSetup(hostWs, hostQ); // host runs the table (default) — needed so submission creates a pending row + negotiation instead of auto-approving
@@ -697,11 +698,23 @@ describe('AI DM approves characters when the host is playing', () => {
       await hostQ.waitFor('negotiation-opened', 10_000);
       await hostQ.waitFor('negotiation-message', 15_000); // the DM's opening turn
 
-      // Nothing today stops the host from switching to playing WHILE a
-      // character is still under negotiation. The pending row, and the now-
-      // abandoned negotiation object, are both still sitting there.
-      sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
-      await hostQ.waitFor('room-joined', 10_000);
+      // "Host switches to playing WHILE a character is still under
+      // negotiation" is no longer reachable through the protocol — this
+      // task's own guard now refuses choose-table-role once any pending or
+      // live character exists, precisely to prevent this. But that guard
+      // only protects table roles chosen from here forward; a campaign that
+      // already reached hostTableRole = 'player' with a character still
+      // pending — the exact state this permissive code used to allow —
+      // does not get retroactively fixed. Its row sits in the database
+      // exactly as it always did, and reconnecting into it must still be
+      // safe. So this seeds that state directly, bypassing the protocol
+      // guard the same way an old campaign row does, rather than reaching
+      // it through choose-table-role (which now refuses the attempt). The
+      // pending row, and the now-abandoned negotiation object, are both
+      // still sitting there either way.
+      const { getDb } = await import('../src/server/db.js');
+      const { setHostTableRole } = await import('../src/server/room.js');
+      setHostTableRole(getDb(), campaignId, 'player');
 
       await closeWs(playerWs);
       await closeWs(hostWs);
@@ -807,6 +820,49 @@ describe('AI DM approves characters when the host is playing', () => {
 
       const hostIntro = await hostQ.waitFor('world-introduction', 15_000) as any;
       expect(hostIntro.text.length).toBeGreaterThan(0);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+  });
+
+  describe('the table role locks once a character exists at the table', () => {
+    it('refuses choose-table-role while a character is pending review, naming the real reason, and leaves hostTableRole unchanged', async () => {
+      // Switching lanes is harmless right up until a character's fate
+      // depends on who holds authority — not merely "once the table has
+      // opened," which can happen with zero characters at the table and
+      // costs nothing. A PENDING character is the sharpest case: DM review
+      // ran once, at submit-character time, and nothing retroactively
+      // approves the queue — a host who swaps away from 'dm' while one is
+      // queued strands it, since hasDmAuthority then refuses both the AI's
+      // path and the human's, with no one left who could ever act on it.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default) — a human approver exists, so submission queues instead of auto-approving
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      await hostQ.waitFor('character-pending-review', 20_000);
+      await pq.waitFor('character-validated', 10_000);
+
+      sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      // The real reason is the character, not the phase — a message blaming
+      // the phase would be false under this rule.
+      expect(refusal.message).toMatch(/character/i);
+
+      // Not just "no success message arrived" — the stored role must
+      // actually still be 'dm', not silently changed underneath a refusal
+      // that only failed to notify.
+      const room = await import('../src/server/room.js');
+      const db = (await import('../src/server/db.js')).getDb();
+      const campaign = room.joinRoom(db, joinCode);
+      expect(campaign?.hostTableRole).toBe('dm');
 
       await closeWs(playerWs);
       await closeWs(hostWs);

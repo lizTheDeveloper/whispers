@@ -799,8 +799,22 @@ wss.on('connection', (ws) => {
       }
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
-      if (campaign.phase === 'playing' || campaign.phase === 'ended') {
-        send(ws, { type: 'error', message: 'The table role is fixed once the game opens.' });
+      // Switching lanes is harmless right up until a character's fate
+      // depends on who holds authority. DM review of a submitted character
+      // happens once, at submit-character time — nothing retroactively
+      // approves a pending row — so a host swapping away from 'dm' while one
+      // is queued strands it: hasDmAuthority then refuses both the AI's
+      // queue and the human's, with no one left who could ever act on it.
+      // A live (non-revoked) character means the table is already running,
+      // where a divided-attention host is the same problem the spec exists
+      // to prevent. No characters at all means nothing to strand and no
+      // table yet running, so the choice stays open right up to that point
+      // — not keyed to phase, which can move (lobby -> character-creation)
+      // with zero characters still at the table.
+      const hasPendingCharacter = listPendingCharacters(db, campaign.id).length > 0;
+      const hasLiveCharacter = countLiveCharacters(db, campaign.id) > 0;
+      if (hasPendingCharacter || hasLiveCharacter) {
+        send(ws, { type: 'error', message: 'The table role is fixed once a character exists at the table.' });
         return;
       }
       setHostTableRole(db, campaign.id, msg.role);
