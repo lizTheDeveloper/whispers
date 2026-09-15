@@ -408,6 +408,18 @@ Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","te
       ],
       schema: WorldSeedSchema,
       temperature: 0.8,
+      // This is the largest structured payload any prompt in this file produces —
+      // it needs the highest ceiling, not a copied one. The schema requires a premise
+      // plus at least 3 locations (name/description/terrain), 3 npcs
+      // (name/description/disposition/motivation), 3 plotHooks, and 0+ items, but the
+      // model routinely returns more than the minimum. A realistic generous draft —
+      // 6 locations, 6 npcs, 6 hooks, 4 items, each with a few sentences of prose —
+      // runs to roughly 1,500-2,000 tokens of JSON including field-name/quote/brace
+      // overhead. 2048 (setupChat's neighbour, `resolve`, uses this) would leave the
+      // response with almost no headroom and risks the exact mid-`npcs`/`plotHooks`
+      // truncation this fix exists to stop. 4096 gives ~2x headroom above the
+      // generous estimate so a verbose model still finishes inside the ceiling.
+      maxTokens: 4096,
     });
   }
 

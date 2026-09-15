@@ -131,6 +131,17 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     if (status) { status.textContent = 'Awaiting your review'; status.className = 'dm-char-status'; }
   }
 
+  // Server error text rendered here must never go through innerHTML — createElement
+  // + textContent only. localStorage holds bearer session tokens, so an XSS in this
+  // panel is a seat takeover. Mirrors the 'error' handling in negotiation-chat.ts.
+  function addSystemNotice(text: string) {
+    const bubble = document.createElement('div');
+    bubble.className = 'dm-chat-bubble system';
+    bubble.textContent = text;
+    chatLog.appendChild(bubble);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
   function addChatMessage(text: string, sender: 'dm' | 'host') {
     const bubble = document.createElement('div');
     bubble.className = `dm-chat-bubble ${sender}`;
@@ -731,5 +742,8 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     // flight rather than leaving it stuck disabled with a status that never came true.
     for (const card of pendingCharacterActions) restorePendingCharacterCard(card);
     pendingCharacterActions.clear();
+    // The host was watching buttons re-enable with no explanation — show the reason
+    // the server actually sent, in the panel they're already looking at.
+    addSystemNotice(msg.message);
   });
 }

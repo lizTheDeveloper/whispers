@@ -25,6 +25,18 @@ export const LLM_STUB_REPLIES = {
     dmInstructions: 'A haunted lighthouse, spooky but hopeful.',
     dmCustomPrompt: 'You are running a haunted lighthouse game.',
   },
+  // Reproduces the live bug: the model narrates full instructions in `reply`
+  // (prose), sets done: true, but leaves dmInstructions/dmCustomPrompt null —
+  // a shape DmSetupReplySchema permits since both fields are nullable. Used
+  // to prove the server does not advance state or tell the client done: true
+  // for this reply, and does not fabricate dmInstructions from the prose.
+  setupDoneNoInstructions: {
+    reply: 'Great, I have everything I need — a haunted lighthouse, spooky but hopeful, with a missing relief keeper.',
+    done: true,
+    influences: ['Le Guin', 'Annihilation', 'Disco Elysium'],
+    dmInstructions: null,
+    dmCustomPrompt: null,
+  },
   worldSeed: {
     premise: 'A lighthouse keeps something out, not in.',
     locations: [
@@ -216,7 +228,16 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           text = LLM_STUB_REPLIES.negotiationCharReply;
         } else if (body.includes('helping set up a new game')) {
           const hostSpoke = body.includes('"role":"user"');
-          text = JSON.stringify(hostSpoke ? LLM_STUB_REPLIES.setupDone : LLM_STUB_REPLIES.setupOpen);
+          // A marker in the host's own message text (same pattern as
+          // THIN_SHEET_TRIGGER/MODIFICATIONS_TRIGGER above) selects the
+          // done-but-no-instructions fixture deterministically, without
+          // disturbing the ordinary hostSpoke -> setupDone flow every other
+          // setup test relies on.
+          if (hostSpoke && body.includes('NO_INSTRUCTIONS_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.setupDoneNoInstructions);
+          } else {
+            text = JSON.stringify(hostSpoke ? LLM_STUB_REPLIES.setupDone : LLM_STUB_REPLIES.setupOpen);
+          }
         } else {
           text = 'Understood. Lets keep moving.';
         }

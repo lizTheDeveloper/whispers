@@ -5,8 +5,8 @@
   "private": true,
   "license": "AGPL-3.0",
   "scripts": {
-    "dev": "concurrently \"vite\" \"tsx watch src/server/index.ts\"",
-    "dev:server": "tsx watch src/server/index.ts",
+    "dev": "concurrently \"vite\" \"npm:dev:server\"",
+    "dev:server": "tsx watch --env-file-if-exists=.env src/server/index.ts",
     "dev:client": "vite",
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.server.json",
     "test": "vitest",

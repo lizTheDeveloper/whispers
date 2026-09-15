@@ -93,6 +93,18 @@ h1, h2, h3 {
   background: var(--ember-glow);
   animation: pulse-status 1.5s ease-in-out infinite;
 }
+
+.lobby-error {
+  text-align: center;
+  font-size: 0.85rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  margin: -0.5rem auto 1.5rem;
+  max-width: 32rem;
+  color: var(--ember);
+  background: var(--ember-glow);
+  border: 1px solid rgba(255, 107, 53, 0.35);
+}
 @keyframes pulse-status {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -934,6 +946,15 @@ button:disabled {
   font-style: italic;
   opacity: 0.6;
   animation: whisper-pulse 2s ease-in-out infinite;
+}
+.dm-chat-bubble.system {
+  align-self: center;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  font-style: italic;
+  background: rgba(122, 122, 158, 0.06);
+  border: 1px solid rgba(122, 122, 158, 0.1);
 }
 
 .dm-chat-input {

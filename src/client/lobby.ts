@@ -70,6 +70,7 @@ export function renderLobby(root: HTMLElement, ws: WsClient, prefillJoinCode?: s
       <h1>Whispers</h1>
       <p class="subtitle">Agentic TTRPG — You are the voice in their head</p>
       <div id="ws-status" class="ws-status ws-connected">Connected</div>
+      <div id="lobby-error" class="lobby-error hidden"></div>
 
       <div id="your-games" class="panel saved-games hidden"></div>
 
@@ -125,8 +126,17 @@ export function renderLobby(root: HTMLElement, ws: WsClient, prefillJoinCode?: s
   });
 
   // room-joined is handled centrally in main.ts, which owns view routing.
+  // This handler stays registered on the shared ws instance for the life of the
+  // app (WsClient has no off()), so it keeps firing for errors from whatever view
+  // is on screen later — a blocking alert() here would pop up over the DM lobby or
+  // the game view too. Surface it in-page instead: createElement/textContent only,
+  // never innerHTML, since localStorage holds bearer session tokens and this text
+  // comes from the server.
+  const lobbyError = root.querySelector('#lobby-error') as HTMLElement;
   ws.on('error', (msg) => {
-    if (msg.type === 'error') alert(msg.message);
+    if (msg.type !== 'error') return;
+    lobbyError.textContent = msg.message;
+    lobbyError.classList.remove('hidden');
   });
 
   const statusEl = root.querySelector('#ws-status') as HTMLElement;

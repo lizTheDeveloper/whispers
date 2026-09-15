@@ -1120,16 +1120,35 @@ wss.on('connection', (ws) => {
         const influences = normalizeInfluences(reply.influences);
         if (influences.length > 0) setInfluences(db, campaign.id, influences);
 
-        if (reply.done && reply.dmInstructions) {
+        // The schema allows done: true with dmInstructions: null (it's a nullable
+        // field, and the model can set the flag without filling it in). Persisting
+        // is gated on BOTH, so `persisted` is the only thing we're allowed to tell
+        // the host "done" happened — reporting reply.done on its own would advance
+        // the UI (Start Game enables) while the readiness checklist, sourced from
+        // this same DB row below via sendReadiness, keeps saying the summary is
+        // missing. That silent contradiction is the bug this guards against.
+        //
+        // Chosen fix: report the failure honestly rather than asking the model
+        // again. We do NOT fabricate dmInstructions from reply.reply's prose — that
+        // would be inventing data to paper over missing data. A second LLM call
+        // from inside this handler to demand the summary again is unnecessary: the
+        // setup chat loop already re-prompts on every done: false turn (the
+        // `unmet` block above tells the model exactly what's still missing), so
+        // the host's next message naturally gives the model another chance to
+        // produce dmInstructions instead of retrying against the same failure mode.
+        const persisted = reply.done && Boolean(reply.dmInstructions);
+        if (persisted) {
           db.prepare("UPDATE campaigns SET dm_instructions = ?, dm_custom_prompt = ?, updated_at = datetime('now') WHERE id = ?")
             .run(reply.dmInstructions, reply.dmCustomPrompt, campaign.id);
+        } else if (reply.done) {
+          console.warn(`[dm-chat] campaign ${campaign.id}: DM set done=true with no dmInstructions — not persisting, reporting not-done to host`);
         }
         saveSetupChat(db, campaign.id, currentPlayer.setupChat);
 
         after = joinRoom(db, currentJoinCode);
         if (!after) return;
 
-        send(ws, { type: 'dm-chat-reply', text: reply.reply, done: reply.done });
+        send(ws, { type: 'dm-chat-reply', text: reply.reply, done: persisted });
         sendReadiness(ws, after);
       } catch (e) {
         console.error('[dm-chat] error:', e);

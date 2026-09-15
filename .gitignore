@@ -4,3 +4,6 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 .playwright-mcp/
+.env
+.env.*
+!.env.example

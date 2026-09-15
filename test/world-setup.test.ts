@@ -301,4 +301,31 @@ describe('World setup gates the table', () => {
     expect(reply.type).toBe('error'); // dm-chat is closed once the world is accepted
     await closeWs(ws);
   }, 40_000);
+
+  // Finding 2: DmSetupReplySchema permits done: true with dmInstructions: null
+  // (the model narrates instructions in prose but the structured field comes
+  // back empty). The server must not advance state on this reply, and must not
+  // tell the client done: true — both would produce the observed contradiction
+  // where the chat panel says "DM is ready!" while the readiness checklist
+  // still lists the summary as missing.
+  it('does not advance or report done when dmInstructions is missing from a done reply', async () => {
+    const { ws, q } = await createGame();
+    sendMsg(ws, { type: 'dm-chat', text: 'A haunted lighthouse. NO_INSTRUCTIONS_TRIGGER' });
+
+    const reply = await q.waitFor('dm-chat-reply', 15_000) as any;
+    // The model's own done: true must not reach the client as done: true —
+    // that is exactly what would light up "DM is ready!" dishonestly.
+    expect(reply.done).toBe(false);
+    // The prose reply itself is still shown — this is not a generic failure
+    // message, the host sees what the model actually said.
+    expect(reply.text).toEqual(LLM_STUB_REPLIES.setupDoneNoInstructions.reply);
+
+    // The checklist must agree: still missing a summary, and since
+    // dmInstructions was never persisted, a seed draft must not have started.
+    const readiness = await q.waitFor('world-readiness', 10_000) as any;
+    expect(readiness.readiness.unmet).toContain('dmInstructions');
+    await expect(q.waitFor('world-seed-draft', 2_000)).rejects.toThrow(/Timeout/);
+
+    await closeWs(ws);
+  }, 30_000);
 });
