@@ -192,8 +192,25 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
         } else {
           text = 'Understood. Lets keep moving.';
         }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ text }));
+        // A marker in the negotiation transcript (carried in via a
+        // negotiation-message's own text, same pattern as
+        // MODIFICATIONS_TRIGGER/THIN_SHEET_TRIGGER above) holds this
+        // response open briefly. Exists solely so a test can reliably land a
+        // close() call — from host-approve-character, host-reject-character,
+        // or room teardown — while a runAgentTurns()/open() await is still
+        // outstanding, to prove the post-await `closed` re-check actually
+        // stops the late reply from being appended/broadcast. Nothing else
+        // in the offline suite includes this marker, so it costs no other
+        // test any time.
+        const respond = () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ text }));
+        };
+        if (body.includes('RACE_DELAY_TRIGGER')) {
+          setTimeout(respond, 600);
+        } else {
+          respond();
+        }
       });
     });
     server.listen(0, () => {

@@ -68,6 +68,9 @@ Your earlier validation assessment: ${this.aiFeedback}
 
 Introduce the character to the group. Summarize the sheet, note what you like, and raise any concerns about balance or rule compliance. Be conversational — this is a negotiation, not a ruling. Address both the host and the player.`
     );
+    // Same race as runAgentTurns below: close() can land while this await is
+    // outstanding (approve/reject/teardown all run independently of open()).
+    if (this.closed) return;
     this.addAndBroadcast('dm-agent', 'DM', dmOpening);
   }
 
@@ -139,6 +142,21 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
     this.close();
   }
 
+  /**
+   * `close()` can land mid-call from host-approve-character, host-reject-
+   * character, or room teardown — all of which run independently of this
+   * method's own control flow, while a `callDmAgent`/`callCharAgent` await is
+   * outstanding. Checking `closed` only between the two calls left the
+   * window right after each `await` resolves unguarded: a close landing
+   * there still appended to `history` and broadcast. That is not just a
+   * stray message — `resolvePlayerWs`/`resolveHostWs` are dynamic closures,
+   * so if a fresh negotiation for the same character has since opened (the
+   * leak fix in this same task makes that possible), a dead negotiation's
+   * late reply broadcasts onto sockets now bound to the NEW negotiation's
+   * panel, about a decision already made. So: re-check immediately after
+   * EVERY await, before anything that mutates history or sends — not just
+   * between the two calls.
+   */
   private async runAgentTurns(): Promise<void> {
     if (this.closed) return;
 
@@ -152,11 +170,11 @@ ${transcript}
 
 Respond to the latest messages. If there are disagreements, propose a compromise. If everyone seems aligned, suggest finalizing. Be brief and conversational.`
     );
+    if (this.closed) return;
     this.addAndBroadcast('dm-agent', 'DM', dmReply);
 
-    if (this.closed) return;
-
     const charReply = await this.callCharAgent(transcript);
+    if (this.closed) return;
     this.addAndBroadcast('char-agent', this.definition.name, charReply);
   }
 

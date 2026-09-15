@@ -726,5 +726,61 @@ describe('AI DM approves characters when the host is playing', () => {
 
       await closeWs(hostWs2);
     }, 30_000);
+
+    it('a close landing mid-round does not append or broadcast the reply that was already in flight', async () => {
+      // close() can land from host-approve-character, host-reject-character,
+      // or room teardown while runAgentTurns()'s own await is still
+      // outstanding — all three run independently of this negotiation's
+      // control flow. Checking `closed` only between the DM call and the
+      // character call (the original shape of this method) leaves the
+      // window right after EACH await resolves unguarded: a close landing
+      // there still appended to history and broadcast, onto sockets this
+      // task's own leak fix now lets a fresh negotiation for the same
+      // character legitimately reuse. This drives exactly that interleaving
+      // over real sockets, using the RACE_DELAY_TRIGGER marker (see
+      // server-harness.ts) to hold the DM's reply open long enough to land
+      // an approve underneath it.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      await hostQ.waitFor('negotiation-message', 15_000); // the DM's opening turn — unaffected, no marker in it yet
+
+      // The marker rides into history via this message, so it lands in the
+      // round call's own prompt ("Conversation so far: ${transcript}") and
+      // the stub holds THAT reply open.
+      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'RACE_DELAY_TRIGGER — thoughts on the stunt?' });
+      await hostQ.waitFor('negotiation-message', 10_000); // host's own echo
+
+      sendMsg(playerWs, { type: 'negotiation-message', characterId: review.characterId, text: 'Sounds fine to me.' });
+      await hostQ.waitFor('negotiation-message', 10_000); // player's own echo — this is what triggers runAgentTurns()
+
+      // The DM's reply is now in flight and deliberately held open. Close
+      // the negotiation out from under it before that reply lands.
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await hostQ.waitFor('character-submitted', 10_000);
+      await pq.waitFor('character-submitted', 10_000);
+
+      // hostQ has been drained of exactly the opening turn plus the two
+      // human echoes above — nothing else has arrived on it. The negotiation
+      // is now closed (approve calls neg.close() synchronously) while the
+      // delayed DM reply is still outstanding. Wait comfortably past the
+      // stub's artificial 600ms hold: if the post-await `closed` re-check is
+      // missing, that reply still lands here.
+      await expect(hostQ.waitFor('negotiation-message', 3_000)).rejects.toThrow(/Timeout/);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 30_000);
   });
 });
