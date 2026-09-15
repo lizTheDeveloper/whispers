@@ -783,4 +783,33 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(hostWs);
     }, 30_000);
   });
+
+  describe('a host who is playing meets their own world', () => {
+    it('sends the world introduction to the host, not just to other players, once the table opens', async () => {
+      // accept-world-seed used to build its post-open introduction list by
+      // filtering out every seat with isOwner === true — correct when the
+      // host runs the table, wrong when the host chose to play: that host
+      // has no one else to hand them their own first sight of the world.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ, 'player');
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      // The other player gets theirs regardless — this proves the fix adds
+      // the host rather than replacing the existing broadcast.
+      const playerIntro = await pq.waitFor('world-introduction', 15_000) as any;
+      expect(playerIntro.text.length).toBeGreaterThan(0);
+
+      const hostIntro = await hostQ.waitFor('world-introduction', 15_000) as any;
+      expect(hostIntro.text.length).toBeGreaterThan(0);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+  });
 });

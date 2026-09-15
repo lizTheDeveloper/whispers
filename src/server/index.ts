@@ -1168,6 +1168,12 @@ wss.on('connection', (ws) => {
           for (const p of others) {
             void sendWorldIntroduction(p.ws, campaign, p.sessionToken);
           }
+          // A host who chose to play is seated at their own table with no
+          // one else to hand them this — they meet the world here too, not
+          // only non-owners.
+          if (effectiveTableRole(campaign.hostTableRole) === 'player') {
+            void sendWorldIntroduction(ws, campaign, currentPlayer!.sessionToken);
+          }
         }
       } catch (e) {
         console.error('[accept-world-seed] failed:', e);

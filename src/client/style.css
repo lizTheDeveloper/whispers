@@ -1374,6 +1374,13 @@ button:disabled {
   gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
+/* .hidden's display:none is declared earlier in this file, so without the
+   extra class here .role-buttons's own display:flex (equal specificity,
+   later in source order) would silently win the cascade and the buttons
+   would stay visible after the table opens. */
+.role-buttons.hidden {
+  display: none;
+}
 .role-btn {
   width: 100%;
   text-align: left;

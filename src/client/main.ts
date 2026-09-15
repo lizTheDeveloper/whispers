@@ -5,7 +5,8 @@ import { renderGameView } from './game-view.js';
 import { renderDmLobby } from './dm-lobby.js';
 import { renderWaitingRoom } from './waiting-room.js';
 import { getStoredSession, saveSession, removeSession, parseRoute, setRoute } from './session-store.js';
-import type { GamePhase } from '../shared/types.js';
+import { renderKey } from './render-key.js';
+import type { GamePhase, TableRole } from '../shared/types.js';
 
 const root = document.getElementById('app')!;
 const ws = new WsClient();
@@ -17,18 +18,24 @@ const ws = new WsClient();
  */
 let currentView: string | null = null;
 let isOwner = false;
+let hostTableRole: TableRole | null = null;
 
-function renderFor(joinCode: string, campaignId: string, owner: boolean, phase: GamePhase, gameName: string): void {
-  const key = `${owner ? 'dm' : 'play'}:${joinCode}:${phase}`;
+function renderFor(joinCode: string, campaignId: string, owner: boolean, tableRole: TableRole | null, phase: GamePhase, gameName: string): void {
+  const key = renderKey(owner, tableRole, joinCode, phase);
   if (currentView === key) return; // silent reconnect — leave the screen alone
   currentView = key;
   isOwner = owner;
+  hostTableRole = tableRole;
 
   if (phase === 'playing' || phase === 'ended') {
     renderGameView(root, ws, owner);
-  } else if (owner) {
+  } else if (owner && (phase === 'lobby' || tableRole !== 'player')) {
+    // The owner runs world setup from the DM lobby regardless of which
+    // table role they've chosen — table role only matters for where they
+    // land once the table actually opens. A host who chose to play routes
+    // like any other player from here on.
     renderDmLobby(root, ws, joinCode, campaignId);
-  } else if (phase === 'lobby') {
+  } else if (!owner && phase === 'lobby') {
     renderWaitingRoom(root, ws, gameName, joinCode);
   } else {
     renderCharacterCreator(root, ws, joinCode);
@@ -49,27 +56,33 @@ ws.on('room-joined', (msg) => {
     lastSeen: Date.now(),
   });
   setRoute({ view: msg.isOwner ? 'dm' : 'play', joinCode: msg.joinCode });
-  renderFor(msg.joinCode, msg.campaignId, msg.isOwner, msg.phase, msg.gameName);
+  renderFor(msg.joinCode, msg.campaignId, msg.isOwner, msg.tableRole, msg.phase, msg.gameName);
 });
 
 ws.on('phase-change', (msg) => {
   if (msg.type !== 'phase-change') return;
+  // currentView's format is fixed by renderKey: `${dm|play}:${tableRole}:${joinCode}:${phase}`.
   const parts = currentView?.split(':') ?? [];
-  const joinCode = parts[1];
+  const joinCode = parts[2];
   if (!joinCode) return;
   if (msg.phase === 'playing') {
-    if (currentView?.endsWith(':playing')) return;
-    currentView = `${isOwner ? 'dm' : 'play'}:${joinCode}:playing`;
+    const key = renderKey(isOwner, hostTableRole, joinCode, 'playing');
+    if (currentView === key) return;
+    currentView = key;
     renderGameView(root, ws, isOwner);
-  } else if (msg.phase === 'character-creation' && !isOwner) {
-    if (currentView?.endsWith(':character-creation')) return;
-    currentView = `play:${joinCode}:character-creation`;
+  } else if (msg.phase === 'character-creation' && (!isOwner || hostTableRole === 'player')) {
+    // A host who chose to play reaches the character creator exactly like
+    // any other player once the table opens — there is no DM lobby left
+    // for them to keep showing.
+    const key = renderKey(isOwner, hostTableRole, joinCode, 'character-creation');
+    if (currentView === key) return;
+    currentView = key;
     renderCharacterCreator(root, ws, joinCode);
   } else if (msg.phase === 'character-creation' && isOwner) {
     // The DM lobby is already showing (dm-chat's own done:true handling put
     // it there) — just keep currentView in sync so a later reconnect doesn't
     // think it's stale and needlessly re-render it.
-    currentView = `dm:${joinCode}:character-creation`;
+    currentView = renderKey(true, hostTableRole, joinCode, 'character-creation');
   }
 });
 

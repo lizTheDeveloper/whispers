@@ -30,7 +30,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
       <div class="dm-lobby-sidebar">
         <div class="sidebar-section" id="table-role-section">
           <h3>Table Role</h3>
-          <div class="role-buttons">
+          <div class="role-buttons" id="role-buttons">
             <button id="role-dm-btn" class="role-btn ghost-btn">I'm running this game</button>
             <button id="role-player-btn" class="role-btn ghost-btn">I'm playing in it</button>
           </div>
@@ -95,7 +95,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   const copyPlayerLinkBtn = root.querySelector('#copy-player-link') as HTMLButtonElement;
   const startHint = root.querySelector('#start-hint') as HTMLElement;
 
-  const tableRoleSection = root.querySelector('#table-role-section') as HTMLElement;
+  const roleButtons = root.querySelector('#role-buttons') as HTMLElement;
   const roleDmBtn = root.querySelector('#role-dm-btn') as HTMLButtonElement;
   const rolePlayerBtn = root.querySelector('#role-player-btn') as HTMLButtonElement;
   const roleCurrentLine = root.querySelector('#role-current-line') as HTMLElement;
@@ -241,17 +241,30 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   function renderTableRole() {
     roleDmBtn.classList.toggle('active', hostTableRole === 'dm');
     rolePlayerBtn.classList.toggle('active', hostTableRole === 'player');
-    if (hostTableRole === 'dm') {
-      roleCurrentLine.textContent = "You're running this game — the seat at the head of the table.";
-    } else if (hostTableRole === 'player') {
+    if (hostTableRole === 'player') {
       roleCurrentLine.textContent = "You're playing in it — the AI DM runs the table.";
+    } else if (hostTableRole === 'dm' || phase !== 'lobby') {
+      // A campaign predating table roles has hostTableRole === null forever
+      // (effectiveTableRole on the server treats that as 'dm'). Once the
+      // table has opened there is no "still choosing" state left to report
+      // truthfully, so the read-only line matches the server's own default
+      // instead of telling a host who is actually running the game that
+      // they haven't picked a seat yet.
+      roleCurrentLine.textContent = "You're running this game — the seat at the head of the table.";
     } else {
       roleCurrentLine.textContent = 'Choose your seat before the table opens.';
     }
   }
 
+  // The section itself always stays visible — once the table opens the host
+  // still needs to see which seat they chose, just not change it. Only the
+  // buttons go away; the status line in renderTableRole() keeps reporting
+  // the current role as read-only text. The server backs this by refusing
+  // choose-table-role once the game actually starts, so hiding the buttons
+  // here (rather than merely disabling them) means the UI never dangles an
+  // affordance the server would refuse.
   function updateTableRoleVisibility() {
-    tableRoleSection.classList.toggle('hidden', phase !== 'lobby');
+    roleButtons.classList.toggle('hidden', phase !== 'lobby');
   }
 
   roleDmBtn.addEventListener('click', () => ws.send({ type: 'choose-table-role', role: 'dm' }));
@@ -515,6 +528,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   ws.on('phase-change', (msg) => {
     if (msg.type !== 'phase-change') return;
     phase = msg.phase;
+    renderTableRole();
     updateTableRoleVisibility();
   });
 
