@@ -285,10 +285,15 @@ describe('Table role governs DM authority', () => {
     expect(submittedToPlayer.characterId).toBe(validated.characterId);
 
     // The owner is playing, not running the table, so their own
-    // host-approve-character still carries no DM authority — it is refused
-    // (no effect, no second character-submitted), same as before. The
-    // difference is the character no longer needed it to go live.
+    // host-approve-character still carries no DM authority — it is refused,
+    // same as before. The difference is the character no longer needed it to
+    // go live, AND the refusal itself now has to actually arrive: absence of
+    // a second character-submitted also holds for a handler that just did
+    // nothing, so that alone can't tell a real refusal from the silent-return
+    // bug this task removed. The 'error' message is the only thing that can.
     sendMsg(hostWs, { type: 'host-approve-character', characterId: validated.characterId });
+    const refusal = await hostQ.waitFor('error', 10_000) as any;
+    expect(refusal.message).toMatch(/host/i);
     await expect(pq.waitFor('character-submitted', 3_000)).rejects.toThrow(/Timeout/);
 
     await closeWs(playerWs);

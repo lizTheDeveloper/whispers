@@ -779,7 +779,10 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'choose-table-role' && currentJoinCode && isWorldAuthor(currentPlayer)) {
-      if (msg.role !== 'dm' && msg.role !== 'player') return;
+      if (msg.role !== 'dm' && msg.role !== 'player') {
+        send(ws, { type: 'error', message: "Table role must be 'dm' or 'player'." });
+        return;
+      }
       const campaign = joinRoom(db, currentJoinCode);
       if (!campaign) return;
       if (campaign.phase === 'playing' || campaign.phase === 'ended') {
@@ -799,9 +802,16 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'host-approve-character' && currentJoinCode) {
       const hostCampaign = joinRoom(db, currentJoinCode);
-      if (!hostCampaign || !hasDmAuthority(currentPlayer, hostCampaign.hostTableRole)) return;
+      if (!hostCampaign) return;
+      if (!hasDmAuthority(currentPlayer, hostCampaign.hostTableRole)) {
+        send(ws, { type: 'error', message: 'Only the host running the table can approve characters.' });
+        return;
+      }
       const pending = listPendingCharacters(db, hostCampaign.id).find(p => p.id === msg.characterId);
-      if (!pending) return;
+      if (!pending) {
+        send(ws, { type: 'error', message: 'That character is not pending review — it may already have been decided.' });
+        return;
+      }
 
       makeCharacterLive(db, pending);
 
@@ -820,9 +830,16 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'host-reject-character' && currentJoinCode) {
       const hostCampaign = joinRoom(db, currentJoinCode);
-      if (!hostCampaign || !hasDmAuthority(currentPlayer, hostCampaign.hostTableRole)) return;
+      if (!hostCampaign) return;
+      if (!hasDmAuthority(currentPlayer, hostCampaign.hostTableRole)) {
+        send(ws, { type: 'error', message: 'Only the host running the table can reject characters.' });
+        return;
+      }
       const pending = listPendingCharacters(db, hostCampaign.id).find(p => p.id === msg.characterId);
-      if (!pending) return;
+      if (!pending) {
+        send(ws, { type: 'error', message: 'That character is not pending review — it may already have been decided.' });
+        return;
+      }
       const playerWs = socketFor(currentJoinCode, pending.sessionToken);
       if (playerWs) send(playerWs, { type: 'character-validated', characterId: pending.id, approved: false, feedback: `Host feedback: ${msg.reason}` });
       const neg = negotiations.get(msg.characterId);

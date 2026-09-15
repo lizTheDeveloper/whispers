@@ -1058,6 +1058,7 @@ button:disabled {
 .dm-char-status.approved { color: var(--biolume); }
 .dm-char-status.rejected { color: var(--gene-pink); }
 .dm-char-status.revoked { color: var(--gene-pink); }
+.dm-char-status.pending { color: var(--signal); }
 
 .dm-char-card.revoked {
   border-color: rgba(255, 61, 127, 0.15);

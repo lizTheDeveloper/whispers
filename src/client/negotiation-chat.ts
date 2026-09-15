@@ -28,25 +28,37 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   inputRow.append(input, sendBtn);
   panel.appendChild(inputRow);
 
+  // Declared here (not inside the `if (isHost)` block below) so the 'error'
+  // handler further down — which must be able to restore a refused
+  // approve/reject regardless of how this panel was built — can reach them.
+  let approveBtn: HTMLButtonElement | null = null;
+  let rejectBtn: HTMLButtonElement | null = null;
+  // Set only while this panel has its own approve/reject click in flight — an
+  // 'error' arriving with neither button disabled came from somewhere else
+  // (another panel, another request) and must not touch this one.
+  let actionPending = false;
+
   if (isHost) {
     const actions = document.createElement('div');
     actions.className = 'negotiation-actions';
-    const approveBtn = document.createElement('button');
+    approveBtn = document.createElement('button');
     approveBtn.className = 'approve-btn';
     approveBtn.textContent = 'Approve Character';
     approveBtn.addEventListener('click', () => {
       ws.send({ type: 'host-approve-character', characterId });
-      approveBtn.disabled = true;
-      rejectBtn.disabled = true;
+      approveBtn!.disabled = true;
+      rejectBtn!.disabled = true;
+      actionPending = true;
     });
-    const rejectBtn = document.createElement('button');
+    rejectBtn = document.createElement('button');
     rejectBtn.className = 'reject-btn ghost-btn';
     rejectBtn.textContent = 'Reject';
     rejectBtn.addEventListener('click', () => {
       const reason = prompt('Reason for rejection:') || 'Character needs revision';
       ws.send({ type: 'host-reject-character', characterId, reason });
-      approveBtn.disabled = true;
-      rejectBtn.disabled = true;
+      approveBtn!.disabled = true;
+      rejectBtn!.disabled = true;
+      actionPending = true;
     });
     actions.append(approveBtn, rejectBtn);
     panel.appendChild(actions);
@@ -88,6 +100,7 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   ws.on('character-submitted', (msg) => {
     if (msg.type !== 'character-submitted') return;
     if (msg.characterId !== characterId) return;
+    actionPending = false;
     const notice = document.createElement('div');
     notice.className = 'negotiation-bubble system';
     notice.textContent = 'Character approved! Negotiation complete.';
@@ -100,6 +113,7 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     if (msg.type !== 'character-validated') return;
     if (msg.characterId !== characterId) return;
     if (!msg.approved) {
+      actionPending = false;
       const notice = document.createElement('div');
       notice.className = 'negotiation-bubble system';
       notice.textContent = `Character rejected: ${msg.feedback}`;
@@ -107,5 +121,23 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
       input.disabled = true;
       sendBtn.disabled = true;
     }
+  });
+
+  // A refused approve/reject (no authority, no such pending character, wrong
+  // phase) must not leave this panel's buttons permanently disabled with no
+  // explanation — that is the exact bug this panel existed to avoid on the
+  // success path. Restore them and surface the reason, built with
+  // createElement/textContent only: this message came from the server and
+  // must never be handed to innerHTML.
+  ws.on('error', (msg) => {
+    if (msg.type !== 'error') return;
+    if (!actionPending) return;
+    actionPending = false;
+    if (approveBtn) approveBtn.disabled = false;
+    if (rejectBtn) rejectBtn.disabled = false;
+    const notice = document.createElement('div');
+    notice.className = 'negotiation-bubble system';
+    notice.textContent = msg.message;
+    log.appendChild(notice);
   });
 }

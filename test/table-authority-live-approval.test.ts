@@ -136,6 +136,121 @@ describe('AI DM approves characters when the host is playing', () => {
     await closeWs(hostWs);
   }, 60_000);
 
+  describe('host review guards refuse with a message, not silence', () => {
+    it('refuses host-approve-character from a host without DM authority, with a message naming that', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ, 'player'); // host chose to play, not run the table
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      // AI DM approves on its own here — there is no human approver on this
+      // path — but the host's own socket still has no DM authority, and
+      // sending host-approve-character anyway must be refused with a reason,
+      // not dropped.
+      const validated = await pq.waitFor('character-validated', 15_000) as any;
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: validated.characterId });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/host/i);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('refuses host-reject-character from a host without DM authority, with a message naming that', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ, 'player'); // host chose to play, not run the table
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const validated = await pq.waitFor('character-validated', 15_000) as any;
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'host-reject-character', characterId: validated.characterId, reason: 'no' });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/host/i);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('refuses host-approve-character for a characterId that is not pending review', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default) — has DM authority
+
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: 'no-such-character' });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/pending review|already have been decided/i);
+
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('refuses host-reject-character for a characterId that is not pending review', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default) — has DM authority
+
+      sendMsg(hostWs, { type: 'host-reject-character', characterId: 'no-such-character', reason: 'n/a' });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/pending review|already have been decided/i);
+
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('refuses host-approve-character a second time for a character already decided, instead of re-broadcasting', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await hostQ.waitFor('character-submitted', 10_000);
+      await pq.waitFor('character-submitted', 10_000);
+
+      // The pending row is gone now — a second approve of the same id must
+      // be refused, not silently re-run (which would re-broadcast
+      // character-submitted a second time for an already-live character).
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/pending review|already have been decided/i);
+      await expect(pq.waitFor('character-submitted', 2_000)).rejects.toThrow(/Timeout/);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it("refuses choose-table-role with an invalid role value", async () => {
+      const { ws: hostWs, q: hostQ } = await createGame();
+
+      sendMsg(hostWs, { type: 'choose-table-role', role: 'wizard' } as any);
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/table role|'dm'|'player'/i);
+
+      await closeWs(hostWs);
+    }, 20_000);
+  });
+
   /**
    * The host owns the world whether they are running the table or playing in
    * it, so they keep a silent, non-blocking veto over a character even after

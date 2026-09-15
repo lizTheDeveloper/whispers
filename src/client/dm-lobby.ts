@@ -115,6 +115,21 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   // against an unrelated world-readiness broadcast (e.g. from a chat message sent while
   // the redraft is still pending) re-enabling Accept against the stale pre-redraft seed.
   let redraftPending = false;
+  // Character cards awaiting a server decision on an approve/reject click sent for them.
+  // The server's 'error' message carries no characterId, so a refusal can't be routed to
+  // one card — every card in this set gets restored to its pre-click state when any error
+  // arrives. That is the only way to avoid a card stuck disabled with a status that lied
+  // about what the server actually did.
+  const pendingCharacterActions = new Set<HTMLElement>();
+
+  function restorePendingCharacterCard(card: HTMLElement) {
+    const approveBtnEl = card.querySelector('.approve-btn') as HTMLButtonElement | null;
+    const rejectBtnEl = card.querySelector('.reject-btn') as HTMLButtonElement | null;
+    if (approveBtnEl) approveBtnEl.disabled = false;
+    if (rejectBtnEl) rejectBtnEl.disabled = false;
+    const status = card.querySelector('.dm-char-status');
+    if (status) { status.textContent = 'Awaiting your review'; status.className = 'dm-char-status'; }
+  }
 
   function addChatMessage(text: string, sender: 'dm' | 'host') {
     const bubble = document.createElement('div');
@@ -554,8 +569,12 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
       ws.send({ type: 'host-approve-character', characterId: msg.characterId });
       approveBtn.disabled = true;
       rejectBtn.disabled = true;
+      // Not 'Approved' — the server hasn't said so yet. That label only
+      // belongs to the character-submitted handler below, which fires
+      // exclusively when the write actually landed.
       const status = card.querySelector('.dm-char-status');
-      if (status) { status.textContent = 'Approved'; status.className = 'dm-char-status approved'; }
+      if (status) { status.textContent = 'Approving…'; status.className = 'dm-char-status pending'; }
+      pendingCharacterActions.add(card);
     });
     const rejectBtn = document.createElement('button');
     rejectBtn.className = 'reject-btn ghost-btn';
@@ -567,6 +586,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
       rejectBtn.disabled = true;
       const status = card.querySelector('.dm-char-status');
       if (status) { status.textContent = 'Rejected'; status.className = 'dm-char-status rejected'; }
+      pendingCharacterActions.add(card);
     });
     actions.append(approveBtn, rejectBtn);
 
@@ -618,6 +638,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     if (msg.type !== 'character-submitted') return;
     const existing = submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`) as HTMLElement | null;
     if (existing) {
+      pendingCharacterActions.delete(existing);
       existing.classList.remove('pending');
       existing.classList.add('approved');
       const actionsEl = existing.querySelector('.dm-char-actions');
@@ -676,5 +697,9 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     // this must clear unconditionally or a failed redraft leaves the panel permanently disabled.
     redraftPending = false;
     resetSeedButtons();
+    // Same reasoning for a refused approve/reject: restore every card that has one in
+    // flight rather than leaving it stuck disabled with a status that never came true.
+    for (const card of pendingCharacterActions) restorePendingCharacterCard(card);
+    pendingCharacterActions.clear();
   });
 }
