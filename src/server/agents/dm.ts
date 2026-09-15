@@ -468,6 +468,16 @@ ${hooks}`;
         { role: 'user', content: 'Introduce them to this world.' },
       ],
       temperature: 0.9,
+      // This is the first prose a player ever reads about the world, and the
+      // confirmed site of the "omitted maxTokens -> proxy default -> silent
+      // mid-sentence truncation" bug (observed live, cut off at "...before
+      // midnight doubles the"). The prompt targets 120-180 words of plain
+      // prose (no JSON/field overhead), which comfortably fits well under
+      // 1000 tokens even for a verbose model that overshoots the target by
+      // 2-3x. callLlm's own default (2048) would already cover this, but
+      // this call gets its own explicit ceiling rather than silently relying
+      // on the shared default — a scene-setting introduction, sized for one.
+      maxTokens: 1024,
     });
   }
 

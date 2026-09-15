@@ -10,6 +10,7 @@ import { z } from 'zod';
  */
 let server: Server;
 let nextText = '';
+let lastRequestBody: any = null;
 
 async function startStub(): Promise<string> {
   return new Promise((resolve) => {
@@ -17,6 +18,7 @@ async function startStub(): Promise<string> {
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
+        try { lastRequestBody = JSON.parse(body); } catch { lastRequestBody = null; }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ text: nextText }));
       });
@@ -130,5 +132,34 @@ describe('callLlm never manufactures an empty response by stripping markers', ()
       schema: z.object({ ok: z.boolean() }),
     });
     expect(result).toEqual({ ok: true });
+  });
+});
+
+// The class of bug this guards against: `max_tokens` used to be omitted
+// entirely from the request body whenever a caller passed no `maxTokens`,
+// which let the proxy apply whatever default IT happened to have — silently,
+// with no error. That has truncated draftWorldSeed (never validated, host
+// could never open their table), setupChat (desynced the readiness panel),
+// and introduceWorld (the player's first prose cut off mid-sentence). Three
+// separate one-off patches later, the fix is structural: callLlm must always
+// send `max_tokens`, including — especially — when the caller sends nothing.
+// A future call site that forgets `maxTokens` should inherit a real ceiling
+// automatically instead of reintroducing this bug a fourth time.
+describe('callLlm always sends max_tokens, even when the caller omits it', () => {
+  it('includes max_tokens in the request body when the caller passes an explicit value', async () => {
+    nextText = 'fine';
+    lastRequestBody = null;
+    await callLlm({ messages: [{ role: 'user', content: 'Hi.' }], maxTokens: 777 });
+    expect(lastRequestBody).not.toBeNull();
+    expect(lastRequestBody.max_tokens).toBe(777);
+  });
+
+  it('still includes a numeric max_tokens when the caller omits maxTokens entirely', async () => {
+    nextText = 'fine';
+    lastRequestBody = null;
+    await callLlm({ messages: [{ role: 'user', content: 'Introduce them to this world.' }] });
+    expect(lastRequestBody).not.toBeNull();
+    expect(typeof lastRequestBody.max_tokens).toBe('number');
+    expect(lastRequestBody.max_tokens).toBeGreaterThan(0);
   });
 });

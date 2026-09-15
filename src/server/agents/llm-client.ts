@@ -3,6 +3,26 @@ import type { z } from 'zod';
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL ?? 'http://localhost:4242';
 const DEFAULT_TIMEOUT = 60_000;
 
+// Omitting `maxTokens` used to mean "omit `max_tokens` from the request
+// entirely," which let the proxy apply whatever default IT happened to have
+// — silently, with no error, and long replies truncated mid-sentence. That
+// has now been found and one-off patched three separate times on this call
+// site alone (draftWorldSeed's JSON, setupChat's readiness-panel reply,
+// introduceWorld's opening prose). The fix is structural, not another patch:
+// every call sends a real `max_tokens`, and a call site that forgets to
+// specify one gets THIS ceiling instead of an unbounded unknown.
+//
+// 2048 is picked from what this codebase already treats as its "real prose
+// or JSON reply" tier — narrate (2048), setupChat (2048), and the fact
+// extractor (2048) all land here, with only single-field/one-sentence
+// outputs (storeObservation, game-loop's short beats) going lower and only
+// the densest structured payload (draftWorldSeed, 3+ locations/npcs/hooks)
+// going higher at 4096. 2048 tokens is roughly 1500 words of English prose
+// or JSON — comfortably more than any ordinary conversational turn or
+// schema reply produces — so a call site relying on this default is never
+// the one that truncates.
+const DEFAULT_MAX_TOKENS = 2048;
+
 interface CallLlmOpts<S extends z.ZodType | undefined = undefined> {
   messages: Array<{ role: string; content: string }>;
   schema?: S;
@@ -68,7 +88,7 @@ async function fetchWithRetry(url: string, init: RequestInit & { signal: AbortSi
 export async function callLlm<S extends z.ZodType | undefined = undefined>(
   opts: CallLlmOpts<S>
 ): Promise<CallLlmResult<S>> {
-  const { messages, schema, temperature, timeout = DEFAULT_TIMEOUT, maxTokens } = opts;
+  const { messages, schema, temperature, timeout = DEFAULT_TIMEOUT, maxTokens = DEFAULT_MAX_TOKENS } = opts;
   const maxAttempts = schema ? 4 : 1;
   let lastBadResponse = '';
 
@@ -105,7 +125,7 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
           'Content-Type': 'application/json',
           'X-Game': 'whispers',
         },
-        body: JSON.stringify({ messages: promptMessages, temperature: retryTemp, ...(maxTokens ? { max_tokens: maxTokens } : {}) }),
+        body: JSON.stringify({ messages: promptMessages, temperature: retryTemp, max_tokens: maxTokens }),
         signal: controller.signal,
       });
 
