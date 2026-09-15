@@ -136,11 +136,28 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       // and never regenerated). This is post-processing only — never reject
       // the response, only clean it; an empty/unusable result after cleaning
       // is already handled separately by each caller.
-      if (text.startsWith('*')) {
-        text = text.replace(/^\*[^*]*\*\s*/, '').trim();
+      //
+      // A single-asterisk pair like *nods* is a roleplay action marker; a
+      // double-asterisk pair like **bold** is markdown emphasis that players
+      // read. Both leading and trailing text can legitimately end in
+      // **bold**, and the naive "strip *...* at the edge" version of this
+      // (text.replace(/^\*[^*]*\*\s*/, '') / the trailing mirror) cannot
+      // tell them apart: run against "He nodded. **Finally.**" it matches
+      // just the closing "**" as an empty-content *[^*]** pair, leaving an
+      // unbalanced "**Finally." behind. The (?<!\*)/(?!\*) guards on both
+      // delimiters make a star that is adjacent to another star ineligible
+      // as either the opening or closing delimiter of a marker, so a run of
+      // two consecutive stars can never be mistaken for a single-star pair
+      // — a real double-star bold run is left untouched, while a genuine
+      // single-star action marker (with non-star content in between) is
+      // still stripped.
+      const LEADING_ACTION_MARKER = /^\*(?!\*)([^*]+)\*(?!\*)\s*/;
+      const TRAILING_ACTION_MARKER = /\s*(?<!\*)\*(?!\*)([^*]+)\*(?!\*)$/;
+      if (LEADING_ACTION_MARKER.test(text)) {
+        text = text.replace(LEADING_ACTION_MARKER, '').trim();
       }
-      if (text.endsWith('*')) {
-        text = text.replace(/\s*\*[^*]*\*$/, '').trim();
+      if (TRAILING_ACTION_MARKER.test(text)) {
+        text = text.replace(TRAILING_ACTION_MARKER, '').trim();
       }
       // Strip markdown code fences — same reasoning, not gated on `schema`.
       text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();

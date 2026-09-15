@@ -169,15 +169,19 @@ function openNegotiation(
   pending: PendingCharacterRow,
 ): void {
   if (negotiations.has(pending.id)) return;
-  // Belt-and-braces with the early return in the submit-character handler
-  // (which never reaches this function at all on the host-as-player path):
-  // this call site is also reachable from the reconnect replay loop above,
-  // independently of that guard, for every character still pending review.
-  // If the host's table role moved to 'player' between submission and
-  // reconnect — and this task's own leak fix means a stale negotiation entry
-  // no longer permanently blocks this from running again — this is the only
-  // thing standing between a player and a negotiation panel with dead
-  // Approve/Reject buttons and no way to end it.
+  // NOT belt-and-braces on the submit-character call site: that handler
+  // re-reads the campaign from the database right after its validateCharacter
+  // await and passes THIS SAME fresh object both to its own approver check
+  // and to this call, so this guard can never catch anything that check
+  // missed there — it is redundant on that path, not independent.
+  // It IS an independent, load-bearing guard on the reconnect replay loop
+  // above: that loop fetches its own campaign at rejoin time, on a
+  // completely separate code path from submission, with no await between
+  // that fetch and this call. If the host's table role moved to 'player'
+  // between submission and reconnect — and this task's own leak fix means a
+  // stale negotiation entry no longer permanently blocks this from running
+  // again — this check is the only thing standing between a player and a
+  // negotiation panel with dead Approve/Reject buttons and no way to end it.
   if (!hasDmAuthority({ isOwner: true }, campaign.hostTableRole)) return;
   const negotiation = new NegotiationRoom(
     pending.id, pending.definition, pending.aiFeedback, pending.playerName,
@@ -726,7 +730,7 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: `${msg.definition.name} is not ready: ${readiness.detail.join(' ')}` });
         return;
       }
-      const campaign = submitCampaign;
+      let campaign = submitCampaign;
       const dm = new DmAgent(db);
       const charId = randomBytes(16).toString('hex');
 
@@ -738,6 +742,20 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'character-validated', characterId: charId, approved: false, feedback: 'Character validation failed — please try again.' });
         return;
       }
+
+      // dm.validateCharacter is a multi-second LLM call — hostTableRole can
+      // change while it is in flight, because choose-table-role's guard only
+      // sees characters written via savePendingCharacter/makeCharacterLive,
+      // and this submission has written neither yet. Re-read the campaign
+      // from the database now, before any decision keyed on hostTableRole:
+      // the approver check below and openNegotiation's guard both used to
+      // read the pre-await snapshot, which is exactly how a pending row got
+      // written under a hostTableRole nobody could act on any more. Same
+      // fix host-approve-character already applies with its own fresh
+      // joinRoom() call.
+      const freshCampaign = joinRoom(db, currentJoinCode);
+      if (!freshCampaign) return;
+      campaign = freshCampaign;
 
       // validation.modifications is CharacterValidationSchema's
       // z.record(z.unknown()).nullable() — entirely unvalidated model
@@ -932,6 +950,18 @@ wss.on('connection', (ws) => {
       }
       const revokeCampaign = joinRoom(db, currentJoinCode);
       if (!revokeCampaign) return;
+      // Unlike host-approve/host-reject/negotiation-message — where an
+      // unvalidated characterId just fails a Map/array .find() and falls
+      // into an existing "not found" branch — this characterId goes
+      // straight into a raw SQL bind below. A non-string (undefined from a
+      // malformed payload, an object, etc.) throws inside better-sqlite3
+      // rather than failing that kind of lookup, and on a branch whose
+      // theme is "refusals speak", the host deserves an error message
+      // instead of a silently-logged unhandled rejection.
+      if (!isValidShortField(msg.characterId)) {
+        send(ws, { type: 'error', message: 'A valid character id is required to revoke a character.' });
+        return;
+      }
       if (msg.reason !== undefined && !isValidLongField(msg.reason)) {
         send(ws, { type: 'error', message: `Revoke reason must be at most ${MAX_LONG_FIELD} characters.` });
         return;
@@ -971,7 +1001,28 @@ wss.on('connection', (ws) => {
       // its next start() — loadCharacters() only runs once, so nothing
       // re-reads revoked_at afterwards. gameLoops is keyed by join code
       // (see start-game above), not campaign id.
-      gameLoops.get(currentJoinCode)?.revokeCharacter(msg.characterId);
+      //
+      // revokeCharacter's own deletion from its characters map is
+      // synchronous (done before it returns its promise), so the party-size
+      // guard below and the loop's own internal bookkeeping never race —
+      // only its "did this empty the party and end the game" outcome is
+      // async, because ending the game means awaiting an epilogue. Captured
+      // into `jc` rather than read from `currentJoinCode` inside the
+      // callback: this socket can process another rejoin before the promise
+      // settles, which would repoint `currentJoinCode` at a different room.
+      const jc = currentJoinCode;
+      const loop = gameLoops.get(jc);
+      if (loop) {
+        loop.revokeCharacter(msg.characterId).then((gameEnded) => {
+          if (!gameEnded) return;
+          // Mirror end-game's own cleanup exactly: the DB phase write and
+          // the gameLoops.delete both have to happen, or a rejoining host
+          // sees phase 'playing' pointed at a loop that isn't there, or a
+          // stopped loop sits in the map as a zombie entry forever.
+          setCampaignPhase(db, revokeCampaign.id, 'ended');
+          gameLoops.delete(jc);
+        }).catch(e => console.error('[revoke-character] failed while ending an emptied game loop:', e));
+      }
 
       broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
     }

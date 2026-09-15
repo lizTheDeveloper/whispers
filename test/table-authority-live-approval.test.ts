@@ -394,6 +394,31 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(hostWs);
     }, 60_000);
 
+    // C9: characterId went straight into room.ts's raw SQL bind
+    // (`UPDATE characters SET revoked_at = ... WHERE id = ?`) with no
+    // validation, unlike `reason` on this same message (validated a few
+    // lines above it) or `role` on choose-table-role. better-sqlite3 binds a
+    // bare `undefined` characterId as SQL NULL without complaint (harmless —
+    // it just falls into the ordinary "not pending" refusal), but an object
+    // payload — e.g. `{}`, plausible from a malformed or adversarial client —
+    // makes better-sqlite3 try to resolve it as NAMED parameters against a
+    // statement that only has a positional `?`, finds none, and throws
+    // RangeError: Too few parameter values were provided. Nothing downstream
+    // catches that, so it becomes an unhandled rejection: the global handler
+    // (index.ts) logs it and the process survives, but the host who sent the
+    // revoke gets nothing back at all — on a branch whose whole theme is
+    // that refusals speak.
+    it('refuses a malformed (object) characterId with a message instead of an unhandled rejection', async () => {
+      const { hostWs, hostQ, playerWs } = await createApprovedCharacter();
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId: { not: 'a string' }, reason: 'n/a' } as any);
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/character id/i);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
     it('refuses to revoke an already-revoked character a second time, rather than silently succeeding again', async () => {
       const { hostWs, hostQ, playerWs, pq, campaignId, characterId } = await createApprovedCharacter();
 
@@ -552,6 +577,80 @@ describe('AI DM approves characters when the host is playing', () => {
 
       await closeWs(playerAWs);
       await closeWs(playerBWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    // C2: GameLoop.revokeCharacter deleted from `this.characters` and
+    // filtered `initiativeOrder` with no check for reaching zero. An empty
+    // initiativeOrder means processTurn is never called, so currentTurn/
+    // sceneTurnCount (only incremented inside it) freeze forever — the exact
+    // counters sessionHardLimit and every round-count guard in runScene are
+    // keyed off of — while runScene's tail recursion has no idea any of that
+    // happened and keeps calling the DM for narration every pass, unbounded
+    // (measured live at ~520 LLM calls/second), stoppable only by end-game.
+    // This is the same "nothing left to stop it" hole start-game's own
+    // countLiveCharacters === 0 guard exists to prevent, reached mid-game
+    // instead of before it starts. Proven here against the real LLM stub by
+    // counting requests it actually received, not by inferring a stop from
+    // a flag: if the loop were still spinning, even a short wait below would
+    // show the count climbing by dozens: at ~520/sec it would not merely
+    // grow, it would run away.
+    it('stops the live loop instead of spinning when a revoke empties the party entirely', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await pq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'start-game' });
+      const phase = await hostQ.waitFor('phase-change', 15_000) as any;
+      expect(phase.phase).toBe('playing');
+
+      const serverMod = await import('../src/server/index.js');
+      const loop = serverMod.gameLoops.get(joinCode);
+      expect(loop).toBeDefined();
+      expect(loop!.partySize).toBe(1);
+
+      // Let the sole character's turn actually reach the point of pausing
+      // for a whisper — genuinely mid-game, not "revoked before the loop
+      // did anything" — then revoke instead of answering it.
+      await hostQ.waitFor('whisper-prompt', 15_000);
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId: review.characterId, reason: 'Table is done' });
+      await hostQ.waitFor('character-revoked', 10_000);
+      expect(loop!.partySize).toBe(0);
+
+      // endGame() (the same path end-game itself drives) broadcasts this —
+      // proof the loop actually ran its stop sequence, not just that
+      // revokeCharacter returned.
+      const ended = await hostQ.waitFor('phase-change', 20_000) as any;
+      expect(ended.phase).toBe('ended');
+
+      // Zombie-loop check: a stopped loop left parked in gameLoops would
+      // still hold a reference nothing ever cleans up.
+      await new Promise((r) => setTimeout(r, 300));
+      expect(serverMod.gameLoops.get(joinCode)).toBeUndefined();
+
+      // The falsifiable core: sample the LLM stub's own received-request
+      // count twice, a full second apart, well after the phase already
+      // flipped to 'ended'. A live loop still spinning at ~520 calls/sec
+      // would show hundreds of new requests in that window; a stopped one
+      // shows zero.
+      const countA = harness.receivedBodies.length;
+      await new Promise((r) => setTimeout(r, 1_000));
+      const countB = harness.receivedBodies.length;
+      expect(countB).toBe(countA);
+
+      await closeWs(playerWs);
       await closeWs(hostWs);
     }, 60_000);
   });
@@ -1170,6 +1269,80 @@ describe('AI DM approves characters when the host is playing', () => {
       const readiness = await pq.waitFor('character-readiness', 10_000) as any;
       expect(readiness.readiness.ready).toBe(false);
       await expect(pq.waitFor('character-preview', 300)).rejects.toThrow();
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 30_000);
+  });
+
+  // C1: submit-character snapshots the campaign BEFORE its
+  // dm.validateCharacter await (a multi-second LLM call) and used to read
+  // hostTableRole off that STALE snapshot afterward — both for its own
+  // AI-approves-vs-host-reviews decision and for the openNegotiation guard
+  // it calls with the same object. choose-table-role's lane guard only sees
+  // characters written via savePendingCharacter — which does not run until
+  // AFTER that same await — so a host who flips lanes mid-validation used
+  // to slip straight through it. The stale pre-flip role then went on to
+  // decide the approval path anyway: a pending row got written and a
+  // negotiation opened under a hostTableRole nobody could act on any
+  // longer. Every exit was closed — host-approve/host-reject re-read the DB
+  // and refuse (no DM authority under the new role), revoke-character has
+  // no LIVE row yet to act on (this character never made it past pending),
+  // and flipping back to 'dm' is refused because a pending row now exists.
+  // The fix re-reads the campaign from the database right after the await,
+  // before either decision, matching the precedent host-approve-character
+  // already set with its own fresh joinRoom() call.
+  describe('submit-character re-reads the campaign after the validation round trip, not a stale pre-await snapshot', () => {
+    it('does not strand a character when the host flips lanes mid-validation', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      await finishWorldSetup(hostWs, hostQ); // host starts as 'dm' (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      // RACE_DELAY_TRIGGER (see server-harness.ts) holds dm.validateCharacter's
+      // reply open ~600ms — ample time to land the lane flip below before
+      // that await resolves.
+      const raceChar: CharacterDefinition = {
+        ...CHAR,
+        backstory: `${CHAR.backstory} RACE_DELAY_TRIGGER`,
+      };
+      sendMsg(playerWs, { type: 'submit-character', definition: raceChar });
+
+      // Let the submit handler snapshot the campaign and issue the (delayed)
+      // validation request before the flip below lands — mirrors the
+      // char-chat race test above's own 150ms margin against the same
+      // 600ms stub delay.
+      await new Promise((r) => setTimeout(r, 150));
+
+      // The lane guard (listPendingCharacters + countLiveCharacters) sees
+      // nothing yet — savePendingCharacter has not run — so this flip goes
+      // through.
+      sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
+      await hostQ.waitFor('room-joined', 10_000);
+
+      // Validation resolves ~450ms later. Fixed behaviour: the approval
+      // decision re-reads the campaign, sees the host is now a player, and
+      // the AI DM's own validation IS the decision — the character goes
+      // straight live, exactly like the "host chose to play" path (first
+      // test in this file), not into review/negotiation limbo under the
+      // stale 'dm' role.
+      const validated = await pq.waitFor('character-validated', 15_000) as any;
+      expect(validated.approved).toBe(true);
+      expect(validated.feedback).toMatch(/in the game/i);
+
+      const submitted = await hostQ.waitFor('character-submitted', 10_000) as any;
+      expect(submitted.characterId).toBe(validated.characterId);
+
+      // Must not be stranded: no pending-review queued for a host who no
+      // longer has DM authority, and no negotiation opened for a player to
+      // sit in front of dead Approve/Reject buttons.
+      await expect(
+        hostQ.waitForAny(['character-pending-review', 'negotiation-opened'], 500)
+      ).rejects.toThrow(/Timeout/);
 
       await closeWs(playerWs);
       await closeWs(hostWs);

@@ -64,4 +64,34 @@ describe('callLlm marker/fence stripping applies to schema-less responses too', 
     const result = await callLlm({ messages: [{ role: 'user', content: 'Introduce them to this world.' }] });
     expect(result).toBe('A quiet coastal town holds its breath.');
   });
+
+  // C12: the trailing-marker strip's regex (`/\s*\*[^*]*\*$/`) does not
+  // distinguish a single-asterisk *action* marker from the closing "**" of
+  // markdown bold. Against "He nodded. **Finally.**" it matches only the
+  // last two characters as an empty-content *[^*]* pair (there is no
+  // asterisk between them to require content), stripping the closing "**"
+  // and leaving an unbalanced "**Finally." for players to read.
+  it('does not mangle a balanced **bold** run at the end of a line', async () => {
+    nextText = 'He nodded. **Finally.**';
+    const result = await callLlm({ messages: [{ role: 'user', content: 'Narrate.' }] });
+    expect(result).toBe('He nodded. **Finally.**');
+  });
+
+  it('does not mangle a balanced **bold** run at the start of a line', async () => {
+    nextText = '**Finally.** He nodded.';
+    const result = await callLlm({ messages: [{ role: 'user', content: 'Narrate.' }] });
+    expect(result).toBe('**Finally.** He nodded.');
+  });
+
+  it('still strips a genuine trailing *action* marker next to real prose', async () => {
+    nextText = 'The door creaks open. *he steps back*';
+    const result = await callLlm({ messages: [{ role: 'user', content: 'Narrate.' }] });
+    expect(result).toBe('The door creaks open.');
+  });
+
+  it('strips a trailing action marker while leaving earlier **bold** intact (mixed text)', async () => {
+    nextText = '**Bold text** and then *he smiles*';
+    const result = await callLlm({ messages: [{ role: 'user', content: 'Narrate.' }] });
+    expect(result).toBe('**Bold text** and then');
+  });
 });

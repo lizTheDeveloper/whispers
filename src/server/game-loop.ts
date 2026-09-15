@@ -88,10 +88,45 @@ export class GameLoop {
    * new array instead, so the in-flight iterator keeps walking the old one
    * safely to completion, and every round built after this call reads the
    * new, revoked-character-free one.
+   *
+   * Deletion above is synchronous and unconditional — callers can read
+   * `partySize` immediately after this returns and see the drop, same as
+   * before. What's new is the check after it: revoking the last character
+   * used to leave `initiativeOrder` empty with nothing else keyed to that
+   * fact. `processTurn` is never called, so `currentTurn`/`sceneTurnCount`
+   * (only incremented inside it) freeze — which is exactly the counters
+   * `sessionHardLimit` and every round-count guard in `runScene` are keyed
+   * off of — while `runScene`'s tail recursion has no idea any of that
+   * happened and keeps calling the DM for narration every pass, unbounded,
+   * stoppable only by the host hitting end-game. That is the same "nothing
+   * left to stop it" failure start-game's own `countLiveCharacters === 0`
+   * guard exists to prevent — this is just the same hole reached mid-game
+   * instead of before it starts.
+   *
+   * Emptying the party ends the session rather than merely halting it,
+   * because 'ended' is the only terminal phase the client already renders
+   * (there is no separate "halted" phase in GamePhase to build a UI for),
+   * and reusing `endGame()` — the exact path the host's own end-game
+   * button drives — means an empty-party revoke gets the same epilogue and
+   * phase-change broadcast as any other session end, not a bespoke dead
+   * end. `endGame()` itself calls `stop()` first, so `this.stopped` flips
+   * before the `await` below, which is what actually breaks `runScene`'s
+   * recursion (every recursive call checks it) rather than the empty
+   * `initiativeOrder` doing that job.
+   *
+   * Returns whether this call ended the game, so the caller (which owns
+   * the `gameLoops` map this class has no reference to) knows to remove
+   * this now-stopped loop from it — never leave a stopped loop parked in
+   * that map as a zombie entry.
    */
-  revokeCharacter(characterId: string): void {
+  async revokeCharacter(characterId: string): Promise<boolean> {
     this.characters.delete(characterId);
     this.state.initiativeOrder = this.state.initiativeOrder.filter(id => id !== characterId);
+    if (this.characters.size === 0 && !this.stopped) {
+      await this.endGame();
+      return true;
+    }
+    return false;
   }
 
   /** How many characters this loop is actually running turns for right now — the same count `runScene`'s own pacing math already reads off `this.characters.size` in half a dozen places. Exposed read-only for tests to confirm a revoke actually shrinks it. */
