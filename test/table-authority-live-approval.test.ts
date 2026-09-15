@@ -124,4 +124,136 @@ describe('AI DM approves characters when the host is playing', () => {
     await closeWs(playerWs);
     await closeWs(hostWs);
   }, 60_000);
+
+  /**
+   * The host owns the world whether they are running the table or playing in
+   * it, so they keep a silent, non-blocking veto over a character even after
+   * it went live: they can remove it after the fact. Gets a campaign with one
+   * live, host-approved character and both sockets' queues drained of the
+   * traffic that produced it, ready for a revoke-character test to act on.
+   */
+  async function createApprovedCharacter() {
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
+    const { joinCode, campaignId } = joined;
+
+    await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+    const playerJoined = await pq.waitFor('room-joined', 10_000) as any;
+
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+    await pq.waitFor('character-validated', 10_000);
+
+    sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+    await hostQ.waitFor('character-submitted', 10_000);
+    await pq.waitFor('character-submitted', 10_000);
+
+    return {
+      hostWs, hostQ, playerWs, pq, joinCode,
+      campaignId: campaignId as string,
+      characterId: review.characterId as string,
+      playerSessionToken: playerJoined.sessionToken as string,
+    };
+  }
+
+  describe("the host's veto", () => {
+    it('lets the owner revoke a live character: it drops out of the party count, the whole room is told, and the interview reopens', async () => {
+      const { hostWs, hostQ, playerWs, pq, campaignId, characterId, playerSessionToken } = await createApprovedCharacter();
+
+      const room = await import('../src/server/room.js');
+      const interviews = await import('../src/server/character-interview.js');
+      const db = (await import('../src/server/db.js')).getDb();
+
+      // Exact count before, not just "a revoke happened" — a revoke that hit
+      // the wrong row, or double-counted, would still let a looser assertion
+      // pass.
+      expect(room.countLiveCharacters(db, campaignId)).toBe(1);
+      expect(interviews.getInterviewBySession(db, campaignId, playerSessionToken)!.status).toBe('live');
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId, reason: 'Breaking trust at the table' });
+
+      // The room is told — both the host's own socket and the revoked
+      // player's socket receive the broadcast, with the reason carried
+      // through.
+      const hostSaw = await hostQ.waitFor('character-revoked', 10_000) as any;
+      expect(hostSaw.characterId).toBe(characterId);
+      expect(hostSaw.reason).toBe('Breaking trust at the table');
+      const playerSaw = await pq.waitFor('character-revoked', 10_000) as any;
+      expect(playerSaw.characterId).toBe(characterId);
+      expect(playerSaw.reason).toBe('Breaking trust at the table');
+
+      // Exact count after — the party actually shrank, not merely "a row
+      // somewhere got touched".
+      expect(room.countLiveCharacters(db, campaignId)).toBe(0);
+
+      // The player can build another: their interview is open again, not
+      // stuck on the revoked character's 'live' status.
+      expect(interviews.getInterviewBySession(db, campaignId, playerSessionToken)!.status).toBe('open');
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it("refuses a non-owner's revoke with a message instead of silently succeeding", async () => {
+      const { hostWs, hostQ, playerWs, pq, campaignId, characterId } = await createApprovedCharacter();
+
+      const room = await import('../src/server/room.js');
+      const db = (await import('../src/server/db.js')).getDb();
+
+      sendMsg(playerWs, { type: 'revoke-character', characterId, reason: 'I want out' });
+
+      // The refusal message itself must actually arrive at the sender — not
+      // merely "the state stayed the same", which would also be true of a
+      // handler that just did nothing at all.
+      const refusal = await pq.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/host/i);
+
+      // Nothing was broadcast to the room over this.
+      await expect(hostQ.waitFor('character-revoked', 2_000)).rejects.toThrow(/Timeout/);
+
+      // And the character is still exactly as live as it was.
+      expect(room.countLiveCharacters(db, campaignId)).toBe(1);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('refuses to revoke an unknown character id with a message', async () => {
+      const { hostWs, hostQ, playerWs } = await createApprovedCharacter();
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId: 'no-such-character', reason: 'n/a' });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/already gone|cannot be revoked/i);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('refuses to revoke an already-revoked character a second time, rather than silently succeeding again', async () => {
+      const { hostWs, hostQ, playerWs, pq, campaignId, characterId } = await createApprovedCharacter();
+
+      const room = await import('../src/server/room.js');
+      const db = (await import('../src/server/db.js')).getDb();
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId, reason: 'First revoke' });
+      await hostQ.waitFor('character-revoked', 10_000);
+      await pq.waitFor('character-revoked', 10_000);
+      expect(room.countLiveCharacters(db, campaignId)).toBe(0);
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId, reason: 'Second revoke' });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/already gone|cannot be revoked/i);
+
+      // Only the first revoke ever produced a broadcast — the second refusal
+      // did not also fire one.
+      await expect(pq.waitFor('character-revoked', 2_000)).rejects.toThrow(/Timeout/);
+      expect(room.countLiveCharacters(db, campaignId)).toBe(0);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+  });
 });

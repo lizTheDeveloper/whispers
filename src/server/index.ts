@@ -12,6 +12,7 @@ import {
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
   saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
   countLiveCharacters, beginPlayIfReady, getInfluences, setInfluences,
+  revokeCharacter, clearSessionCharacter,
   type PendingCharacterRow,
 } from './room.js';
 import { makeCharacterLive } from './character-live.js';
@@ -827,6 +828,50 @@ wss.on('connection', (ws) => {
       const neg = negotiations.get(msg.characterId);
       if (neg) { neg.close(); negotiations.delete(msg.characterId); }
       deletePendingCharacter(db, msg.characterId);
+    }
+
+    // The host keeps a silent, non-blocking veto over a character even after
+    // it went live — owner-only via isWorldAuthor (not hasDmAuthority),
+    // because a host who is playing must still be able to remove a character
+    // the AI DM already approved. That is the whole point of this handler.
+    if (msg.type === 'revoke-character' && currentJoinCode) {
+      if (!isWorldAuthor(currentPlayer)) {
+        send(ws, { type: 'error', message: 'Only the host can revoke a character.' });
+        return;
+      }
+      const revokeCampaign = joinRoom(db, currentJoinCode);
+      if (!revokeCampaign) return;
+      if (msg.reason !== undefined && !isValidLongField(msg.reason)) {
+        send(ws, { type: 'error', message: `Revoke reason must be at most ${MAX_LONG_FIELD} characters.` });
+        return;
+      }
+      const reason = msg.reason ?? '';
+
+      // revokeCharacter's UPDATE carries `AND revoked_at IS NULL`, so it
+      // returns false for both an unknown id and one already revoked — that
+      // boolean is the whole refusal signal, no separate existence check.
+      if (!revokeCharacter(db, msg.characterId)) {
+        send(ws, { type: 'error', message: 'That character cannot be revoked — it may already be gone.' });
+        return;
+      }
+
+      // The in-memory seat is how the durable session token for this
+      // character is found here — matching the playerInRoom lookups already
+      // used by submit-character/host-approve-character above. If the
+      // player isn't currently connected, revocation still lands (the
+      // character stops counting toward the party either way); only the
+      // session-claim clear and interview reset are skipped for them, and
+      // they self-heal from the durable character_id/interview rows on the
+      // player's next join or submission.
+      const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.characterId === msg.characterId);
+      if (playerInRoom) {
+        clearSessionCharacter(db, playerInRoom.sessionToken);
+        const interview = getInterviewBySession(db, revokeCampaign.id, playerInRoom.sessionToken);
+        if (interview) setInterviewStatus(db, interview.id, 'open');
+        playerInRoom.characterId = null;
+      }
+
+      broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
     }
 
     if (msg.type === 'negotiation-message' && currentJoinCode && currentPlayer) {

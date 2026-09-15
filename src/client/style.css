@@ -1057,6 +1057,20 @@ button:disabled {
 }
 .dm-char-status.approved { color: var(--biolume); }
 .dm-char-status.rejected { color: var(--gene-pink); }
+.dm-char-status.revoked { color: var(--gene-pink); }
+
+.dm-char-card.revoked {
+  border-color: rgba(255, 61, 127, 0.15);
+  opacity: 0.7;
+}
+.revoke-btn {
+  font-size: 0.85rem;
+  padding: 0.4rem 1rem;
+  color: var(--gene-pink);
+  border-color: rgba(255, 61, 127, 0.2);
+}
+.revoke-btn:hover { border-color: rgba(255, 61, 127, 0.4); }
+.revoke-btn:disabled { opacity: 0.5; cursor: default; }
 
 .dm-char-card.pending {
   flex-direction: column;

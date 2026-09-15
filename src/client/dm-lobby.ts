@@ -578,16 +578,80 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     submissions.appendChild(card);
   });
 
+  // The host's silent, non-blocking veto: a revoke button on every approved
+  // character card. Built entirely with createElement/textContent — the
+  // character name and (on the reveal side) the revoke reason are
+  // attacker-controlled, and this app keeps bearer session tokens in
+  // localStorage, so an innerHTML sink here would be a seat takeover.
+  function buildRevokeButton(characterId: string): HTMLButtonElement {
+    const revokeBtn = document.createElement('button');
+    revokeBtn.className = 'revoke-btn ghost-btn';
+    revokeBtn.textContent = 'Revoke';
+    revokeBtn.addEventListener('click', () => {
+      const reason = prompt('Reason for revoking (optional):') || undefined;
+      ws.send({ type: 'revoke-character', characterId, reason });
+      revokeBtn.disabled = true;
+    });
+    return revokeBtn;
+  }
+
+  function buildApprovedCard(characterId: string, name: string): HTMLElement {
+    const card = document.createElement('div');
+    card.className = 'dm-char-card approved';
+    card.dataset.charId = characterId;
+
+    const info = document.createElement('div');
+    info.className = 'dm-char-info';
+    const nameEl = document.createElement('strong');
+    nameEl.textContent = name;
+    info.appendChild(nameEl);
+
+    const status = document.createElement('span');
+    status.className = 'dm-char-status approved';
+    status.textContent = 'Approved';
+
+    card.append(info, status, buildRevokeButton(characterId));
+    return card;
+  }
+
   ws.on('character-submitted', (msg) => {
     if (msg.type !== 'character-submitted') return;
-    const existing = submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`);
+    const existing = submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`) as HTMLElement | null;
     if (existing) {
       existing.classList.remove('pending');
+      existing.classList.add('approved');
       const actionsEl = existing.querySelector('.dm-char-actions');
       if (actionsEl) actionsEl.remove();
+      const status = existing.querySelector('.dm-char-status');
+      if (status) { status.textContent = 'Approved'; status.className = 'dm-char-status approved'; }
+      if (!existing.querySelector('.revoke-btn')) existing.appendChild(buildRevokeButton(msg.characterId));
+    } else {
+      // The AI-DM-approves-when-the-host-is-playing path never sends a
+      // character-pending-review card for the host to convert — this is the
+      // host's first sight of that character, so build its card from
+      // scratch here.
+      submissions.appendChild(buildApprovedCard(msg.characterId, msg.definition.name));
     }
     approvedCount++;
     updateStartButton();
+  });
+
+  ws.on('character-revoked', (msg) => {
+    if (msg.type !== 'character-revoked') return;
+    approvedCount = Math.max(0, approvedCount - 1);
+    updateStartButton();
+    const card = submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`) as HTMLElement | null;
+    if (card) {
+      card.classList.remove('approved');
+      card.classList.add('revoked');
+      const status = card.querySelector('.dm-char-status');
+      if (status) {
+        status.className = 'dm-char-status revoked';
+        status.textContent = msg.reason ? `Revoked: ${msg.reason}` : 'Revoked';
+      }
+      const revokeBtn = card.querySelector('.revoke-btn');
+      if (revokeBtn) revokeBtn.remove();
+    }
   });
 
   ws.on('negotiation-opened', (msg) => {

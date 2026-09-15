@@ -20,6 +20,7 @@ export type ClientMessage =
   | { type: 'regenerate-world-seed'; note?: string }
   | { type: 'host-approve-character'; characterId: string }
   | { type: 'host-reject-character'; characterId: string; reason: string }
+  | { type: 'revoke-character'; characterId: string; reason?: string }
   | { type: 'negotiation-message'; characterId: string; text: string }
   | { type: 'start-game' }
   | { type: 'end-game' };
@@ -31,6 +32,7 @@ export type ServerMessage =
   | { type: 'player-joined'; playerName: string; characterId: string | null }
   | { type: 'player-left'; playerName: string }
   | { type: 'character-submitted'; characterId: string; definition: CharacterDefinition }
+  | { type: 'character-revoked'; characterId: string; reason: string }
   | { type: 'character-validated'; characterId: string; approved: boolean; feedback: string }
   | { type: 'character-pending-review'; characterId: string; definition: CharacterDefinition; aiApproved: boolean; aiFeedback: string; playerName: string }
   | { type: 'negotiation-message'; characterId: string; sender: 'dm-agent' | 'host' | 'player' | 'char-agent'; senderName: string; text: string }
