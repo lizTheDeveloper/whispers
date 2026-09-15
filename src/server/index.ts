@@ -875,6 +875,13 @@ wss.on('connection', (ws) => {
       const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.sessionToken === ownerToken);
       if (playerInRoom) playerInRoom.characterId = null;
 
+      // A veto mid-session must stop the LIVE game loop from taking this
+      // character's turns, not just update rows a new loop would read on
+      // its next start() — loadCharacters() only runs once, so nothing
+      // re-reads revoked_at afterwards. gameLoops is keyed by join code
+      // (see start-game above), not campaign id.
+      gameLoops.get(currentJoinCode)?.revokeCharacter(msg.characterId);
+
       broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
     }
 
@@ -1298,4 +1305,4 @@ server.listen(PORT, () => {
   console.log(`Whispers server listening on port ${PORT}`);
 });
 
-export { app, server, wss };
+export { app, server, wss, gameLoops };

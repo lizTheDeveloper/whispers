@@ -70,6 +70,35 @@ export class GameLoop {
     }
   }
 
+  /**
+   * The host's veto during play. Deleting from `this.characters` is what
+   * actually does the work — every derived value reads from that map:
+   * partySize is `this.characters.size`, partyMembers and the observer
+   * loop iterate it, and processTurn already opens with
+   * `const character = this.characters.get(characterId); if (!character)
+   * return;`, so once this runs the revoked character's turn is a no-op
+   * even if a round already in flight still has their id queued.
+   *
+   * `initiativeOrder` is reassigned via `filter`, never spliced in place.
+   * runScene's round loop — `for (const charId of this.state.initiativeOrder)`
+   * — has an `await` inside it, making it a live iterator over whatever
+   * array `this.state.initiativeOrder` currently points at. Splicing would
+   * mutate that same array out from under the in-flight iterator and shift
+   * a later character's turn, silently skipping them. Reassigning binds a
+   * new array instead, so the in-flight iterator keeps walking the old one
+   * safely to completion, and every round built after this call reads the
+   * new, revoked-character-free one.
+   */
+  revokeCharacter(characterId: string): void {
+    this.characters.delete(characterId);
+    this.state.initiativeOrder = this.state.initiativeOrder.filter(id => id !== characterId);
+  }
+
+  /** How many characters this loop is actually running turns for right now — the same count `runScene`'s own pacing math already reads off `this.characters.size` in half a dozen places. Exposed read-only for tests to confirm a revoke actually shrinks it. */
+  get partySize(): number {
+    return this.characters.size;
+  }
+
   async start(): Promise<void> {
     this.loadCharacters();
 

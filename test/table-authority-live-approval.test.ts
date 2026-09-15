@@ -39,6 +39,17 @@ describe('AI DM approves characters when the host is playing', () => {
     stunts: ['Dead Reckoning: +2 to Notice when navigating.'],
   };
 
+  const CHAR2: CharacterDefinition = {
+    name: 'Rin Osei',
+    backstory: 'Grew up running cargo between orbital stations.',
+    personality: 'Loyal, blunt, terrible at sitting still.',
+    highConcept: 'Reformed Smuggler',
+    trouble: "Family still owes the people she used to run for",
+    aspects: ['Knows every back route', 'Never leaves a debt unpaid'],
+    skills: { Athletics: 3, Deceive: 2, Will: 1 },
+    stunts: ['Quick Hands: +2 to Athletics to get somewhere fast.'],
+  };
+
   function closeWs(ws: WebSocket): Promise<void> {
     return new Promise((r) => { ws.once('close', () => r()); ws.close(); });
   }
@@ -282,6 +293,114 @@ describe('AI DM approves characters when the host is playing', () => {
       expect(sessionRow.character_id).toBeNull();
       expect(interviews.getInterviewBySession(db, campaignId, playerSessionToken)!.status).toBe('open');
 
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it("uses isWorldAuthor, not hasDmAuthority: the owner can still veto while seated as a player", async () => {
+      // The one scenario that actually distinguishes the two guard functions.
+      // Every other test in this describe block runs with the host in the
+      // 'dm' seat (finishWorldSetup's default), where isWorldAuthor and
+      // hasDmAuthority agree — a suite built entirely out of those cannot
+      // tell the right guard from the brief-violating one. This is the host
+      // who chose to PLAY: hasDmAuthority(seat, 'player') is false for them,
+      // so a handler that swapped to it would refuse their own veto.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ, 'player');
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const validated = await pq.waitFor('character-validated', 15_000) as any;
+      expect(validated.approved).toBe(true);
+      const submitted = await hostQ.waitFor('character-submitted', 10_000) as any;
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId: submitted.characterId, reason: 'Still my table even while I play in it' });
+      const revoked = await hostQ.waitFor('character-revoked', 10_000) as any;
+      expect(revoked.characterId).toBe(submitted.characterId);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('stops a revoked character mid-session: the live loop drops them from its party size and never gives them another turn', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table
+
+      const playerAWs = await connectWs(port);
+      const aq = new MessageQueue(playerAWs);
+      sendMsg(playerAWs, { type: 'join', joinCode, playerName: 'Ada' });
+      await aq.waitFor('room-joined', 10_000);
+      sendMsg(playerAWs, { type: 'submit-character', definition: CHAR });
+      const reviewA = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: reviewA.characterId });
+      await aq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      const playerBWs = await connectWs(port);
+      const bq = new MessageQueue(playerBWs);
+      sendMsg(playerBWs, { type: 'join', joinCode, playerName: 'Rin' });
+      await bq.waitFor('room-joined', 10_000);
+      sendMsg(playerBWs, { type: 'submit-character', definition: CHAR2 });
+      const reviewB = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: reviewB.characterId });
+      await bq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'start-game' });
+      const phase = await hostQ.waitFor('phase-change', 15_000) as any;
+      expect(phase.phase).toBe('playing');
+
+      // gameLoops is exported from src/server/index.ts specifically so a test
+      // can look at the live loop's own view of the party, not just the
+      // durable rows loadCharacters() read once at start() — that one-time
+      // read is exactly why a revoke needs its own path into the running
+      // loop instead of relying on the database alone.
+      const serverMod = await import('../src/server/index.js');
+      const loop = serverMod.gameLoops.get(joinCode);
+      expect(loop).toBeDefined();
+      expect(loop!.partySize).toBe(2);
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId: reviewB.characterId, reason: 'Cut from the scene' });
+      await hostQ.waitFor('character-revoked', 10_000);
+
+      // Exact count, not "a revoke happened somewhere" — the live loop's own
+      // party actually shrank.
+      expect(loop!.partySize).toBe(1);
+
+      // And the revoked character never takes another turn: collect a
+      // handful of turn events (responding to each whisper-prompt so the
+      // round completes and the next one starts) and assert B's id never
+      // shows up, while A's — the survivor — does.
+      const seenCharacterIds = new Set<string>();
+      let turnsCompleted = 0;
+      while (turnsCompleted < 3) {
+        let msg: any;
+        try {
+          msg = await hostQ.waitForAny(['action-proposals', 'whisper-prompt'], 5_000);
+        } catch {
+          break;
+        }
+        seenCharacterIds.add(msg.characterId);
+        if (msg.type === 'whisper-prompt') {
+          sendMsg(hostWs, { type: 'whisper', text: 'Push forward.' });
+          turnsCompleted++;
+        }
+      }
+      expect(seenCharacterIds.has(reviewA.characterId)).toBe(true);
+      expect(seenCharacterIds.has(reviewB.characterId)).toBe(false);
+
+      sendMsg(hostWs, { type: 'end-game' });
+      await hostQ.waitFor('phase-change', 20_000);
+
+      await closeWs(playerAWs);
+      await closeWs(playerBWs);
       await closeWs(hostWs);
     }, 60_000);
   });
