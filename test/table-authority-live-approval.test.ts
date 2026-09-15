@@ -255,5 +255,34 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(playerWs);
       await closeWs(hostWs);
     }, 60_000);
+
+    it('revokes a character whose player is offline: durable state updates even though nobody is connected to receive it', async () => {
+      // This is the case a "self-heals on reconnect" claim would paper over:
+      // rejoin (src/server/index.ts) trusts session.characterId with no
+      // revoked check, and nothing else reconciles a session pointed at a
+      // revoked row. So the durable writes below — not the in-memory seat,
+      // which no longer exists once the socket is closed — are the only
+      // thing standing between this player and reconnecting still holding a
+      // revoked character with an interview stuck on 'live'.
+      const { hostWs, hostQ, playerWs, campaignId, characterId, playerSessionToken } = await createApprovedCharacter();
+
+      const room = await import('../src/server/room.js');
+      const interviews = await import('../src/server/character-interview.js');
+      const db = (await import('../src/server/db.js')).getDb();
+
+      await closeWs(playerWs);
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId, reason: 'Gone before the ruling landed' });
+      const hostSaw = await hostQ.waitFor('character-revoked', 10_000) as any;
+      expect(hostSaw.characterId).toBe(characterId);
+
+      expect(room.countLiveCharacters(db, campaignId)).toBe(0);
+
+      const sessionRow = db.prepare('SELECT character_id FROM campaign_sessions WHERE token = ?').get(playerSessionToken) as any;
+      expect(sessionRow.character_id).toBeNull();
+      expect(interviews.getInterviewBySession(db, campaignId, playerSessionToken)!.status).toBe('open');
+
+      await closeWs(hostWs);
+    }, 60_000);
   });
 });

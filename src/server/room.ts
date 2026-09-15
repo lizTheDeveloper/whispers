@@ -183,6 +183,23 @@ export function clearSessionCharacter(db: Database.Database, sessionToken: strin
 }
 
 /**
+ * Resolves a character back to the durable session that claimed it —
+ * `campaign_sessions.character_id`, written by `setSessionCharacter` and
+ * cleared by `clearSessionCharacter` above — rather than the in-memory
+ * connected-player list. The in-memory list only has an entry for a socket
+ * that is currently open, and even then it can be stale (a seat that
+ * rejoined before its character was approved holds no characterId, or an
+ * old one). The DB row is authoritative regardless of whether anyone is
+ * connected, which is exactly what a revoke needs: the player being offline
+ * at veto time is the case where getting this right matters most.
+ */
+export function getSessionTokenForCharacter(db: Database.Database, campaignId: string, characterId: string): string | null {
+  const row = db.prepare('SELECT token FROM campaign_sessions WHERE campaign_id = ? AND character_id = ?')
+    .get(campaignId, characterId) as { token: string } | undefined;
+  return row?.token ?? null;
+}
+
+/**
  * Atomically advances a campaign out of 'lobby' into 'character-creation',
  * but only if it is still in 'lobby' at the moment of the write. Message
  * handlers on a socket are not serialized, so a stale in-handler read of

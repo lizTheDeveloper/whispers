@@ -12,7 +12,7 @@ import {
   savePendingCharacter, listPendingCharacters, deletePendingCharacter,
   saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
   countLiveCharacters, beginPlayIfReady, getInfluences, setInfluences,
-  revokeCharacter, clearSessionCharacter,
+  revokeCharacter, clearSessionCharacter, getSessionTokenForCharacter,
   type PendingCharacterRow,
 } from './room.js';
 import { makeCharacterLive } from './character-live.js';
@@ -855,21 +855,25 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // The in-memory seat is how the durable session token for this
-      // character is found here — matching the playerInRoom lookups already
-      // used by submit-character/host-approve-character above. If the
-      // player isn't currently connected, revocation still lands (the
-      // character stops counting toward the party either way); only the
-      // session-claim clear and interview reset are skipped for them, and
-      // they self-heal from the durable character_id/interview rows on the
-      // player's next join or submission.
-      const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.characterId === msg.characterId);
-      if (playerInRoom) {
-        clearSessionCharacter(db, playerInRoom.sessionToken);
-        const interview = getInterviewBySession(db, revokeCampaign.id, playerInRoom.sessionToken);
+      // The durable campaign_sessions row is what resolves this character
+      // back to its owning session, not the in-memory rooms list: rejoin
+      // trusts session.characterId with no revoked check and nothing else
+      // reconciles it, so a player who is offline right now must still get
+      // their session claim cleared and interview reopened here, or they
+      // reconnect still holding the revoked character. The in-memory seat
+      // (if one is even connected) is also not reliable for this lookup —
+      // a seat that rejoined before its character was approved can carry a
+      // stale characterId. DB writes first, then refresh whichever
+      // in-memory seat happens to be live, then tell the room.
+      const ownerToken = getSessionTokenForCharacter(db, revokeCampaign.id, msg.characterId);
+      if (ownerToken) {
+        clearSessionCharacter(db, ownerToken);
+        const interview = getInterviewBySession(db, revokeCampaign.id, ownerToken);
         if (interview) setInterviewStatus(db, interview.id, 'open');
-        playerInRoom.characterId = null;
       }
+
+      const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.sessionToken === ownerToken);
+      if (playerInRoom) playerInRoom.characterId = null;
 
       broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
     }
