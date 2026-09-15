@@ -86,6 +86,14 @@ export const FactExtractionSchema = z.object({
 export type FactExtraction = z.infer<typeof FactExtractionSchema>;
 
 export const CharacterValidationSchema = z.object({
+  // Deliberately NOT defaulted (unlike DmSetupReplySchema.done): a missing
+  // verdict must not be silently converted INTO a verdict — true fabricates
+  // an approval nobody gave, false fabricates a rejection nobody issued.
+  // Absence here is survivable (checkWorldReadiness already ran before
+  // validateCharacter is called, so a thrown Zod error just surfaces as an
+  // error and the player resubmits) in a way `done`'s omission was not, so
+  // there is no unambiguous safe default to fall back on. Do not "fix" this
+  // inconsistency with `done` — it is intentional.
   approved: z.boolean(),
   feedback: z.string().default('Character reviewed.'),
   modifications: z.record(z.unknown()).nullable().default(null),

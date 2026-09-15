@@ -124,14 +124,26 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
         throw new Error('LLM returned empty response after stripping thinking tags');
       }
 
-      // Strip roleplay markers that may wrap valid JSON
-      if (schema && text.startsWith('*')) {
-        text = text.replace(/^\*[^*]*\*\s*/g, '').replace(/\s*\*[^*]*\*$/g, '').trim();
+      // Strip roleplay markers that may wrap the response — leading and
+      // trailing checked independently (not gated on one another), and NOT
+      // gated on `schema`: a schema-less prose reply (world introduction,
+      // negotiation dialogue, epilogue, character reflections, summarizeScene's
+      // plain-text fallback) is exactly as susceptible to a stray
+      // "*thinks quietly*" as a JSON one, and unlike JSON parsing it has no
+      // downstream validation to catch it — a leftover marker there is not a
+      // parse failure, it's just wrong text that gets stored and shown
+      // forever (see sendWorldIntroduction: the intro turn is generated once
+      // and never regenerated). This is post-processing only — never reject
+      // the response, only clean it; an empty/unusable result after cleaning
+      // is already handled separately by each caller.
+      if (text.startsWith('*')) {
+        text = text.replace(/^\*[^*]*\*\s*/, '').trim();
       }
-      // Strip markdown code fences
-      if (schema) {
-        text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+      if (text.endsWith('*')) {
+        text = text.replace(/\s*\*[^*]*\*$/, '').trim();
       }
+      // Strip markdown code fences — same reasoning, not gated on `schema`.
+      text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
 
       if (schema && !text) {
         lastBadResponse = '(empty response after stripping roleplay/fence markers)';
