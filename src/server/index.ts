@@ -1102,13 +1102,12 @@ wss.on('connection', (ws) => {
       // close() AND remove their entry from `negotiations`, so a genuinely
       // closed negotiation is indistinguishable here from one that was
       // never opened — both mean "there is nothing live to send this to."
-      // Note this is NOT the AI-participation cap: hitting that cap never
-      // closes or removes the entry (see negotiation.ts's stepBackAtCap),
-      // so a stepped-back negotiation still resolves here and falls through
-      // to isParticipant/handleMessage below same as always. Only a truly
-      // absent/closed negotiation refuses, and it refuses with a message —
-      // a silent drop leaves a host or player typing into a box that eats
-      // everything with no sign anything went wrong.
+      // There is no AI-participation cap (see negotiation.ts): a negotiation
+      // keeps its agents talking for as long as the humans keep it going, so
+      // the only way to reach a dead entry here is a genuine close. Only a
+      // truly absent/closed negotiation refuses, and it refuses with a
+      // message — a silent drop leaves a host or player typing into a box
+      // that eats everything with no sign anything went wrong.
       if (!negotiation || negotiation.isClosed()) {
         send(ws, { type: 'error', message: 'This negotiation is closed — the character has already been decided.' });
         return;

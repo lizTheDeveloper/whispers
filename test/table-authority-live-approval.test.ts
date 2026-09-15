@@ -789,7 +789,7 @@ describe('AI DM approves characters when the host is playing', () => {
   });
 
   describe('a negotiation that can end', () => {
-    it('steps the AI back at the round cap but keeps the humans talking, does not auto-approve, and only closes on the host\'s own decision', async () => {
+    it('keeps the AI agents participating for as long as the humans keep going — well past the old round cap — and only closes on the host\'s own decision', async () => {
       const { ws: hostWs, q: hostQ, joined } = await createGame();
       const { joinCode } = joined;
 
@@ -808,17 +808,16 @@ describe('AI DM approves characters when the host is playing', () => {
       const opening = await hostQ.waitFor('negotiation-message', 15_000) as any;
       expect(opening.sender).toBe('dm-agent');
 
-      const { MAX_NEGOTIATION_ROUNDS } = await import('../src/server/negotiation.js');
-
-      // Drive one round past the cap. Each round in-bounds must produce
-      // exactly one dm-agent turn and one char-agent turn; the round that
-      // crosses the cap must produce neither agent turn — only a step-back
-      // notice — which is the falsifiable core of this test: a handler that
-      // kept calling runAgentTurns regardless of the cap would still pass a
-      // weaker assertion like "a notice arrived," but fails the bounded
-      // charAgentTurns count asserted below.
+      // There is no round cap any more — a negotiation runs as long as its
+      // participants keep it going (see negotiation.ts). Drive 20 full
+      // rounds, five past the OLD 15-round cap this replaces, and prove
+      // every single one still produces a real dm-agent turn AND a real
+      // char-agent turn — not merely "no error was thrown." A stale cap
+      // reintroduced anywhere in this path would make some round in here
+      // time out waiting for one of those two turns.
+      const ROUNDS_PAST_OLD_CAP = 20;
       let charAgentTurns = 0;
-      for (let round = 1; round <= MAX_NEGOTIATION_ROUNDS + 1; round++) {
+      for (let round = 1; round <= ROUNDS_PAST_OLD_CAP; round++) {
         sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: `Host says round ${round}` });
         const hostEcho = await hostQ.waitFor('negotiation-message', 10_000) as any;
         expect(hostEcho.sender).toBe('host');
@@ -827,69 +826,20 @@ describe('AI DM approves characters when the host is playing', () => {
         const playerEcho = await hostQ.waitFor('negotiation-message', 10_000) as any;
         expect(playerEcho.sender).toBe('player');
 
-        if (round <= MAX_NEGOTIATION_ROUNDS) {
-          const dmTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
-          expect(dmTurn.sender).toBe('dm-agent');
-          const charTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
-          expect(charTurn.sender).toBe('char-agent');
-          charAgentTurns++;
-        } else {
-          // The cap round produces a step-back notice from the DM agent —
-          // its last words for this negotiation — and no char-agent turn
-          // at all.
-          const notice = await hostQ.waitFor('negotiation-message', 15_000) as any;
-          expect(notice.sender).toBe('dm-agent');
-          expect(notice.text).toMatch(/step|limit/i);
-          await expect(hostQ.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
-
-          // The structured, client-actionable signal for "the AI has
-          // stepped back" — distinct from negotiation-closed, which stays
-          // reserved for a genuine close (approve/reject/revoke/teardown).
-          // Sent to both sides.
-          const hostSteppedBack = await hostQ.waitFor('negotiation-ai-stepped-back', 5_000) as any;
-          expect(hostSteppedBack.characterId).toBe(review.characterId);
-          const playerSteppedBack = await pq.waitFor('negotiation-ai-stepped-back', 5_000) as any;
-          expect(playerSteppedBack.characterId).toBe(review.characterId);
-        }
+        const dmTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
+        expect(dmTurn.sender).toBe('dm-agent');
+        const charTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
+        expect(charTurn.sender).toBe('char-agent');
+        charAgentTurns++;
       }
-      // Bounded, not merely "a notice arrived": exactly MAX_NEGOTIATION_ROUNDS
-      // char-agent turns ever ran, proving the agents actually stopped at
-      // the cap rather than a closure message just being squeezed in
-      // alongside them.
-      expect(charAgentTurns).toBe(MAX_NEGOTIATION_ROUNDS);
-      // negotiation-closed is STATE 2's signal and must not have fired —
-      // hitting the round cap steps the AI back, it does not close anything.
+      expect(charAgentTurns).toBe(ROUNDS_PAST_OLD_CAP);
+
+      // negotiation-closed is reserved for a genuine close
+      // (approve/reject/revoke/teardown) — running long does not fire it.
       await expect(hostQ.waitFor('negotiation-closed', 2_000)).rejects.toThrow(/Timeout/);
 
-      // The AI stopped, but the humans did not: a message from either side
-      // still goes through and still reaches the OTHER party, at zero LLM
-      // cost. Clear each queue's backlog first so these assertions can't be
-      // satisfied by a stale message left over from the loop above.
-      hostQ.clear();
-      pq.clear();
-
-      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'Still with us?' });
-      // sendToBoth means the sender's own socket also gets an echo — drain
-      // it on hostQ too, or it sits ahead of the player's reply consumed
-      // below and makes that assertion look at the wrong message.
-      const hostSeesOwnEcho = await hostQ.waitFor('negotiation-message', 10_000) as any;
-      expect(hostSeesOwnEcho.sender).toBe('host');
-      const playerSeesHost = await pq.waitFor('negotiation-message', 10_000) as any;
-      expect(playerSeesHost.sender).toBe('host');
-      expect(playerSeesHost.text).toBe('Still with us?');
-
-      sendMsg(playerWs, { type: 'negotiation-message', characterId: review.characterId, text: 'Yes, still here.' });
-      const playerSeesOwnEcho = await pq.waitFor('negotiation-message', 10_000) as any;
-      expect(playerSeesOwnEcho.sender).toBe('player');
-      const hostSeesPlayer = await hostQ.waitFor('negotiation-message', 10_000) as any;
-      expect(hostSeesPlayer.sender).toBe('player');
-      expect(hostSeesPlayer.text).toBe('Yes, still here.');
-
-      // That exchange did not wake the AI back up: no further agent turn,
-      // no further step-back notice.
-      await expect(hostQ.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
-
-      // Do NOT auto-approve at the cap — the decision stays with the host.
+      // Absolutely forbidden regardless of how long this has run: the
+      // decision stays with the host, never with a timeout or round count.
       await expect(pq.waitFor('character-submitted', 2_000)).rejects.toThrow(/Timeout/);
       await expect(hostQ.waitFor('character-submitted', 2_000)).rejects.toThrow(/Timeout/);
 
@@ -898,8 +848,17 @@ describe('AI DM approves characters when the host is playing', () => {
       await hostQ.waitFor('character-submitted', 10_000);
       await pq.waitFor('character-validated', 10_000);
 
+      // Neither queue was drained during the 20-round loop above (only the
+      // specific messages awaited there were consumed), so both still carry
+      // a backlog — clear it before asserting on silence below, or a stale
+      // message left over from the loop satisfies the assertion for the
+      // wrong reason.
+      hostQ.clear();
+      pq.clear();
+
       // Past that decision, a further human message is refused — WITH a
-      // message, not silently — and never reaches the other party.
+      // message, not silently — and never reaches the other party. This is
+      // the ONE thing that is allowed to stop the conversation.
       sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'one more thing' });
       const refusal = await hostQ.waitFor('error', 10_000) as any;
       expect(refusal.message).toMatch(/closed/i);
@@ -908,6 +867,85 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(playerWs);
       await closeWs(hostWs);
     }, 90_000);
+
+    it('compacts negotiation history once it grows past threshold, bounding the DM-agent prompt instead of letting it grow without limit', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      await hostQ.waitFor('negotiation-message', 15_000); // the opening turn
+
+      // harness.receivedBodies accumulates for the whole file's shared
+      // harness (one beforeAll for this entire describe), not per test — so
+      // a prior test's negotiation rounds are still sitting in it. Snapshot
+      // where this test's own bodies start before sending anything.
+      const bodiesBefore = harness.receivedBodies.length;
+
+      // Long enough to cross negotiation.ts's history-compaction threshold
+      // (NEGOTIATION_COMPACTION_THRESHOLD/KEEP_RECENT) several times over,
+      // without hardcoding those exact numbers here: this only needs "long
+      // enough that an uncompacted, full-history prompt would keep growing
+      // round over round," which any sane per-negotiation threshold well
+      // under 30 rounds satisfies. Also comfortably past the old 15-round
+      // cap this task removes, so this doubles as proof the agents kept
+      // answering that far in too.
+      const ROUNDS = 30;
+      for (let round = 1; round <= ROUNDS; round++) {
+        sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: `Host point ${round}` });
+        await hostQ.waitFor('negotiation-message', 10_000); // host echo
+        sendMsg(playerWs, { type: 'negotiation-message', characterId: review.characterId, text: `Player point ${round}` });
+        await hostQ.waitFor('negotiation-message', 10_000); // player echo
+        const dmTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
+        expect(dmTurn.sender).toBe('dm-agent');
+        const charTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
+        expect(charTurn.sender).toBe('char-agent');
+      }
+
+      // Every DM-agent round prompt from THIS test, in the order sent —
+      // excludes the opening turn (different user prompt — see
+      // negotiation.ts's open() vs runAgentTurns()) and excludes any other
+      // test's bodies via the bodiesBefore snapshot above.
+      const roundBodies = harness.receivedBodies.slice(bodiesBefore).filter(b =>
+        b.includes('facilitating character creation negotiation') && b.includes('The negotiation continues')
+      );
+      expect(roundBodies.length).toBe(ROUNDS);
+      const lengths = roundBodies.map(b => b.length);
+
+      // The falsifiable core: runAgentTurns rebuilds its prompt from the
+      // ENTIRE history every round (src/server/negotiation.ts), so without
+      // compaction that length only ever grows. Compaction must make it
+      // shrink at least once across this many rounds.
+      const shrankAtLeastOnce = lengths.some((len, i) => i > 0 && len < lengths[i - 1]);
+      expect(shrankAtLeastOnce).toBe(true);
+
+      // And it must actually BOUND the prompt, not just dip once and keep
+      // climbing after: the worst case over the back half of the run must
+      // stay close to the worst case over the front half, not run away with
+      // 30 rounds' worth of accumulated, uncompacted text.
+      const mid = Math.floor(ROUNDS / 2);
+      const firstHalfMax = Math.max(...lengths.slice(0, mid));
+      const secondHalfMax = Math.max(...lengths.slice(mid));
+      expect(secondHalfMax).toBeLessThan(firstHalfMax * 1.5);
+
+      // The compaction summary call itself went out, with its own prompt —
+      // proof compaction really ran an LLM summarization step, not just an
+      // in-memory truncation.
+      const compactionCalls = harness.receivedBodies.slice(bodiesBefore).filter(b => b.includes('summarizing a character-negotiation discussion'));
+      expect(compactionCalls.length).toBeGreaterThan(0);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 120_000);
 
     it('refuses an oversized negotiation-message with a message, instead of broadcasting it to the other side', async () => {
       // text is unbounded on the wire but reaches the other participant's

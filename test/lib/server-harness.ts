@@ -111,6 +111,12 @@ export const LLM_STUB_REPLIES = {
     'This sheet looks solid to me — good hooks in the trouble, and the skills are balanced for the table. My one note is whether the stunt is a touch strong for this power level, but I would like to hear from both of you first.',
   negotiationCharReply:
     'That stunt is core to who I am, so I would like to keep it — but I am glad to trim a skill point if that is what gets us to a yes.',
+  // negotiation.ts's history-compaction summary (summarizeHistory). Its own
+  // dispatch substring, 'summarizing a character-negotiation discussion', is
+  // unique against every other system prompt this server sends — see the
+  // comment on that branch below and on summarizeHistory itself.
+  negotiationCompactionSummary:
+    'Recap: the host raised a balance question about the stunt, the player and character pushed back defending it as core to the concept, and no final call has been made yet.',
 };
 
 export interface Harness {
@@ -237,6 +243,14 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // into negotiation dialogue instead of action-agent output.
           // 'character creation discussion' is unique to this prompt only.
           text = LLM_STUB_REPLIES.negotiationCharReply;
+        } else if (body.includes('summarizing a character-negotiation discussion')) {
+          // negotiation.ts's maybeCompactHistory -> summarizeHistory branch,
+          // added alongside this task's removal of the negotiation round
+          // cap. Checked before the substring dispatch below could matter —
+          // this is a system prompt negotiation.ts writes nowhere near the
+          // DM/character-agent prompts above, so grepped and confirmed
+          // unique across every system prompt in src/server.
+          text = LLM_STUB_REPLIES.negotiationCompactionSummary;
         } else if (body.includes('helping set up a new game')) {
           const hostSpoke = body.includes('"role":"user"');
           // A marker in the host's own message text (same pattern as

@@ -40,8 +40,7 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   // Set only on a GENUINE close (negotiation-closed: approved, rejected,
   // revoked, or the room torn down) so doSend can refuse locally —
   // input.disabled alone doesn't stop a queued keydown handler from firing on
-  // a field a click already raced past. The round cap does NOT set this: it
-  // sends negotiation-ai-stepped-back and leaves the humans talking.
+  // a field a click already raced past.
   let closed = false;
 
   if (isHost) {
@@ -102,23 +101,6 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     if (msg.type !== 'negotiation-message') return;
     if (msg.characterId !== characterId) return;
     addMessage(msg.senderName, msg.sender, msg.text);
-  });
-
-  // negotiation-ai-stepped-back and negotiation-closed are two distinct
-  // states, not one overloaded signal (see negotiation.ts's
-  // stepBackAtCap/close). Stepped-back: the AI hit its round cap and will
-  // never speak again in this negotiation, but the host and player keep
-  // talking — the input stays live. Closed: the negotiation is genuinely
-  // over (approve/reject/revoke/teardown) — the input disables, as it
-  // always has.
-  ws.on('negotiation-ai-stepped-back', (msg) => {
-    if (msg.type !== 'negotiation-ai-stepped-back') return;
-    if (msg.characterId !== characterId) return;
-    const notice = document.createElement('div');
-    notice.className = 'negotiation-bubble system';
-    notice.textContent = 'The AI has stepped back from this discussion — you can keep talking directly. The host approves or rejects the character when ready.';
-    log.appendChild(notice);
-    log.scrollTop = log.scrollHeight;
   });
 
   ws.on('negotiation-closed', (msg) => {

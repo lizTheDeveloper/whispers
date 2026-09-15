@@ -4,45 +4,57 @@ import type { CharacterDefinition } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
 interface NegotiationEntry {
-  sender: 'dm-agent' | 'host' | 'player' | 'char-agent';
+  // 'summary' is a compaction artifact (see maybeCompactHistory below), not
+  // a real speaker — it never comes from addAndBroadcast/sendToBoth, only
+  // from history compaction replacing older entries in place.
+  sender: 'dm-agent' | 'host' | 'player' | 'char-agent' | 'summary';
   senderName: string;
   text: string;
 }
 
 /**
- * Hard cap on back-and-forth rounds (one DM turn + one character turn, run
- * together once both the host and the player have spoken) before the AI
- * agents step back from the negotiation. Each round costs exactly two LLM
- * calls — one DM-agent turn, one character-agent turn — so this cap bounds
- * AI spend, not the conversation itself: once it's hit, runAgentTurns()
- * never runs again for this negotiation, but the host and player keep
- * talking to each other for free (see stepBackAtCap()). That decoupling is
- * what makes it safe to set this generously.
+ * There is no round cap: a negotiation runs as long as its participants want
+ * it to. A human has to type to advance every round (see handleMessage's
+ * hostSpoke/playerSpoke gate below), which already bounds AI spend the same
+ * way the main game loop's turn-by-turn pacing does — nothing here needs a
+ * second, cruder limiter on top of that.
  *
- * This project's existing precedent for "how long is too long for an
- * unbounded LLM back-and-forth" is the 35-message scene-transcript
- * compaction threshold (see CLAUDE.md). 15 rounds is 30 agent messages
- * (DM + character, twice per round) — just under that threshold, so a
- * negotiation that runs its full course still fits in one uncompacted
- * transcript, while giving a real disagreement about a character three
- * times the room the old 5-round/10-message cap did before human
- * conversation could no longer be blocked by it anyway.
+ * What DOES need bounding is the prompt: runAgentTurns rebuilds it from the
+ * entire `history` array every round, so left alone that prompt would grow
+ * without bound over a long negotiation. This project already solves exactly
+ * that problem for the main game transcript (see game-loop.ts's
+ * BASE_COMPACTION_THRESHOLD/BASE_COMPACTION_KEEP_RECENT and
+ * maybeCompactTranscript) — maybeCompactHistory below is the same pattern
+ * applied here.
+ *
+ * The numbers are scaled down from game-loop's 35/12, because a negotiation
+ * is a tighter, two-party conversation, not a whole party's play session:
+ * every negotiation round always produces exactly 4 entries (host, player,
+ * dm-agent, char-agent — see handleMessage/runAgentTurns), where a game
+ * turn's entry count varies with party size and scene pacing. Game-loop's
+ * base case is effectively a party of one, i.e. every ~3 of its messages is
+ * one actor's turn; a negotiation round is denser at 4 entries for a single
+ * back-and-forth. Threshold and keep-recent are each held to that same
+ * ~1:3 ratio as game-loop's 12/35, rounded to whole rounds (4 entries) for a
+ * round number that is easy to reason about in terms of "how many rounds of
+ * back-and-forth does this keep verbatim": 20 entries (5 rounds) before
+ * compacting, keeping the most recent 8 (2 rounds). That is comfortably
+ * inside the old 15-round/60-entry cap this replaces, so a negotiation that
+ * used to run its full course would already have compacted twice over by
+ * the time it hit the old limit — and now it just keeps going instead of
+ * stopping. (Compaction is checked after every append to `history`, not
+ * just at round boundaries — see maybeCompactHistory — so it can in
+ * practice fire mid-round; the round-sized numbers are chosen for a clean
+ * justification, not a guaranteed alignment.)
  */
-export const MAX_NEGOTIATION_ROUNDS = 15;
+const NEGOTIATION_COMPACTION_THRESHOLD = 20;
+const NEGOTIATION_COMPACTION_KEEP_RECENT = 8;
 
 export class NegotiationRoom {
   private history: NegotiationEntry[] = [];
   private hostSpoke = false;
   private playerSpoke = false;
   private closed = false;
-  /**
-   * Set once the round cap is hit. This is NOT closed — the host and player
-   * keep talking, and handleMessage keeps appending/broadcasting their
-   * messages exactly as before. It only turns off runAgentTurns(): no more
-   * DM-agent or character-agent LLM calls happen for this negotiation, ever.
-   */
-  private steppedBack = false;
-  private round = 0;
 
   /**
    * Sockets are resolved on every send rather than captured up front: either
@@ -85,6 +97,8 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
     if (this.closed) return;
 
     this.addAndBroadcast(sender, senderName, text);
+    await this.maybeCompactHistory();
+    if (this.closed) return;
 
     if (sender === 'host') this.hostSpoke = true;
     if (sender === 'player') this.playerSpoke = true;
@@ -92,22 +106,11 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
     if (this.hostSpoke && this.playerSpoke) {
       this.hostSpoke = false;
       this.playerSpoke = false;
-      // Once stepped back, the AI never speaks again for this negotiation —
-      // the round counter and runAgentTurns() are both permanently retired,
-      // but the host/player exchange above already happened and keeps
-      // happening on every future call.
-      if (this.steppedBack) return;
-      this.round++;
-      if (this.round > MAX_NEGOTIATION_ROUNDS) {
-        this.stepBackAtCap();
-        return;
-      }
       await this.runAgentTurns();
     }
   }
 
   isClosed(): boolean { return this.closed; }
-  isSteppedBack(): boolean { return this.steppedBack; }
 
   isParticipant(ws: WebSocket): 'host' | 'player' | null {
     if (ws === this.resolveHostWs()) return 'host';
@@ -136,33 +139,6 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
   }
 
   close(): void { this.closed = true; }
-
-  /**
-   * Reaching the round cap retires the AI, not the DISCUSSION and not the
-   * DECISION. It never calls makeCharacterLive or anything like it, and it
-   * never calls close() — the negotiation is NOT closed, `isClosed()` still
-   * reads false, and negotiation-message keeps flowing between the host and
-   * player exactly as before. Auto-approving or auto-closing here would mean
-   * a timeout — not the host — decides the outcome of a stuck negotiation,
-   * which is exactly the authority this feature exists to keep with the
-   * host. The Approve/Reject buttons on the host's panel remain live after
-   * this, same as always: only the AI stepped back.
-   */
-  private stepBackAtCap(): void {
-    if (this.steppedBack) return;
-    this.steppedBack = true;
-    this.addAndBroadcast(
-      'dm-agent',
-      'DM',
-      `We've reached the ${MAX_NEGOTIATION_ROUNDS}-round limit for AI participation in this discussion. The AI DM and ${this.definition.name} are stepping back now, but the two of you can keep talking — the host approves or rejects the character whenever ready.`,
-    );
-    // Structured, alongside the prose line above: negotiation-message is free
-    // text a client can only ever log, not act on. A client needs something
-    // it can switch on to tell "AI stepped back" apart from "negotiation
-    // closed" — those are different UI states (input stays live vs. input
-    // disables) and must not share one signal.
-    this.sendToBoth({ type: 'negotiation-ai-stepped-back', characterId: this.characterId });
-  }
 
   /**
    * `close()` can land mid-call from host-approve-character, host-reject-
@@ -198,6 +174,8 @@ Respond to the latest messages. If there are disagreements, propose a compromise
     const charReply = await this.callCharAgent(transcript);
     if (this.closed) return;
     this.addAndBroadcast('char-agent', this.definition.name, charReply);
+
+    await this.maybeCompactHistory();
   }
 
   private async callDmAgent(userPrompt: string): Promise<string> {
@@ -223,6 +201,71 @@ Your backstory: ${d.backstory}` },
         { role: 'user', content: `Discussion so far:\n${transcript}\n\nRespond to the latest points. Defend what matters to your character, concede what doesn't.` },
       ],
       temperature: 0.9,
+    });
+  }
+
+  /**
+   * Mirrors game-loop.ts's maybeCompactTranscript: once `history` crosses
+   * NEGOTIATION_COMPACTION_THRESHOLD entries, summarise everything except
+   * the most recent NEGOTIATION_COMPACTION_KEEP_RECENT into one entry and
+   * splice it in ahead of them. This keeps runAgentTurns' prompt bounded no
+   * matter how long the negotiation runs, without ever needing to stop the
+   * agents from participating.
+   *
+   * Called after every append to `history` — both from handleMessage's raw
+   * host/player lines and from runAgentTurns' own agent replies — rather
+   * than once per round like game-loop's per-turn check. Unlike a game turn,
+   * which always produces a fixed few transcript entries before the next
+   * compaction check, one side of a negotiation can push several host-only
+   * or player-only messages before the other replies and advances the round
+   * (see handleMessage's hostSpoke/playerSpoke gate). Checking after every
+   * append is the only way to guarantee the bound regardless of that shape.
+   */
+  private async maybeCompactHistory(): Promise<void> {
+    if (this.history.length < NEGOTIATION_COMPACTION_THRESHOLD) return;
+
+    console.log(`[negotiation] History compaction triggered at ${this.history.length} entries (threshold: ${NEGOTIATION_COMPACTION_THRESHOLD})`);
+    const extractCount = this.history.length - NEGOTIATION_COMPACTION_KEEP_RECENT;
+    const toSummarize = this.history.slice(0, extractCount);
+    const toKeep = this.history.slice(extractCount);
+
+    let summary: string;
+    try {
+      summary = await this.summarizeHistory(toSummarize);
+    } catch (e) {
+      console.error('[negotiation] Compaction summary failed, falling back to the last pre-compaction line:', e);
+      summary = toSummarize.at(-1)?.text ?? 'The discussion continues.';
+    }
+    // Same race as runAgentTurns/open(): close() (approve/reject/teardown)
+    // runs independently of this await. A close landing here must not
+    // resurrect `history` for a negotiation that's already been decided —
+    // just drop the summary instead of mutating history post-close.
+    if (this.closed) return;
+
+    this.history = [
+      { sender: 'summary', senderName: 'Recap', text: `[Negotiation recap] ${summary}` },
+      ...toKeep,
+    ];
+    console.log(`[negotiation] Compaction complete: ${extractCount} entries → 1 summary + ${toKeep.length} kept = ${this.history.length} total`);
+  }
+
+  /**
+   * Dispatch substring for this system prompt — "summarizing a
+   * character-negotiation discussion" — is unique across every prompt this
+   * server sends: checked against this file's own DM/character-agent
+   * prompts ("facilitating character creation negotiation" / "character
+   * creation discussion"), dm.ts's summarizeScene ("Summarize TTRPG
+   * scenes"), and every other system prompt under src/server/agents/. See
+   * test/lib/server-harness.ts for the dispatcher branch keyed on it.
+   */
+  private async summarizeHistory(entries: NegotiationEntry[]): Promise<string> {
+    const transcript = entries.map(e => `[${e.senderName}] ${e.text}`).join('\n');
+    return callLlm({
+      messages: [
+        { role: 'system', content: 'You are summarizing a character-negotiation discussion so older messages can be compacted out of the prompt. Preserve every substantive position taken by the host, the player, the DM, and the character — especially any agreements reached or disagreements still unresolved. Output ONLY the recap, 2-4 sentences, no roleplay, no JSON.' },
+        { role: 'user', content: `Discussion so far:\n${transcript}\n\nSummarize it.` },
+      ],
+      maxTokens: 512,
     });
   }
 
