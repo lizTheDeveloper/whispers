@@ -94,7 +94,14 @@ export type CharacterValidation = z.infer<typeof CharacterValidationSchema>;
 
 export const DmSetupReplySchema = z.object({
   reply: z.string().min(1),
-  done: z.boolean(),
+  // Models routinely omit `done` entirely rather than sending `done: false` —
+  // an omission the prompt never asked for, so re-prompting for it doesn't
+  // help (see llm-client's retry-on-Zod-rejection path, which just burns
+  // calls on the same omission). Absence is unambiguous here: "not finished"
+  // is the safe reading, the setup loop already handles done: false by
+  // simply continuing the conversation, and the Task 9 persistence gate
+  // (`reply.done && Boolean(reply.dmInstructions)`) stays correct unchanged.
+  done: z.boolean().default(false),
   influences: z.array(z.string()).nullable().default(null),
   dmInstructions: z.union([z.string(), z.record(z.unknown()).transform(v => JSON.stringify(v))]).nullable().default(null),
   dmCustomPrompt: z.union([z.string(), z.record(z.unknown()).transform(v => JSON.stringify(v))]).nullable().default(null),

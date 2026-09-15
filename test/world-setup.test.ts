@@ -328,4 +328,27 @@ describe('World setup gates the table', () => {
 
     await closeWs(ws);
   }, 30_000);
+
+  // A followup finding: DmSetupReplySchema required `done`, and the live
+  // model routinely omits the field entirely (not `done: false` — absent).
+  // Every attempt then failed Zod validation identically (retrying an
+  // omission the prompt never asked for doesn't produce it), burning 4 LLM
+  // calls and surfacing the generic "Sorry, I lost my train of thought"
+  // apology to the host. `done` now defaults to false on absence, so this
+  // reply must be treated exactly like an ordinary done: false turn — no
+  // error surfaced, chat continues normally.
+  it('treats a reply with done omitted entirely as done: false, not a failure', async () => {
+    const { ws, q } = await createGame();
+    sendMsg(ws, { type: 'dm-chat', text: 'A moody game please. MISSING_DONE_TRIGGER' });
+
+    const reply = await q.waitForAny(['dm-chat-reply', 'error'], 15_000) as any;
+    expect(reply.type).toBe('dm-chat-reply');
+    expect(reply.done).toBe(false);
+    expect(reply.text).toEqual(LLM_STUB_REPLIES.setupOpenNoDoneField.reply);
+    // The lost-train-of-thought apology is the tell for the old failure path —
+    // must not appear for a reply that parsed successfully.
+    expect(reply.text).not.toMatch(/lost my train of thought/i);
+
+    await closeWs(ws);
+  }, 30_000);
 });

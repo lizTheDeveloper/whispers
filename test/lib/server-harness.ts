@@ -37,6 +37,17 @@ export const LLM_STUB_REPLIES = {
     dmInstructions: null,
     dmCustomPrompt: null,
   },
+  // Reproduces the live bug behind "[llm-client] JSON parsed but Zod
+  // rejected: done: Required" — the model omits `done` from the JSON
+  // entirely rather than sending `done: false`. `done` is intentionally
+  // absent from this object (not set to undefined) so JSON.stringify below
+  // actually drops the key, matching the real wire shape.
+  setupOpenNoDoneField: {
+    reply: 'Tell me more about the mood you want for this world.',
+    influences: [],
+    dmInstructions: null,
+    dmCustomPrompt: null,
+  },
   worldSeed: {
     premise: 'A lighthouse keeps something out, not in.',
     locations: [
@@ -235,6 +246,8 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // setup test relies on.
           if (hostSpoke && body.includes('NO_INSTRUCTIONS_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.setupDoneNoInstructions);
+          } else if (body.includes('MISSING_DONE_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.setupOpenNoDoneField);
           } else {
             text = JSON.stringify(hostSpoke ? LLM_STUB_REPLIES.setupDone : LLM_STUB_REPLIES.setupOpen);
           }
