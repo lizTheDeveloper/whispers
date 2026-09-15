@@ -868,4 +868,182 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(hostWs);
     }, 60_000);
   });
+
+  // Task 7, Step 4: dnd5e is selectable but data/systems/dnd5e does not
+  // exist, so every rules lookup for it returns the sentinel
+  // '(No rules found for this query)' — before this fix that sentinel got
+  // interpolated into prompts as if it were the rulebook, with nothing
+  // telling the host. The harness's DATA_DIR is a bare tmpdir with no
+  // systems/ subdirectory at all (see server-harness.ts), so bootstrapRules
+  // (src/server/index.ts) never finds fate-core/srd.txt to ingest either —
+  // rule_chunks is empty for EVERY systemId in this harness, 'fate-core'
+  // included. So the control test below seeds a row for a made-up systemId
+  // directly, rather than relying on 'fate-core' actually having one.
+  describe('a system with no ingested rulebook is announced, not silently degraded', () => {
+    it("tells the host plainly at creation, instead of a normal LLM-generated greeting", async () => {
+      const ws = await connectWs(port);
+      const q = new MessageQueue(ws);
+      sendMsg(ws, { type: 'create', name: 'No Rulebook Test', dmPreset: 'chronicler', scenarioId: null, systemId: 'dnd5e', houseRules: null });
+      await q.waitFor('room-joined', 10_000);
+
+      const greeting = await q.waitFor('dm-chat-reply', 10_000) as any;
+      expect(greeting.text).toMatch(/rulebook/i);
+      expect(greeting.text).toMatch(/upload|sidebar/i);
+      // Still a normal, non-terminal setup message — the option was not
+      // taken away, and setup can still proceed.
+      expect(greeting.done).toBe(false);
+
+      await closeWs(ws);
+    }, 20_000);
+
+    it('is unaffected for a system that DOES have an ingested rulebook — the normal LLM greeting still runs, not the notice', async () => {
+      // Without this, a broken guard that always fires (e.g. one that
+      // checks systemId === 'dnd5e' as a string, or one whose COUNT query is
+      // wrong and always reads 0 regardless of systemId) would pass the test
+      // above for the wrong reason.
+      const { getDb } = await import('../src/server/db.js');
+      const db = getDb();
+      db.prepare('INSERT INTO rule_chunks (system_id, source_book, section, content) VALUES (?, ?, ?, ?)')
+        .run('rulebook-present-test-system', 'Test Rulebook', 'Intro', 'Some rules text.');
+
+      const ws = await connectWs(port);
+      const q = new MessageQueue(ws);
+      sendMsg(ws, { type: 'create', name: 'Rulebook Present Test', dmPreset: 'chronicler', scenarioId: null, systemId: 'rulebook-present-test-system', houseRules: null });
+      await q.waitFor('room-joined', 10_000);
+
+      const greeting = await q.waitFor('dm-chat-reply', 10_000) as any;
+      // The stub's ordinary setupOpen fixture — see LLM_STUB_REPLIES in
+      // server-harness.ts — not the no-rulebook notice.
+      expect(greeting.text).toBe('What kind of game are we running?');
+
+      await closeWs(ws);
+    }, 20_000);
+  });
+
+  // Task 7, Step 1 (server half) + Step 3's empty-introduction-guard test.
+  // sendWorldIntroduction persists whatever introduceWorld returns as turn 0
+  // of the interview PERMANENTLY (it is never regenerated once `stored`
+  // exists — see the comment on that function in src/server/index.ts). An
+  // LLM outage/hiccup that returns '' or whitespace must not get persisted
+  // as a blank "first sight of the world" that then rides into every later
+  // interviewForCharacter call forever. This carry-forward guard already
+  // existed; this is its first test.
+  describe('sendWorldIntroduction discards an empty introduction instead of persisting it', () => {
+    it('sends nothing and stores nothing when the LLM returns whitespace-only text', async () => {
+      const ws = await connectWs(port);
+      const q = new MessageQueue(ws);
+      // EMPTY_INTRO_TRIGGER as the campaign's dmPreset selects the stub's
+      // whitespace-only introduceWorld reply — see server-harness.ts.
+      sendMsg(ws, { type: 'create', name: 'Empty Intro Test', dmPreset: 'EMPTY_INTRO_TRIGGER', scenarioId: null, systemId: 'fate-core', houseRules: null });
+      const joined = await q.waitFor('room-joined', 10_000) as any;
+      const { joinCode, campaignId } = joined;
+
+      await finishWorldSetup(ws, q); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      const playerJoined = await pq.waitFor('room-joined', 10_000) as any;
+      expect(playerJoined.phase).toBe('character-creation');
+
+      // Nothing is sent to the joining player.
+      await expect(pq.waitFor('world-introduction', 3_000)).rejects.toThrow(/Timeout/);
+
+      // And nothing is persisted — the interview's transcript must still be
+      // empty, so a real attempt can run next time instead of replaying a
+      // permanently blank introduction forever.
+      const { getDb } = await import('../src/server/db.js');
+      const { getInterviewBySession } = await import('../src/server/character-interview.js');
+      const db = getDb();
+      const interview = getInterviewBySession(db, campaignId, playerJoined.sessionToken);
+      expect(interview?.transcript ?? []).toHaveLength(0);
+
+      await closeWs(playerWs);
+      await closeWs(ws);
+    }, 60_000);
+  });
+
+  // Task 7, Step 2 + Step 3's readiness-fallback-branch test. The char-chat
+  // handler's displayed readiness must never contradict a ready sheet
+  // already stored on the interview — see the comment above this branch in
+  // src/server/index.ts.
+  describe('char-chat readiness display never contradicts a ready stored sheet', () => {
+    // Drives an interview to a stored, ready definition (the harness's stub
+    // turns "done" on the second char-chat turn — see server-harness.ts),
+    // then drains the character-preview that produces so a later assertion
+    // observes only the THIRD turn's messages.
+    async function readyInterview() {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      await finishWorldSetup(hostWs, hostQ);
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      await pq.waitFor('world-introduction', 10_000);
+
+      sendMsg(playerWs, { type: 'char-chat', text: 'I want to play a scavenger with a grudge against the company.' });
+      await pq.waitFor('char-chat-reply', 15_000);
+      await pq.waitFor('character-readiness', 10_000);
+
+      sendMsg(playerWs, { type: 'char-chat', text: 'She lost her sister to the dust and never forgave the company for it.' });
+      const reply2 = await pq.waitFor('char-chat-reply', 15_000) as any;
+      const readyPreview = await pq.waitFor('character-preview', 10_000) as any;
+      expect(readyPreview.readiness.ready).toBe(true);
+      expect(reply2.definition).not.toBeNull();
+
+      return { hostWs, playerWs, pq, readyDefinition: readyPreview.definition };
+    }
+
+    it('falls back to the stored ready definition, not a contradicting checklist, when a later turn proposes nothing new', async () => {
+      const { hostWs, playerWs, pq, readyDefinition } = await readyInterview();
+
+      // NULL_DEFINITION_TRIGGER forces the model's reply on this turn back
+      // to a plain clarifying-question shape (definition: null), the same
+      // as it gives on turn one — proving the carry-forward fallback that
+      // re-reads the STORED definition when nothing new was proposed.
+      sendMsg(playerWs, { type: 'char-chat', text: 'NULL_DEFINITION_TRIGGER can she be called Ash?' });
+      const reply3 = await pq.waitFor('char-chat-reply', 15_000) as any;
+      expect(reply3.definition).toBeNull();
+
+      const preview = await pq.waitFor('character-preview', 10_000) as any;
+      expect(preview.readiness.ready).toBe(true);
+      expect(preview.definition.name).toBe(readyDefinition.name);
+
+      // The screen must not ALSO be told the sheet is unfinished.
+      await expect(pq.waitFor('character-readiness', 300)).rejects.toThrow();
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('falls back to the stored ready definition, not a contradicting checklist, when a later turn proposes a thin non-null one', async () => {
+      // This is Task 7 Step 2's own dead end: THIN_SHEET_TRIGGER makes the
+      // model hand back a definition object with only `name` filled in —
+      // non-null, so the old code's `reply.definition ?? interview.definition`
+      // fallback never engaged, and the player's already-finished, already-
+      // stored character was told it was missing every field, with neither
+      // the preview nor the confirm affordance shown. Reusing
+      // THIN_SHEET_TRIGGER here (rather than a new marker) is deliberate —
+      // it is already proven unique to this same branch in
+      // character-interview.test.ts.
+      const { hostWs, playerWs, pq, readyDefinition } = await readyInterview();
+
+      sendMsg(playerWs, { type: 'char-chat', text: 'THIN_SHEET_TRIGGER can she be called Ash?' });
+      const reply3 = await pq.waitFor('char-chat-reply', 15_000) as any;
+      expect(reply3.definition).toBeNull();
+
+      const preview = await pq.waitFor('character-preview', 10_000) as any;
+      expect(preview.readiness.ready).toBe(true);
+      expect(preview.definition.name).toBe(readyDefinition.name);
+
+      // Before the Step 2 fix, this turn produced a 'character-readiness'
+      // message claiming every field was missing instead.
+      await expect(pq.waitFor('character-readiness', 300)).rejects.toThrow();
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+  });
 });

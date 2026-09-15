@@ -58,7 +58,7 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
   root.innerHTML = `
     <div class="character-creator">
       <h2>Create Your Character</h2>
-      <p>Join code: <strong>${joinCode}</strong></p>
+      <p>Join code: <strong id="creator-join-code"></strong></p>
 
       <div id="world-intro" class="world-introduction hidden">
         <h3>The World</h3>
@@ -158,6 +158,12 @@ Quick Fingers: +2 to Stealth when picking locks
       <div id="dm-feedback" class="feedback hidden"></div>
     </div>
   `;
+
+  // joinCode reaches here via the WebSocket protocol (room-joined/
+  // phase-change), not a hardcoded server constant — set with textContent
+  // rather than interpolated into the innerHTML template above, so nothing
+  // about its safety depends on the server's current join-code charset.
+  (root.querySelector('#creator-join-code') as HTMLElement).textContent = joinCode;
 
   const pyramidEl = root.querySelector('#skill-pyramid') as HTMLElement;
   renderSkillPyramid(pyramidEl);

@@ -495,13 +495,24 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
     return callLlm({ messages, schema: CharInterviewReplySchema, temperature: 0.5 });
   }
 
+  /**
+   * By the time this runs, the server's own checkCharacterReadiness has
+   * already required a name, a high concept, a trouble, at least 2 aspects,
+   * at least 1 rated skill, and at least 1 stunt — the exact six things an
+   * earlier version of this prompt asked the model to re-check. That made
+   * the model's approval a foregone conclusion: it could not fail criteria
+   * it was never actually the gate for. Its real job is a judgment call the
+   * server's structural check cannot make — does this character fit the
+   * world and rules system this table is running — plus the feedback
+   * sentence and any modifications it wants to propose.
+   */
   async validateCharacter(definition: CharacterDefinition, systemId: string): Promise<CharacterValidation> {
     const ruleContext = this.lookupRules(systemId, 'character creation skills aspects');
 
     return callLlm({
       messages: [
-        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.\n\nRules reference:\n${ruleContext}\n\nApproval criteria — approve if ALL are present:\n- name (non-empty string)\n- highConcept (non-empty string)\n- trouble (non-empty string)\n- aspects (array with at least 2 entries)\n- skills (object with at least 1 entry)\n- stunts (array with at least 1 entry)\n\nIf all criteria are met, set approved=true. Only reject if required fields are missing or empty.` },
-        { role: 'user', content: `Validate:\n${JSON.stringify(definition, null, 2)}\n\nReturn ONLY: {"approved": true, "feedback": "one sentence", "modifications": null}` },
+        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.\n\nRules reference:\n${ruleContext}\n\nThis sheet has already passed the game's own required-fields check — every field you'd check for presence is already there. Do not reject it over anything missing or empty. Your job is judgment, not a checklist: does this character actually FIT the world this campaign is running and the rules system above? Weigh whether the concept, trouble, and skills cohere; whether the aspects give the table something real to lean on; and whether anything here would break the game — an impossible skill spread, a trouble with nowhere to bite, a stunt that ignores the rules reference. Reject only for a genuine problem along those lines, not a matter of taste. If a small tweak would fix it, propose that in modifications instead of rejecting outright.` },
+        { role: 'user', content: `Validate:\n${JSON.stringify(definition, null, 2)}\n\nRespond as JSON: {"approved": <your judgement, true or false>, "feedback": "one sentence explaining it", "modifications": null, or an object with only the fields you want changed}` },
       ],
       schema: CharacterValidationSchema,
       temperature: 0.2,

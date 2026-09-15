@@ -149,7 +149,18 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
         if (body.includes('You are a world builder for a TTRPG')) {
           text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
         } else if (body.includes('introducing a player to a world')) {
-          text = LLM_STUB_REPLIES.worldIntroduction;
+          // introduceWorld's system prompt is the only prompt in the server
+          // that interpolates the campaign's dmPreset verbatim next to
+          // "introducing a player to a world" (setupChat also interpolates
+          // dmPreset, but its own branch further down is keyed on a
+          // different, earlier-matched substring — see 'helping set up a
+          // new game' below — so a test choosing this marker as its
+          // dmPreset cannot accidentally land there instead). A test can
+          // therefore pick EMPTY_INTRO_TRIGGER as a campaign's dmPreset to
+          // deterministically exercise sendWorldIntroduction's
+          // empty-introduction guard (src/server/index.ts) — real LLM
+          // outages/hiccups return '' or whitespace-only text the same way.
+          text = body.includes('EMPTY_INTRO_TRIGGER') ? '   \n\t  ' : LLM_STUB_REPLIES.worldIntroduction;
         } else if (body.includes('character creation API')) {
           // A special marker in the player's own text picks the thin-sheet
           // fixture regardless of turn count, so a test can trigger it
@@ -157,6 +168,14 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
           // every other interview test relies on.
           if (body.includes('THIN_SHEET_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.charInterviewThin);
+          } else if (body.includes('NULL_DEFINITION_TRIGGER')) {
+            // Forces definition: null regardless of turn count. The ordinary
+            // two-turn "done" logic below always returns a definition once
+            // playerTurns >= 2, so nothing exercised the char-chat handler's
+            // "the model proposed nothing new this turn" fallback past turn
+            // one — a marker on a LATER turn reuses the same null-definition
+            // reply turn one gives, e.g. a plain clarifying question.
+            text = JSON.stringify(LLM_STUB_REPLIES.charInterviewOpen);
           } else {
             // The interview turns "done" once the player has answered twice, so a
             // test can drive it deterministically instead of guessing turn counts.

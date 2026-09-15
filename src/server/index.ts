@@ -275,11 +275,19 @@ const INTERVIEW_HISTORY_WINDOW = 40;
  * falls — it is the world context every later question is grounded in, not
  * just another chat message, and it is the one turn sendWorldIntroduction
  * guarantees is never regenerated differently.
+ *
+ * Turn 0 is only genuinely the world introduction when it is an assistant
+ * turn — sendWorldIntroduction can fail (LLM timeout/outage) and send
+ * nothing, in which case position 0 is the player's own first real message.
+ * Pinning a user turn as if it were the intro would duplicate it into the
+ * window under a false pretense. character-creator.ts already guards this
+ * client-side (see the interview-replay handler); mirror it here.
  */
 function windowInterviewHistory(transcript: InterviewTurn[]): InterviewTurn[] {
   if (transcript.length <= INTERVIEW_HISTORY_WINDOW) return transcript;
   const intro = transcript[0]!;
   const recent = transcript.slice(-(INTERVIEW_HISTORY_WINDOW - 1));
+  if (intro.role !== 'assistant') return recent;
   return recent[0] === intro ? recent : [intro, ...recent];
 }
 
@@ -408,7 +416,17 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
     const interview = getOrCreateInterview(db, campaign.id, sessionToken);
     const stored = interview.transcript[0];
     if (stored) {
-      send(ws, { type: 'world-introduction', text: stored.content });
+      // Turn 0 is only genuinely the world introduction when it is an
+      // assistant turn. If introduceWorld previously failed (see the empty-
+      // text branch below) the player's own first message can occupy turn 0
+      // instead — sending that back labeled as the world introduction would
+      // show the player their own words framed as the DM's opening. Pin
+      // nothing and show nothing in that case; the interview has already
+      // moved on without an introduction, and generating one now (after the
+      // player has spoken) would no longer be their "first sight" of it.
+      if (stored.role === 'assistant') {
+        send(ws, { type: 'world-introduction', text: stored.content });
+      }
       return;
     }
     const seed = getWorldSeed(db, campaign.id);
@@ -482,13 +500,34 @@ wss.on('connection', (ws) => {
       if (campaign) sendDmSettings(ws, campaign);
 
       const dm = new DmAgent(db);
-      dm.setupChat({ preset: msg.dmPreset, systemId: msg.systemId, history: [], unmet: [] }).then(reply => {
+      // Every rules lookup for a system with no ingested chunks returns the
+      // sentinel '(No rules found for this query)' — that string gets
+      // interpolated into prompts as if it were the rulebook, so the model
+      // narrates and validates with no actual rules and no way to tell the
+      // host it is doing so. `dnd5e` is selectable but data/systems/dnd5e
+      // does not exist, so choosing it hits exactly this. Check once, at
+      // creation, and — rather than have the LLM greeting maybe mention it —
+      // say so plainly ourselves and point at the upload control that
+      // already exists in the DM lobby sidebar. This does NOT remove the
+      // option: dnd5e stays selectable, this only stops it from silently
+      // pretending to have rules it doesn't.
+      const rulebookCount = db.prepare('SELECT COUNT(*) as c FROM rule_chunks WHERE system_id = ?').get(msg.systemId) as { c: number };
+      if (rulebookCount.c === 0) {
+        const notice = `Heads up — I don't have a rulebook loaded for "${msg.systemId}" yet, so I have no rules to look up for it. You can upload one (or any reference material) from the sidebar and I'll use it from then on. In the meantime, let's talk about the game you want to run.`;
         if (currentPlayer) {
-          currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
+          currentPlayer.setupChat.push({ role: 'assistant', content: notice });
           saveSetupChat(db, campaignId, currentPlayer.setupChat);
         }
-        send(ws, { type: 'dm-chat-reply', text: reply.reply, done: false });
-      }).catch(e => console.error('[dm-setup] greeting failed:', e));
+        send(ws, { type: 'dm-chat-reply', text: notice, done: false });
+      } else {
+        dm.setupChat({ preset: msg.dmPreset, systemId: msg.systemId, history: [], unmet: [] }).then(reply => {
+          if (currentPlayer) {
+            currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
+            saveSetupChat(db, campaignId, currentPlayer.setupChat);
+          }
+          send(ws, { type: 'dm-chat-reply', text: reply.reply, done: false });
+        }).catch(e => console.error('[dm-setup] greeting failed:', e));
+      }
     }
 
     if (msg.type === 'join') {
@@ -982,28 +1021,35 @@ wss.on('connection', (ws) => {
 
         // A clarifying question ("can she be called Ash?") gets `definition:
         // null` back from the model — it isn't re-proposing a sheet, just
-        // answering. Falling back to the interview's own stored definition
-        // means readiness reflects what the player's character actually IS,
-        // not "nothing was proposed this turn". Without this, a confirmed,
-        // complete character gets told it is missing all six fields on its
-        // very next follow-up message.
-        const readiness = checkCharacterReadiness(reply.definition ?? interview.definition);
-        if (reply.definition && readiness.ready) {
+        // answering. And a thin-but-non-null proposal (the model believes a
+        // partial answer is finished) must not be allowed to eclipse an
+        // already-ready stored sheet either: the DISPLAYED readiness has to
+        // come from the stored definition whenever one exists and is ready,
+        // so the screen never contradicts what the server holds. Without
+        // this, a confirmed, complete character gets told it is missing
+        // every field — and loses both its preview and its confirm button —
+        // on its very next follow-up message.
+        const proposalReadiness = reply.definition ? checkCharacterReadiness(reply.definition) : null;
+        const storedReadiness = checkCharacterReadiness(interview.definition);
+        if (reply.definition && proposalReadiness!.ready) {
           setInterviewDefinition(db, interview.id, reply.definition);
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
-          send(ws, { type: 'character-preview', definition: reply.definition, readiness });
-        } else if (!reply.definition && interview.definition && readiness.ready) {
-          // Nothing new was proposed, but the stored sheet is still ready —
-          // re-send it as a preview instead of a false "still shaping this
-          // character" checklist. Does NOT touch interview status: if it was
-          // already confirmed, the confirm button reappearing and requiring
-          // one more click is a minor inconvenience, not a lie about the
-          // character's state.
+          send(ws, { type: 'character-preview', definition: reply.definition, readiness: proposalReadiness! });
+        } else if (interview.definition && storedReadiness.ready) {
+          // Nothing usable was proposed this turn — either nothing at all, or
+          // a thin proposal that doesn't clear the bar — but the stored sheet
+          // is still ready. Re-send IT as the preview instead of a false
+          // "still shaping this character" checklist computed off the thin
+          // proposal. Does NOT touch interview status: if it was already
+          // confirmed, the confirm button reappearing and requiring one more
+          // click is a minor inconvenience, not a lie about the character's
+          // state.
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: null });
-          send(ws, { type: 'character-preview', definition: interview.definition, readiness });
+          send(ws, { type: 'character-preview', definition: interview.definition, readiness: storedReadiness });
         } else {
           // A proposed-but-incomplete sheet is NOT shown as a definition — the
           // model does not get to decide the interview is finished.
+          const readiness = proposalReadiness ?? storedReadiness;
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: null });
           send(ws, { type: 'character-readiness', readiness });
         }
@@ -1372,4 +1418,4 @@ server.listen(PORT, () => {
   console.log(`Whispers server listening on port ${PORT}`);
 });
 
-export { app, server, wss, gameLoops, negotiations };
+export { app, server, wss, gameLoops, negotiations, windowInterviewHistory };
