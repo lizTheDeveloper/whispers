@@ -153,6 +153,11 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       // still stripped.
       const LEADING_ACTION_MARKER = /^\*(?!\*)([^*]+)\*(?!\*)\s*/;
       const TRAILING_ACTION_MARKER = /\s*(?<!\*)\*(?!\*)([^*]+)\*(?!\*)$/;
+      // Preserved so a response that is ENTIRELY marker-wrapped text (e.g.
+      // "*just this*", with nothing left once the wrapper comes off) can
+      // fall back to its unstripped self below, instead of the stripping
+      // step manufacturing an empty response out of a real answer.
+      const beforeMarkerStrip = text;
       if (LEADING_ACTION_MARKER.test(text)) {
         text = text.replace(LEADING_ACTION_MARKER, '').trim();
       }
@@ -161,6 +166,16 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
       }
       // Strip markdown code fences — same reasoning, not gated on `schema`.
       text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+      // Stripping cosmetic roleplay/fence markers must never manufacture an
+      // empty response out of real model output — a reply that is nothing
+      // BUT marker-wrapped text (e.g. "*acknowledges quietly*") strips to
+      // nothing here. That is still an answer with cosmetic wrapping, which
+      // is strictly better than throwing and failing the action outright, so
+      // fall back to the unstripped text rather than treating this as empty.
+      if (!text && beforeMarkerStrip) {
+        text = beforeMarkerStrip;
+      }
 
       if (schema && !text) {
         lastBadResponse = '(empty response after stripping roleplay/fence markers)';

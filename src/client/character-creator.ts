@@ -54,11 +54,17 @@ function readSkillPyramid(container: HTMLElement): Record<string, number> {
   return skills;
 }
 
-export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string): void {
+export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string, isWorldAuthor: boolean): void {
   root.innerHTML = `
     <div class="character-creator">
       <h2>Create Your Character</h2>
       <p>Join code: <strong id="creator-join-code"></strong></p>
+
+      ${isWorldAuthor ? `
+      <div id="host-start-panel" class="host-start-panel">
+        <button id="start-game-btn">Start Game</button>
+        <p class="paste-hint" id="start-game-hint">You're running this world — start whenever you're ready. You can keep building your own character after.</p>
+      </div>` : ''}
 
       <div id="world-intro" class="world-introduction hidden">
         <h3>The World</h3>
@@ -164,6 +170,29 @@ Quick Fingers: +2 to Stealth when picking locks
   // rather than interpolated into the innerHTML template above, so nothing
   // about its safety depends on the server's current join-code charset.
   (root.querySelector('#creator-join-code') as HTMLElement).textContent = joinCode;
+
+  // A host who chose "I'm playing in it" lands here — the character creator
+  // is the ONLY screen they ever see once world setup finishes (main.ts
+  // stops rendering the DM lobby for them the moment tableRole is
+  // 'player') — and until this button existed there was no way for them to
+  // ever send start-game: the DM lobby's own Start Game button is gated on
+  // owner && tableRole !== 'player', which excludes exactly this host. Gated
+  // on isWorldAuthor, matching the server's own gate on 'start-game'
+  // (src/server/seat.ts's isWorldAuthor — table role never affects who owns
+  // the world). Readiness mirrors dm-lobby.ts's own start-game-btn: that
+  // button is enabled purely once dmInstructions exist (dmReady), which is
+  // unconditionally true by the time ANY client reaches character-creation
+  // (see db.ts's phase advance, gated on dm_instructions IS NOT NULL) — so
+  // there is no separate readiness state to track here, only the same
+  // refusal the server can still issue (e.g. zero approved characters),
+  // handled by the error listener below exactly like every other refusal on
+  // this screen.
+  const startGameBtn = isWorldAuthor ? (root.querySelector('#start-game-btn') as HTMLButtonElement | null) : null;
+  startGameBtn?.addEventListener('click', () => {
+    ws.send({ type: 'start-game' });
+    startGameBtn.disabled = true;
+    startGameBtn.textContent = 'Starting...';
+  });
 
   const pyramidEl = root.querySelector('#skill-pyramid') as HTMLElement;
   renderSkillPyramid(pyramidEl);
@@ -469,6 +498,14 @@ Quick Fingers: +2 to Stealth when picking locks
 
   let pendingCount = 0;
   let approvedCount = 0;
+  // Set once a submission comes back approved (either stage — see the
+  // character-validated handler below, where the id is identical across
+  // the AI-DM and host-approval sends for the same character) and cleared
+  // once that character stops existing at the table. Lets the
+  // character-revoked handler below tell "my own character was revoked"
+  // apart from someone else's, since revoke-character broadcasts to the
+  // whole room, not just the affected player.
+  let myCharacterId: string | null = null;
 
   submitBtn.addEventListener('click', () => {
     if (getActiveTab() === 'paste') {
@@ -517,6 +554,7 @@ Quick Fingers: +2 to Stealth when picking locks
     if (!feedback) return;
     feedback.classList.remove('hidden');
     if (msg.approved) {
+      myCharacterId = msg.characterId;
       approvedCount++;
       if (pendingCount > 1) {
         feedback.textContent = `${approvedCount}/${pendingCount} characters approved!`;
@@ -539,6 +577,44 @@ Quick Fingers: +2 to Stealth when picking locks
       submitBtn.textContent = 'Resubmit';
       chatSubmitBtn.textContent = 'Resubmit character';
     }
+  });
+
+  // character-creation is the ONE phase where a revoke isn't just bad news —
+  // the server (src/server/index.ts's revoke-character handler) reopens this
+  // player's interview so they can build a replacement. This screen is the
+  // only one ever shown during that phase, so it is the only place this
+  // notice can land where the player can actually act on it; game-view.ts
+  // and dm-lobby.ts show their own character-revoked handlers for phases
+  // where nothing here applies. revoke-character broadcasts to the whole
+  // room, so ignore every id but this player's own.
+  ws.on('character-revoked', (msg) => {
+    if (msg.type !== 'character-revoked') return;
+    if (!myCharacterId || msg.characterId !== myCharacterId) return;
+    myCharacterId = null;
+
+    const feedback = root.querySelector('#dm-feedback') as HTMLElement | null;
+    if (feedback) {
+      feedback.classList.remove('hidden');
+      feedback.className = 'feedback rejected';
+      feedback.textContent = msg.reason
+        ? `Your character was removed from the table: ${msg.reason}. Build a new one below.`
+        : 'Your character was removed from the table. Build a new one below.';
+    }
+
+    // Undo the "awaiting review" lockdown from the submission this just
+    // undid — the interview is open again server-side, so the screen must
+    // not keep showing a submit button disabled on a review that is never
+    // coming back for this character.
+    pendingCount = 0;
+    approvedCount = 0;
+    submitBtn.disabled = false;
+    submitBtn.textContent = defaultSubmitLabel;
+    chatDefinition = null;
+    previewPanel.classList.add('hidden');
+    chatSubmitBtn.classList.add('hidden');
+    chatSubmitBtn.disabled = false;
+    chatSubmitBtn.textContent = defaultChatSubmitLabel;
+    chatSend.disabled = false;
   });
 
   ws.on('negotiation-opened', (msg) => {
@@ -585,6 +661,14 @@ Quick Fingers: +2 to Stealth when picking locks
     chatSend.disabled = false;
     const typing = chatLog.querySelector('#char-typing');
     if (typing) typing.remove();
+
+    // A refused start-game (no approved characters yet, a second click
+    // racing an already-started table) must not leave this button stuck on
+    // "Starting..." forever — same reasoning as every other reset above.
+    if (startGameBtn) {
+      startGameBtn.disabled = false;
+      startGameBtn.textContent = 'Start Game';
+    }
 
     // A rejected confirm-character (e.g. "not finished yet") must not leave
     // the confirm button stuck disabled on "Confirming...", awaiting an ack

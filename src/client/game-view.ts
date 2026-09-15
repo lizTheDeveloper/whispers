@@ -8,6 +8,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
         <div class="scene-image-label" id="scene-label"></div>
       </div>
       <div class="location-bar" id="location-bar" style="display:none"></div>
+      <div id="system-notice" class="system-notice hidden"></div>
       <div class="narration-log" id="narration-log"></div>
       <div id="action-area"></div>
       <div class="whisper-input" id="whisper-area" style="display:none">
@@ -34,6 +35,20 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     log.scrollTop = log.scrollHeight;
   }
 
+  // Server error text (a refused revoke, a rejected whisper, etc.) is
+  // operational feedback about a click, not part of the story the DM is
+  // telling — it must never land in narration-log next to the DM's own
+  // 'system' entries, where a player has no way to tell "the game told you
+  // this" apart from "the server told you this failed."
+  const systemNotice = root.querySelector('#system-notice') as HTMLElement;
+  let systemNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+  function showSystemNotice(text: string): void {
+    systemNotice.textContent = text;
+    systemNotice.classList.remove('hidden');
+    if (systemNoticeTimer) clearTimeout(systemNoticeTimer);
+    systemNoticeTimer = setTimeout(() => systemNotice.classList.add('hidden'), 6000);
+  }
+
   // The host's silent, non-blocking veto, reachable during play — before
   // this, revoke-character only had an affordance in the DM lobby, which
   // main.ts stops rendering for everyone (host included) the moment
@@ -45,8 +60,18 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   const roster = new Map<string, string>();
   const partyControls = isHost ? (root.querySelector('#party-controls') as HTMLElement) : null;
 
+  // Revoke buttons with a click sent and no server answer yet. The server's
+  // 'error' message carries no characterId, so a refusal can't be routed to
+  // one button — same limitation dm-lobby.ts's pendingCharacterActions
+  // documents for the identical problem there. Restored to enabled only
+  // when actually refused, and cleared wholesale on every re-render (below)
+  // since renderPartyControls rebuilds every button from scratch, making any
+  // stale reference here harmless but pointless to keep.
+  const pendingRevokes = new Set<HTMLButtonElement>();
+
   function renderPartyControls(): void {
     if (!partyControls) return;
+    pendingRevokes.clear();
     partyControls.replaceChildren();
     if (roster.size === 0) return;
     const heading = document.createElement('h4');
@@ -73,6 +98,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
         const reason = prompt('Reason for revoking (optional):') || undefined;
         ws.send({ type: 'revoke-character', characterId, reason });
         revokeBtn.disabled = true;
+        pendingRevokes.add(revokeBtn);
       });
       row.appendChild(revokeBtn);
       partyControls.appendChild(row);
@@ -419,10 +445,15 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   // A refused revoke (stale id, already revoked, a second tab's click racing
   // this one) must not leave that row's button stuck disabled forever with
   // no explanation — same reasoning as the identical handler in dm-lobby.ts.
+  // Scoped to pendingRevokes (buttons this screen itself disabled), not
+  // every '.revoke-btn' on the page — and shown as a system notice, not
+  // appended to narration-log: this text is about a click failing, not
+  // something the DM said.
   ws.on('error', (msg) => {
     if (msg.type !== 'error') return;
-    appendLog(msg.message, 'system');
-    for (const btn of root.querySelectorAll<HTMLButtonElement>('.revoke-btn')) btn.disabled = false;
+    showSystemNotice(msg.message);
+    for (const btn of pendingRevokes) btn.disabled = false;
+    pendingRevokes.clear();
   });
 
   const connBanner = document.createElement('div');

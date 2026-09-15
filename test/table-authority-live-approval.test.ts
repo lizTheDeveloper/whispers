@@ -16,6 +16,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { WebSocket } from 'ws';
 import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
 import { startHarness, type Harness } from './lib/server-harness.js';
 import { finishWorldSetup } from './lib/finish-world-setup.js';
@@ -1557,6 +1559,250 @@ describe('AI DM approves characters when the host is playing', () => {
       ).rejects.toThrow(/Timeout/);
 
       await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 30_000);
+  });
+
+  // Task 12, Finding B: the phase re-check above the describe block just
+  // above this one re-reads the campaign after dm.validateCharacter's
+  // await, but never re-checked ITS phase — only hostTableRole. If the host
+  // presses Start Game during that 2-5 second validation window, the
+  // submission still lands after the table opened: on the host-as-DM path
+  // (exercised here) that means writing a pending row and opening a
+  // negotiation against a DM lobby the host's client has already
+  // unmounted; on the host-as-player path it means a live character the
+  // already-running GameLoop's one-time loadCharacters() will never load.
+  // Fixed by re-checking `campaign.phase` on the freshly re-read campaign,
+  // right next to the hostTableRole re-read it already had.
+  describe('submit-character also re-checks phase after the validation round trip', () => {
+    it('refuses a submission that would otherwise land after start-game opened the table mid-validation', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      // Seat one approved character first — start-game refuses an empty party.
+      const player1Ws = await connectWs(port);
+      const p1q = new MessageQueue(player1Ws);
+      sendMsg(player1Ws, { type: 'join', joinCode, playerName: 'Anders' });
+      await p1q.waitFor('room-joined', 10_000);
+      sendMsg(player1Ws, { type: 'submit-character', definition: CHAR });
+      const review1 = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      // Submission also opens a negotiation panel alongside the pending
+      // review (see openNegotiation, called unconditionally on this path) —
+      // drain it so it can't be mistaken later for a negotiation opened by
+      // player2's own (refused) submission below.
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review1.characterId });
+      await p1q.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      const player2Ws = await connectWs(port);
+      const p2q = new MessageQueue(player2Ws);
+      sendMsg(player2Ws, { type: 'join', joinCode, playerName: 'Wendy' });
+      await p2q.waitFor('room-joined', 10_000);
+
+      // RACE_DELAY_TRIGGER holds dm.validateCharacter's reply open ~600ms —
+      // ample time to land start-game below before that await resolves.
+      const raceChar: CharacterDefinition = { ...CHAR2, backstory: `${CHAR2.backstory} RACE_DELAY_TRIGGER` };
+      sendMsg(player2Ws, { type: 'submit-character', definition: raceChar });
+      await new Promise((r) => setTimeout(r, 150));
+
+      sendMsg(hostWs, { type: 'start-game' });
+      const phase = await hostQ.waitFor('phase-change', 15_000) as any;
+      expect(phase.phase).toBe('playing');
+
+      // Validation resolves ~450ms later, against a campaign that is no
+      // longer in character-creation. Fixed behaviour: refused outright,
+      // not written into review/negotiation limbo for a table that has
+      // already opened.
+      const err = await p2q.waitFor('error', 15_000) as any;
+      expect(err.message).toMatch(/already started/i);
+
+      await expect(p2q.waitFor('character-validated', 500)).rejects.toThrow(/Timeout/);
+      await expect(
+        hostQ.waitForAny(['character-pending-review', 'negotiation-opened'], 500)
+      ).rejects.toThrow(/Timeout/);
+
+      sendMsg(hostWs, { type: 'end-game' });
+      await hostQ.waitFor('phase-change', 20_000);
+
+      await closeWs(player1Ws);
+      await closeWs(player2Ws);
+      await closeWs(hostWs);
+    }, 30_000);
+  });
+
+  // Task 12, Finding E: an earlier version of this prompt asked the model
+  // to weigh "an impossible skill spread" alongside world/tone fit — a
+  // mechanical-sounding phrase that, combined with removing the six
+  // explicit approval criteria the server's own readiness check already
+  // enforces, left the model free to invent mechanical rules of its own
+  // (observed live: a rejection citing a nonexistent `refresh` field and a
+  // "total skill points exceed the standard limit" rule — neither exists
+  // anywhere in this codebase). The dispatch marker 'character sheet
+  // validation API' (test/lib/server-harness.ts's stub keys off this exact
+  // substring, ahead of every other branch) must survive verbatim, or every
+  // validation test in this suite silently reroutes to the wrong stub
+  // branch and passes for the wrong reason.
+  describe('validateCharacter prompt scopes the model to world/tone fit only', () => {
+    it('keeps the dispatch marker and tells the model not to invent mechanical rules', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      await finishWorldSetup(hostWs, hostQ, 'player');
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      await pq.waitFor('character-validated', 15_000);
+
+      const validationBody = harness.receivedBodies.find(b => b.includes('character sheet validation API'));
+      expect(validationBody).toBeDefined();
+      // The exact phrase the stub dispatcher matches on (see
+      // server-harness.ts) — must appear verbatim, not paraphrased.
+      expect(validationBody).toContain('character sheet validation API');
+      // The prompt must say the server already verified mechanical/
+      // structural completeness and forbid re-checking or inventing it.
+      expect(validationBody).toMatch(/mechanical|structural/i);
+      expect(validationBody).toMatch(/re-litigate|invent/i);
+      // The specific mechanical-sounding phrase that invited the live bug
+      // must be gone.
+      expect(validationBody).not.toContain('impossible skill spread');
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 30_000);
+  });
+
+  // Task 12, remaining minor: end-game's handler writes the DB phase to
+  // 'ended' BEFORE calling loop.endGame() (which awaits epilogue
+  // generation, a multi-second LLM call, before broadcasting phase-change).
+  // The revoke-triggered path used to write the DB phase only AFTER
+  // loop.revokeCharacter()'s whole promise — including that same epilogue
+  // await — settled, which is AFTER the 'ended' broadcast epilogue
+  // generation precedes. For as long as epilogue generation took, the DB
+  // said 'playing' while every connected client had already been told
+  // 'ended'. Fixed via revokeCharacter's new onEmptied callback, invoked
+  // synchronously the instant emptying is detected, before endGame()'s own
+  // await.
+  describe('revoke-triggered game end writes the DB phase before the epilogue broadcast, matching end-game', () => {
+    it('the DB already says ended while the epilogue call is still in flight', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      // Not finishWorldSetup(): generateEpilogue's own prompt (game-loop.ts)
+      // builds charLines from `this.characters`, which revokeCharacter has
+      // already deleted the revoked character FROM before endGame() (and
+      // therefore generateEpilogue) ever runs — a RACE_DELAY_TRIGGER on the
+      // character definition never reaches that prompt. worldState
+      // (this.worldBible.getCompactSummary) survives, though: its "Known
+      // locations" line is built from location NAMES seeded from whatever
+      // world seed the host accepts. accept-world-seed trusts the seed the
+      // client sends it (validated by shape, not re-derived from the DM's
+      // own draft), so this drives world setup by hand to plant the marker
+      // on a location name before accepting.
+      sendMsg(hostWs, { type: 'dm-chat', text: 'A haunted lighthouse, spooky but hopeful.' });
+      let setupReply: any;
+      do { setupReply = await hostQ.waitFor('dm-chat-reply', 15_000); } while (!setupReply.done);
+      const draft = await hostQ.waitFor('world-seed-draft', 20_000) as any;
+      sendMsg(hostWs, { type: 'choose-table-role', role: 'dm' } as any);
+      await hostQ.waitFor('room-joined', 10_000);
+      const markedSeed = {
+        ...draft.seed,
+        locations: [
+          { ...draft.seed.locations[0], name: `${draft.seed.locations[0].name} RACE_DELAY_TRIGGER` },
+          ...draft.seed.locations.slice(1),
+        ],
+      };
+      sendMsg(hostWs, { type: 'accept-world-seed', seed: markedSeed } as any);
+      let setupPhase: any;
+      do { setupPhase = await hostQ.waitFor('phase-change', 15_000); } while (setupPhase.phase !== 'character-creation');
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Anders' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await pq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'start-game' });
+      await hostQ.waitFor('phase-change', 15_000);
+
+      // The only live character — revoking them empties the party and
+      // triggers endGame() internally.
+      sendMsg(hostWs, { type: 'revoke-character', characterId: review.characterId });
+
+      // Well inside the ~600ms the stub holds the epilogue call open (via
+      // the marked location name reaching worldState), and well after the
+      // synchronous onEmptied write.
+      await new Promise((r) => setTimeout(r, 300));
+
+      const rawDb = new Database(join(harness.dataDir, 'whispers.db'), { readonly: true });
+      try {
+        const row = rawDb.prepare('SELECT phase FROM campaigns WHERE join_code = ?').get(joinCode) as { phase: string };
+        expect(row.phase).toBe('ended');
+      } finally {
+        rawDb.close();
+      }
+
+      // Drain what this revoke still produces so the harness's own
+      // afterAll doesn't outlive an in-flight broadcast.
+      await hostQ.waitFor('character-revoked', 5_000);
+      await hostQ.waitFor('phase-change', 5_000);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 30_000);
+  });
+
+  // Task 12, remaining minor: character-roster on rejoin was owner-only.
+  // game-view.ts tracks this roster for every client (owner or not) purely
+  // to put a name on its own character-revoked notice, so a non-owner who
+  // refreshed mid-game was left with an empty roster and, on their OWN
+  // character's later removal, saw the name-less fallback "A character has
+  // been removed from the table" instead of their own character's name.
+  describe('character-roster is resent to a rejoining non-owner too', () => {
+    it('gives a reconnecting player a populated roster, not just the host', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Anders' });
+      const playerJoined = await pq.waitFor('room-joined', 10_000) as any;
+      const playerSessionToken = playerJoined.sessionToken as string;
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await pq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'start-game' });
+      await hostQ.waitFor('phase-change', 15_000);
+      await pq.waitFor('phase-change', 15_000);
+
+      await closeWs(playerWs);
+
+      const playerWs2 = await connectWs(port);
+      const pq2 = new MessageQueue(playerWs2);
+      sendMsg(playerWs2, { type: 'rejoin', joinCode, sessionToken: playerSessionToken } as any);
+      await pq2.waitFor('room-joined', 10_000);
+
+      const roster = await pq2.waitFor('character-roster', 5_000) as any;
+      expect(roster.characters.map((c: any) => c.id)).toContain(review.characterId);
+
+      sendMsg(hostWs, { type: 'end-game' });
+      await hostQ.waitFor('phase-change', 20_000);
+
+      await closeWs(playerWs2);
       await closeWs(hostWs);
     }, 30_000);
   });

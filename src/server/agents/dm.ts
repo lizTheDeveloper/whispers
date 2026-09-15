@@ -363,6 +363,18 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
     return callLlm({
       messages: [{ role: 'system', content: systemPrompt }, ...opts.history],
       schema: DmSetupReplySchema,
+      // Left unset, this fell through to the proxy's own default and was
+      // observed truncating mid-sentence — the same class of bug already
+      // fixed on draftWorldSeed's neighbouring call below. A "done" reply is
+      // the heavy case: `reply` (a conversational paragraph) PLUS
+      // dmInstructions (a summary of the whole setup conversation) PLUS
+      // dmCustomPrompt (the DM's own tailored running direction) — two full
+      // paragraphs beyond the chat reply itself, not just a short
+      // conversational turn. A truncated dmInstructions/dmCustomPrompt here
+      // desyncs the readiness panel from what the DM actually said and can
+      // corrupt the direction the rest of the campaign runs on, so this
+      // needs real headroom, not the ordinary chat-turn budget.
+      maxTokens: 2048,
     });
   }
 
@@ -519,7 +531,7 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
 
     return callLlm({
       messages: [
-        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.${ruleContext ? `\n\nRules reference:\n${ruleContext}` : ''}\n\nThis sheet has already passed the game's own required-fields check — every field you'd check for presence is already there. Do not reject it over anything missing or empty. Your job is judgment, not a checklist: does this character actually FIT the world this campaign is running and the rules system above? Weigh whether the concept, trouble, and skills cohere; whether the aspects give the table something real to lean on; and whether anything here would break the game — an impossible skill spread, a trouble with nowhere to bite, a stunt that ignores the rules reference. Reject only for a genuine problem along those lines, not a matter of taste. If a small tweak would fix it, propose that in modifications instead of rejecting outright.` },
+        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.${ruleContext ? `\n\nRules reference:\n${ruleContext}` : ''}\n\nThis sheet has already passed the game's own required-fields check AND its mechanical/structural validation — every field is present, and every numeric or structural rule this system defines (skill ranks, point totals, refresh, pyramid shape, or anything else along those lines) has already been checked and enforced by the server before this ever reached you. Do NOT re-check, re-litigate, or invent any mechanical or structural rule of your own — including ones that sound plausible but appear nowhere above, like a "refresh" field or a "standard" skill-point limit. If a rule is not stated in the reference above, it is not yours to enforce. Your ONLY job is a judgment call the server cannot make: does this character actually FIT the world this campaign is running and its tone — do the concept, trouble, personality, and backstory read as belonging at this table, or as dropped in from somewhere else entirely? Reject only for a genuine world-fit or tone problem, never a mechanical one and never a matter of taste. If a small tweak would fix it, propose that in modifications instead of rejecting outright.` },
         { role: 'user', content: `Validate:\n${JSON.stringify(definition, null, 2)}\n\nRespond as JSON: {"approved": <your judgement, true or false>, "feedback": "one sentence explaining it", "modifications": null, or an object with only the fields you want changed}` },
       ],
       schema: CharacterValidationSchema,

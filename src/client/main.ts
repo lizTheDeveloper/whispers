@@ -38,7 +38,7 @@ function renderFor(joinCode: string, campaignId: string, owner: boolean, tableRo
   } else if (!owner && phase === 'lobby') {
     renderWaitingRoom(root, ws, gameName, joinCode);
   } else {
-    renderCharacterCreator(root, ws, joinCode);
+    renderCharacterCreator(root, ws, joinCode, owner);
   }
 }
 
@@ -77,7 +77,7 @@ ws.on('phase-change', (msg) => {
     const key = renderKey(isOwner, hostTableRole, joinCode, 'character-creation');
     if (currentView === key) return;
     currentView = key;
-    renderCharacterCreator(root, ws, joinCode);
+    renderCharacterCreator(root, ws, joinCode, isOwner);
   } else if (msg.phase === 'character-creation' && isOwner) {
     // The DM lobby is already showing (dm-chat's own done:true handling put
     // it there) — just keep currentView in sync so a later reconnect doesn't

@@ -196,6 +196,29 @@ button:disabled {
   margin-bottom: 0.15rem;
 }
 
+/* A host who chose "I'm playing in it" has no DM lobby left to start the
+   game from once the table opens — this is the only affordance that can
+   ever send start-game for them, so it needs to read as distinct from the
+   rest of the interview, not buried in it. */
+.host-start-panel {
+  margin: 1rem 0 1.5rem;
+  padding: 1rem;
+  background: rgba(255, 107, 53, 0.05);
+  border: 1px solid rgba(255, 107, 53, 0.2);
+  border-radius: var(--radius);
+}
+.host-start-panel #start-game-btn {
+  background: linear-gradient(135deg, var(--ember) 0%, #e85d2c 100%);
+  color: var(--void);
+  font-weight: 700;
+}
+.host-start-panel .paste-hint {
+  margin: 0.6rem 0 0;
+  background: transparent;
+  border-left: none;
+  padding: 0;
+}
+
 .creator-tabs {
   display: flex;
   gap: 0.4rem;
@@ -1278,6 +1301,19 @@ button:disabled {
   gap: 0.5rem;
   margin-top: 0.75rem;
   justify-content: flex-end;
+}
+
+/* Operational feedback about a click (a refused revoke, etc.) — kept
+   visually and structurally separate from narration-log so it never reads
+   as something the DM said. */
+.system-notice {
+  background: rgba(255, 61, 127, 0.08);
+  border: 1px solid rgba(255, 61, 127, 0.25);
+  color: var(--text);
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
 }
 
 .connection-banner {

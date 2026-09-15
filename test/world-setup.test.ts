@@ -351,4 +351,24 @@ describe('World setup gates the table', () => {
 
     await closeWs(ws);
   }, 30_000);
+
+  // Task 12, Finding F: setupChat's callLlm call had no explicit maxTokens
+  // at all, falling through to the proxy's own default — observed
+  // truncating mid-sentence during DM setup, same class of bug as the
+  // world-seed truncation already fixed on draftWorldSeed (its neighbour in
+  // dm.ts). A "done" reply is the heavy case: `reply` PLUS dmInstructions
+  // PLUS dmCustomPrompt, two full paragraphs beyond the chat turn itself.
+  it('requests explicit headroom for setupChat instead of falling through to the proxy default', async () => {
+    // createGame() already drives one setupChat call (the opening greeting
+    // sent on 'create', awaited inside createGame() itself) — enough to
+    // inspect without sending anything further.
+    const { ws } = await createGame();
+
+    const setupBody = harness.receivedBodies.find(b => b.includes('helping set up a new game'));
+    expect(setupBody).toBeDefined();
+    const parsed = JSON.parse(setupBody!);
+    expect(parsed.max_tokens).toBeGreaterThanOrEqual(2048);
+
+    await closeWs(ws);
+  }, 30_000);
 });

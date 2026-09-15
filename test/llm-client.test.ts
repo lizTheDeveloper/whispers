@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { z } from 'zod';
 
 /**
  * callLlm reads LLM_PROXY_URL at MODULE-IMPORT time (same reasoning as
@@ -93,5 +94,41 @@ describe('callLlm marker/fence stripping applies to schema-less responses too', 
     nextText = '**Bold text** and then *he smiles*';
     const result = await callLlm({ messages: [{ role: 'user', content: 'Narrate.' }] });
     expect(result).toBe('**Bold text** and then');
+  });
+});
+
+// Task 12, Finding D: widening marker/fence stripping to every response
+// (not just JSON ones — see the describe block above) made it reachable
+// on far more paths for a NEW failure: a response that is ENTIRELY
+// marker-wrapped text strips to nothing, and for a schema-required call
+// that manufactured empty string was then thrown as "LLM returned empty
+// response after stripping markers" — discarding real model output over
+// cosmetic wrapping. Observed live as "Character validation failed —
+// please try again."
+describe('callLlm never manufactures an empty response by stripping markers', () => {
+  it('falls back to the unstripped text — and still finds the JSON inside it — instead of throwing, for a schema-required call', async () => {
+    // The whole reply is one marker pair wrapped around otherwise-valid
+    // JSON, so LEADING_ACTION_MARKER's `^\*...\*` consumes the entire
+    // string in one match, stripping to ''. Before the fix, that empty
+    // string was schema-required, so callLlm threw immediately. After the
+    // fix, it falls back to this original, unstripped text — which
+    // tryRepairJson can still find and parse a JSON object inside despite
+    // the leftover asterisks, so the call succeeds instead of failing the
+    // action outright.
+    nextText = '*{"ok":true}*';
+    const result = await callLlm({
+      messages: [{ role: 'user', content: 'Validate.' }],
+      schema: z.object({ ok: z.boolean() }),
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('leaves an ordinary schema-required JSON response untouched', async () => {
+    nextText = '{"ok":true}';
+    const result = await callLlm({
+      messages: [{ role: 'user', content: 'Validate.' }],
+      schema: z.object({ ok: z.boolean() }),
+    });
+    expect(result).toEqual({ ok: true });
   });
 });

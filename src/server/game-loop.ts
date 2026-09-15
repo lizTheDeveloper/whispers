@@ -118,11 +118,25 @@ export class GameLoop {
    * the `gameLoops` map this class has no reference to) knows to remove
    * this now-stopped loop from it — never leave a stopped loop parked in
    * that map as a zombie entry.
+   *
+   * `onEmptied`, if given, runs synchronously the instant emptying is
+   * detected — BEFORE the `endGame()` await below, which includes a
+   * multi-second epilogue generation call. This class has no reference to
+   * the campaigns table (that's the caller's job, same as start-game's DB
+   * write happening in index.ts, not here), but the caller needs to make
+   * its own DB phase write at exactly this point, not after `endGame()`
+   * resolves: end-game's own handler writes 'ended' to the DB BEFORE
+   * calling `endGame()`, so the DB and the broadcast it eventually sends
+   * agree on order. Awaiting this method fully before writing the DB phase
+   * would reverse that — the DB would still say 'playing' for as long as
+   * epilogue generation takes, after every connected client was already
+   * told 'ended'.
    */
-  async revokeCharacter(characterId: string): Promise<boolean> {
+  async revokeCharacter(characterId: string, onEmptied?: () => void): Promise<boolean> {
     this.characters.delete(characterId);
     this.state.initiativeOrder = this.state.initiativeOrder.filter(id => id !== characterId);
     if (this.characters.size === 0 && !this.stopped) {
+      onEmptied?.();
       await this.endGame();
       return true;
     }

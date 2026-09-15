@@ -667,11 +667,17 @@ wss.on('connection', (ws) => {
         void sendWorldIntroduction(ws, campaign, currentPlayer.sessionToken);
       }
 
-      // A host who reconnects mid-game (or after it ended) lands on a freshly
-      // mounted game-view with no memory of the party — resend the roster so
-      // their revoke controls come back instead of staying empty until the
-      // next in-flight turn happens to mention a character.
-      if (currentPlayer.isOwner && (campaign.phase === 'playing' || campaign.phase === 'ended')) {
+      // Anyone who reconnects mid-game (or after it ended) lands on a
+      // freshly mounted game-view with no memory of the party — resend the
+      // roster so it isn't empty until the next in-flight turn happens to
+      // mention a character. Originally owner-only, for the host's revoke
+      // controls specifically, but game-view.ts tracks this roster for
+      // every client (owner or not) purely to put a name on its own
+      // character-revoked notice — a non-owner who refreshes mid-game was
+      // left with an empty roster and, on their OWN character's later
+      // removal, saw the name-less fallback "A character has been removed
+      // from the table" instead of their own character's name.
+      if (campaign.phase === 'playing' || campaign.phase === 'ended') {
         const loop = gameLoops.get(msg.joinCode);
         if (loop) send(ws, { type: 'character-roster', characters: loop.rosterSnapshot });
       }
@@ -767,6 +773,22 @@ wss.on('connection', (ws) => {
       const freshCampaign = joinRoom(db, currentJoinCode);
       if (!freshCampaign) return;
       campaign = freshCampaign;
+
+      // The phase can advance past character-creation while the await above
+      // was in flight — the host pressing Start Game during the 2-5 second
+      // validation window. The stale pre-await `submitCampaign` phase check
+      // at the top of this handler can no longer catch that; re-check it on
+      // the campaign we just re-read, or this submission lands in a table
+      // that has already opened: on the host-as-player path,
+      // makeCharacterLive below would write a live character the already-
+      // running GameLoop's one-time loadCharacters() will never load — the
+      // player is told "Your character is in the game" and then never gets
+      // a turn. On the host-as-DM path it would open a negotiation against a
+      // DM lobby the client has already unmounted.
+      if (campaign.phase !== 'character-creation') {
+        send(ws, { type: 'error', message: 'The game has already started — this character could not be seated.' });
+        return;
+      }
 
       // validation.modifications is CharacterValidationSchema's
       // z.record(z.unknown()).nullable() — entirely unvalidated model
@@ -1039,15 +1061,29 @@ wss.on('connection', (ws) => {
       const jc = currentJoinCode;
       const loop = gameLoops.get(jc);
       if (loop) {
-        loop.revokeCharacter(msg.characterId).then((gameEnded) => {
-          if (!gameEnded) return;
-          // Mirror end-game's own cleanup exactly: the DB phase write and
-          // the gameLoops.delete both have to happen, or a rejoining host
-          // sees phase 'playing' pointed at a loop that isn't there, or a
-          // stopped loop sits in the map as a zombie entry forever.
-          setCampaignPhase(db, revokeCampaign.id, 'ended');
-          gameLoops.delete(jc);
-        }).catch(e => console.error('[revoke-character] failed while ending an emptied game loop:', e));
+        // Mirrors end-game's own ordering exactly: the DB phase write
+        // happens via onEmptied, synchronously the instant the party is
+        // detected empty — BEFORE the epilogue-generating await inside
+        // revokeCharacter's own endGame() call — the same order end-game's
+        // handler above uses (setCampaignPhase, then loop.endGame()). This
+        // used to run the DB write only after the whole promise settled,
+        // which put it AFTER the 'ended' broadcast the epilogue precedes:
+        // for as long as epilogue generation took, the DB said 'playing'
+        // while every connected client had already been told 'ended'.
+        //
+        // gameLoops.delete(jc) is unconditional — in both .then and .catch
+        // — so a rejected endGame() (a failed epilogue call, say) can never
+        // leave a stopped loop parked in the map with the DB phase stuck at
+        // 'playing' forever; the DB write above already landed regardless
+        // of how the rest of endGame() went.
+        loop.revokeCharacter(msg.characterId, () => setCampaignPhase(db, revokeCampaign.id, 'ended'))
+          .then((gameEnded) => {
+            if (gameEnded) gameLoops.delete(jc);
+          })
+          .catch(e => {
+            console.error('[revoke-character] failed while ending an emptied game loop:', e);
+            gameLoops.delete(jc);
+          });
       }
 
       broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
