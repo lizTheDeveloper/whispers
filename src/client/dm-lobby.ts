@@ -56,14 +56,14 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
         <div class="sidebar-section">
           <h3>Your DM Link</h3>
           <p class="paste-hint">Bookmark this — it brings you back to this chair.</p>
-          <input type="text" id="dm-link" class="link-field" readonly value="${dmUrl(joinCode)}" />
+          <input type="text" id="dm-link" class="link-field" readonly />
           <button id="copy-dm-link" class="ghost-btn">Copy DM link</button>
         </div>
 
         <div class="sidebar-section">
           <h3>Player Link</h3>
           <p class="paste-hint">Send this to your players.</p>
-          <input type="text" id="player-link" class="link-field" readonly value="${playUrl(joinCode)}" />
+          <input type="text" id="player-link" class="link-field" readonly />
           <button id="copy-player-link" class="ghost-btn">Copy player link</button>
         </div>
 
@@ -94,6 +94,16 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   const copyDmLinkBtn = root.querySelector('#copy-dm-link') as HTMLButtonElement;
   const copyPlayerLinkBtn = root.querySelector('#copy-player-link') as HTMLButtonElement;
   const startHint = root.querySelector('#start-hint') as HTMLElement;
+
+  // location.search rides along inside dmUrl/playUrl and is attacker-
+  // supplied. Percent-encoding currently covers the quote character that
+  // would be needed to break out of a `value="..."` attribute interpolated
+  // into the template string above, but this app keeps bearer session
+  // tokens in localStorage — an XSS here is a seat takeover — so the value
+  // is set through setAttribute instead of relying on that encoding table
+  // staying favourable.
+  (root.querySelector('#dm-link') as HTMLInputElement).setAttribute('value', dmUrl(joinCode));
+  (root.querySelector('#player-link') as HTMLInputElement).setAttribute('value', playUrl(joinCode));
 
   const roleButtons = root.querySelector('#role-buttons') as HTMLElement;
   const roleDmBtn = root.querySelector('#role-dm-btn') as HTMLButtonElement;
@@ -270,10 +280,16 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   // The section itself always stays visible — once the table opens the host
   // still needs to see which seat they chose, just not change it. Only the
   // buttons go away; the status line in renderTableRole() keeps reporting
-  // the current role as read-only text. The server backs this by refusing
-  // choose-table-role once the game actually starts, so hiding the buttons
-  // here (rather than merely disabling them) means the UI never dangles an
-  // affordance the server would refuse.
+  // the current role as read-only text. The server's actual rule is keyed on
+  // whether a character exists (pending or live), not on phase — see
+  // choose-table-role's handler in index.ts — because a phase-only rule
+  // strands a queued character's review the moment a host swaps lanes out
+  // from under it. Hiding on phase alone here is a conservative
+  // approximation of that: it hides no later than the server would refuse
+  // (by the time the table is open, at least one character normally exists),
+  // but it is not itself what the server enforces, and a campaign that opens
+  // the table with zero characters would find the buttons gone here before
+  // the server actually objects.
   function updateTableRoleVisibility() {
     roleButtons.classList.toggle('hidden', phase !== 'lobby');
   }

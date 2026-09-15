@@ -1146,6 +1146,26 @@ button:disabled {
   color: var(--text);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
+.party-controls {
+  margin-top: 1rem;
+}
+.party-controls h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.party-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+}
+.party-name {
+  font-size: 0.9rem;
+}
 
 /* ─── Selection ─── */
 

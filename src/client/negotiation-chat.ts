@@ -37,6 +37,10 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   // 'error' arriving with neither button disabled came from somewhere else
   // (another panel, another request) and must not touch this one.
   let actionPending = false;
+  // Set once the round cap closes this discussion (negotiation-closed) so
+  // doSend can refuse locally — input.disabled alone doesn't stop a queued
+  // keydown handler from firing on a field a click already raced past.
+  let closed = false;
 
   if (isHost) {
     const actions = document.createElement('div');
@@ -80,6 +84,7 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   }
 
   function doSend() {
+    if (closed) return;
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
@@ -95,6 +100,24 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     if (msg.type !== 'negotiation-message') return;
     if (msg.characterId !== characterId) return;
     addMessage(msg.senderName, msg.sender, msg.text);
+  });
+
+  // The round cap closes the DISCUSSION, not the decision — approve/reject
+  // stay live (see negotiation.ts's closeAtCap). Without this, the input box
+  // stays live too: everything typed into it after the cap vanishes with no
+  // local echo, because the server's negotiation-message handler silently
+  // drops anything sent to a closed negotiation.
+  ws.on('negotiation-closed', (msg) => {
+    if (msg.type !== 'negotiation-closed') return;
+    if (msg.characterId !== characterId) return;
+    closed = true;
+    input.disabled = true;
+    sendBtn.disabled = true;
+    const notice = document.createElement('div');
+    notice.className = 'negotiation-bubble system';
+    notice.textContent = 'The discussion is closed — approve or reject the character to finish.';
+    log.appendChild(notice);
+    log.scrollTop = log.scrollHeight;
   });
 
   ws.on('character-submitted', (msg) => {

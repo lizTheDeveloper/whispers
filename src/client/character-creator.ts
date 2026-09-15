@@ -543,6 +543,11 @@ Quick Fingers: +2 to Stealth when picking locks
 
   ws.on('negotiation-opened', (msg) => {
     if (msg.type !== 'negotiation-opened') return;
+    // Replayed on rejoin as well as sent live (mirrors the same guard on
+    // character-pending-review in dm-lobby.ts) — without it, a player who
+    // reconnects mid-negotiation gets a second stacked panel with duplicate
+    // element ids.
+    if (root.querySelector(`.negotiation-panel[data-char-id="${CSS.escape(msg.characterId)}"]`)) return;
     const feedback = root.querySelector('#dm-feedback') as HTMLElement | null;
     if (!feedback) return;
     feedback.classList.remove('hidden');

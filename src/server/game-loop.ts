@@ -134,6 +134,17 @@ export class GameLoop {
     return this.characters.size;
   }
 
+  /**
+   * The live party, id+name only — enough for the host's revoke UI to list
+   * who is still at the table and for a rejoining client to resolve a
+   * character-revoked broadcast to a name. Read fresh off `this.characters`
+   * on every call rather than cached, so it never drifts from what
+   * `revokeCharacter` above has actually deleted.
+   */
+  get rosterSnapshot(): Array<{ id: string; name: string }> {
+    return Array.from(this.characters.values()).map(c => ({ id: c.id, name: c.definition.name }));
+  }
+
   async start(): Promise<void> {
     this.loadCharacters();
 
@@ -161,6 +172,11 @@ export class GameLoop {
     }
 
     this.broadcastFn({ type: 'phase-change', phase: 'playing' });
+    // The only source the host's revoke UI (and the room's own
+    // character-revoked notices, which need a name to show) has for who is
+    // actually at the table — there is no other message that lists the live
+    // party once play has started.
+    this.broadcastFn({ type: 'character-roster', characters: this.rosterSnapshot });
     const campaign = this.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(this.campaignId) as any;
 
     if (campaign.scenario_id) {

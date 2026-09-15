@@ -15,7 +15,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
         <input type="text" id="whisper-text" placeholder="Whisper to your character..." maxlength="200" />
         <button id="whisper-btn">Whisper</button>
       </div>
-      ${isHost ? '<div id="dm-controls"><button id="end-game-btn">End Game</button></div>' : ''}
+      ${isHost ? '<div id="dm-controls"><button id="end-game-btn">End Game</button><div id="party-controls" class="party-controls"></div></div>' : ''}
     </div>
   `;
 
@@ -33,6 +33,66 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
   }
+
+  // The host's silent, non-blocking veto, reachable during play — before
+  // this, revoke-character only had an affordance in the DM lobby, which
+  // main.ts stops rendering for everyone (host included) the moment
+  // phase === 'playing'. id -> name of every character still at the table;
+  // fed by character-roster (sent once when the game starts, and again to a
+  // reconnecting host so this doesn't stay empty after a refresh) and kept
+  // current by character-revoked below. Every other client (not just the
+  // host) also tracks this, purely to put a name on its own revoked-notice.
+  const roster = new Map<string, string>();
+  const partyControls = isHost ? (root.querySelector('#party-controls') as HTMLElement) : null;
+
+  function renderPartyControls(): void {
+    if (!partyControls) return;
+    partyControls.replaceChildren();
+    if (roster.size === 0) return;
+    const heading = document.createElement('h4');
+    heading.textContent = 'Party';
+    partyControls.appendChild(heading);
+    for (const [characterId, name] of roster) {
+      const row = document.createElement('div');
+      row.className = 'party-row';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'party-name';
+      nameSpan.textContent = name;
+      row.appendChild(nameSpan);
+
+      const isLast = roster.size === 1;
+      const revokeBtn = document.createElement('button');
+      revokeBtn.className = 'revoke-btn ghost-btn';
+      revokeBtn.textContent = isLast ? 'Revoke (ends game)' : 'Revoke';
+      revokeBtn.addEventListener('click', () => {
+        // Revoking the last live character empties the party, and an empty
+        // party ends the session outright (there is no one left for the
+        // loop to run turns for) — the host must not find that out only
+        // after clicking.
+        if (isLast && !confirm(`${name} is the last character left. Revoking them will end the game. Continue?`)) return;
+        const reason = prompt('Reason for revoking (optional):') || undefined;
+        ws.send({ type: 'revoke-character', characterId, reason });
+        revokeBtn.disabled = true;
+      });
+      row.appendChild(revokeBtn);
+      partyControls.appendChild(row);
+    }
+  }
+
+  ws.on('character-roster', (msg) => {
+    if (msg.type !== 'character-roster') return;
+    roster.clear();
+    for (const c of msg.characters) roster.set(c.id, c.name);
+    renderPartyControls();
+  });
+
+  ws.on('character-revoked', (msg) => {
+    if (msg.type !== 'character-revoked') return;
+    const name = roster.get(msg.characterId) ?? 'A character';
+    appendLog(msg.reason ? `${name} has been removed from the table: ${msg.reason}` : `${name} has been removed from the table.`, 'system');
+    roster.delete(msg.characterId);
+    renderPartyControls();
+  });
 
   const locationBar = root.querySelector('#location-bar') as HTMLElement;
   ws.on('narration', (msg) => {
@@ -355,6 +415,15 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       ws.send({ type: 'end-game' });
     });
   }
+
+  // A refused revoke (stale id, already revoked, a second tab's click racing
+  // this one) must not leave that row's button stuck disabled forever with
+  // no explanation — same reasoning as the identical handler in dm-lobby.ts.
+  ws.on('error', (msg) => {
+    if (msg.type !== 'error') return;
+    appendLog(msg.message, 'system');
+    for (const btn of root.querySelectorAll<HTMLButtonElement>('.revoke-btn')) btn.disabled = false;
+  });
 
   const connBanner = document.createElement('div');
   connBanner.className = 'connection-banner';

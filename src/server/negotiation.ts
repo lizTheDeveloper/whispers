@@ -139,6 +139,11 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
       'DM',
       `We've reached the ${MAX_NEGOTIATION_ROUNDS}-round limit for this discussion. The negotiation is closed — it's up to the host to approve or reject the character from here.`,
     );
+    // Structured, alongside the prose line above: negotiation-message is free
+    // text a client can only ever log, not act on. A client needs something
+    // it can switch on to disable its input box — without this, both sides
+    // keep a live input that silently discards everything typed into it.
+    this.sendToBoth({ type: 'negotiation-closed', characterId: this.characterId });
     this.close();
   }
 

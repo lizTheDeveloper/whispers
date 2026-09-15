@@ -285,6 +285,37 @@ describe('AI DM approves characters when the host is playing', () => {
 
       await closeWs(hostWs);
     }, 20_000);
+
+    it('refuses an oversized host-reject-character reason with a message, instead of broadcasting it', async () => {
+      // reason is unbounded on the wire but ends up on the player's own
+      // screen (character-validated.feedback) and, via that broadcast, in
+      // every later LLM prompt that quotes it back. Same bound as
+      // revoke-character's reason (isValidLongField / MAX_LONG_FIELD), just
+      // never enforced here before this fix.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+
+      sendMsg(hostWs, { type: 'host-reject-character', characterId: review.characterId, reason: 'x'.repeat(5001) });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/reason.*most|most.*characters/i);
+
+      // Nothing reached the player — the oversized reason never broadcasts.
+      await expect(pq.waitFor('character-validated', 2_000)).rejects.toThrow(/Timeout/);
+      await expect(hostQ.waitFor('character-rejected', 2_000)).rejects.toThrow(/Timeout/);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
   });
 
   /**
@@ -653,6 +684,106 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(playerWs);
       await closeWs(hostWs);
     }, 60_000);
+
+    it('does not reopen the interview on a mid-game revoke — the rebuild path stays honest', async () => {
+      // revoke-character used to reopen the revoked player's interview
+      // unconditionally. That is a promise submit-character and char-chat
+      // both break once phase has left character-creation (both refuse
+      // outside it) — a revoke mid-game left the interview 'open' with no
+      // handler that would ever honor it. The fix: only reopen while still
+      // in character-creation, where the promise is actually kept.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table
+
+      const playerAWs = await connectWs(port);
+      const aq = new MessageQueue(playerAWs);
+      sendMsg(playerAWs, { type: 'join', joinCode, playerName: 'Ada' });
+      const aJoined = await aq.waitFor('room-joined', 10_000) as any;
+      sendMsg(playerAWs, { type: 'submit-character', definition: CHAR });
+      const reviewA = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: reviewA.characterId });
+      await aq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      const playerBWs = await connectWs(port);
+      const bq = new MessageQueue(playerBWs);
+      sendMsg(playerBWs, { type: 'join', joinCode, playerName: 'Rin' });
+      await bq.waitFor('room-joined', 10_000);
+      sendMsg(playerBWs, { type: 'submit-character', definition: CHAR2 });
+      const reviewB = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: reviewB.characterId });
+      await bq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'start-game' });
+      const phase = await hostQ.waitFor('phase-change', 15_000) as any;
+      expect(phase.phase).toBe('playing');
+
+      // Revoke A, not B, so the party doesn't empty and the game keeps
+      // running — this test is about the interview, not about end-of-game.
+      sendMsg(hostWs, { type: 'revoke-character', characterId: reviewA.characterId, reason: 'Recast' });
+      await hostQ.waitFor('character-revoked', 10_000);
+
+      const interviews = await import('../src/server/character-interview.js');
+      const db = (await import('../src/server/db.js')).getDb();
+      const interview = interviews.getInterviewBySession(db, joined.campaignId, aJoined.sessionToken);
+      // Not 'open' — makeCharacterLive set it to 'live' when A was approved,
+      // and the mid-game revoke must not have moved it off that.
+      expect(interview!.status).not.toBe('open');
+
+      // And the state isn't just labeled honestly — it behaves that way:
+      // both routes a reopened interview would need still refuse.
+      sendMsg(playerAWs, { type: 'char-chat', text: 'Can I build someone new?' });
+      const chatRefusal = await aq.waitFor('error', 10_000) as any;
+      expect(chatRefusal.message).toMatch(/character creation/i);
+
+      sendMsg(playerAWs, { type: 'submit-character', definition: CHAR });
+      const submitRefusal = await aq.waitFor('error', 10_000) as any;
+      expect(submitRefusal.message).toMatch(/character creation/i);
+
+      sendMsg(hostWs, { type: 'end-game' });
+      await hostQ.waitFor('phase-change', 20_000);
+
+      await closeWs(playerAWs);
+      await closeWs(playerBWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('broadcasts the live party roster when the game starts, to host and player alike', async () => {
+      // The only source the host's mid-game revoke UI (and a room-wide
+      // character-revoked notice, which needs a name to show) has for who is
+      // actually at the table.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await pq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      sendMsg(hostWs, { type: 'start-game' });
+      await hostQ.waitFor('phase-change', 15_000);
+
+      const hostRoster = await hostQ.waitFor('character-roster', 10_000) as any;
+      expect(hostRoster.characters).toEqual([{ id: review.characterId, name: CHAR.name }]);
+      const playerRoster = await pq.waitFor('character-roster', 10_000) as any;
+      expect(playerRoster.characters).toEqual([{ id: review.characterId, name: CHAR.name }]);
+
+      sendMsg(hostWs, { type: 'end-game' });
+      await hostQ.waitFor('phase-change', 20_000);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
   });
 
   describe('a negotiation that can end', () => {
@@ -706,6 +837,15 @@ describe('AI DM approves characters when the host is playing', () => {
           expect(closure.text).toMatch(/closed|limit/i);
           // No char-agent turn ran for the round that crossed the cap.
           await expect(hostQ.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
+
+          // Structured, alongside the prose above — this is what a client
+          // actually switches on to disable its input box; the prose line is
+          // free text a client can only ever log, never act on. Sent to both
+          // sides (sendToBoth), not just the host.
+          const hostClosed = await hostQ.waitFor('negotiation-closed', 5_000) as any;
+          expect(hostClosed.characterId).toBe(review.characterId);
+          const playerClosed = await pq.waitFor('negotiation-closed', 5_000) as any;
+          expect(playerClosed.characterId).toBe(review.characterId);
         }
       }
       expect(charAgentTurns).toBe(MAX_NEGOTIATION_ROUNDS);
@@ -723,6 +863,38 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(playerWs);
       await closeWs(hostWs);
     }, 90_000);
+
+    it('refuses an oversized negotiation-message with a message, instead of broadcasting it to the other side', async () => {
+      // text is unbounded on the wire but reaches the other participant's
+      // screen via broadcast AND the DM/character agent prompts on the next
+      // round — same bound as revoke-character's reason and
+      // host-reject-character's reason.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      await hostQ.waitFor('negotiation-message', 15_000); // the DM's opening line, host side
+      await pq.waitFor('negotiation-message', 15_000); // same opening line, player side — drain both before asserting on silence below
+
+      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'y'.repeat(5001) });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/most.*characters/i);
+
+      // Nothing was broadcast to the player over this — not even an echo.
+      await expect(pq.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
 
     it('room teardown clears a stale negotiation so a replacement can open for the same character', async () => {
       const { ws: hostWs, q: hostQ, joined } = await createGame();
@@ -962,6 +1134,46 @@ describe('AI DM approves characters when the host is playing', () => {
       const db = (await import('../src/server/db.js')).getDb();
       const campaign = room.joinRoom(db, joinCode);
       expect(campaign?.hostTableRole).toBe('dm');
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 60_000);
+
+    it('also refuses choose-table-role once a character is LIVE (not merely pending) — the hasLiveCharacter half of the guard', async () => {
+      // The guard is `hasPendingCharacter || hasLiveCharacter`. A character
+      // that has already been approved is no longer pending — approval
+      // deletes its pending row (see makeCharacterLive) — so this exercises
+      // hasLiveCharacter in isolation from hasPendingCharacter: disabling
+      // hasLiveCharacter alone, with hasPendingCharacter left correct, makes
+      // this refusal vanish while every other test in this file still
+      // passes.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await hostQ.waitFor('character-submitted', 10_000);
+      await pq.waitFor('character-submitted', 10_000);
+
+      // No pending characters remain — the row was deleted on approval — so
+      // a refusal here can only come from hasLiveCharacter.
+      const room2 = await import('../src/server/room.js');
+      const db2 = (await import('../src/server/db.js')).getDb();
+      expect(room2.listPendingCharacters(db2, joined.campaignId).length).toBe(0);
+
+      sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
+      const refusal2 = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal2.message).toMatch(/character/i);
+      expect(room2.joinRoom(db2, joinCode)?.hostTableRole).toBe('dm');
 
       await closeWs(playerWs);
       await closeWs(hostWs);

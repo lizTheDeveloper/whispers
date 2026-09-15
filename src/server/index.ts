@@ -611,6 +611,12 @@ wss.on('connection', (ws) => {
         phase: campaign.phase,
       });
 
+      // Read once, reused by both the interview-replay check below and the
+      // sendWorldIntroduction gate further down — computing it twice, 20-odd
+      // lines apart, left nothing keeping the two reads in agreement.
+      let nonOwnerInterview: ReturnType<typeof getInterviewBySession> = null;
+      let nonOwnerHasChatted = false;
+
       if (currentPlayer.isOwner) {
         currentPlayer.setupChat = loadSetupChat(db, campaign.id);
         sendDmSettings(ws, campaign);
@@ -641,10 +647,10 @@ wss.on('connection', (ws) => {
           // transcript exist". A transcript containing only the stored
           // introduction is handled below (replayed, not regenerated), not
           // here.
-          const interview = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken);
-          const hasChatted = interview?.transcript.some(t => t.role === 'user') ?? false;
-          if (hasChatted && interview) {
-            send(ws, { type: 'interview-replay', transcript: interview.transcript, definition: interview.definition });
+          nonOwnerInterview = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken);
+          nonOwnerHasChatted = nonOwnerInterview?.transcript.some(t => t.role === 'user') ?? false;
+          if (nonOwnerHasChatted && nonOwnerInterview) {
+            send(ws, { type: 'interview-replay', transcript: nonOwnerInterview.transcript, definition: nonOwnerInterview.definition });
           }
         }
       }
@@ -657,12 +663,17 @@ wss.on('connection', (ws) => {
       // — already sent above — from a reconnecting player. The helper owns
       // its own try/catch, so a failure here just logs, and it replays a
       // stored introduction rather than regenerating one.
-      if (!currentPlayer.isOwner && campaign.phase === 'character-creation') {
-        const interview = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken);
-        const hasChatted = interview?.transcript.some(t => t.role === 'user') ?? false;
-        if (!hasChatted) {
-          void sendWorldIntroduction(ws, campaign, currentPlayer.sessionToken);
-        }
+      if (!currentPlayer.isOwner && campaign.phase === 'character-creation' && !nonOwnerHasChatted) {
+        void sendWorldIntroduction(ws, campaign, currentPlayer.sessionToken);
+      }
+
+      // A host who reconnects mid-game (or after it ended) lands on a freshly
+      // mounted game-view with no memory of the party — resend the roster so
+      // their revoke controls come back instead of staying empty until the
+      // next in-flight turn happens to mention a character.
+      if (currentPlayer.isOwner && (campaign.phase === 'playing' || campaign.phase === 'ended')) {
+        const loop = gameLoops.get(msg.joinCode);
+        if (loop) send(ws, { type: 'character-roster', characters: loop.rosterSnapshot });
       }
     }
 
@@ -925,6 +936,10 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: 'That character is not pending review — it may already have been decided.' });
         return;
       }
+      if (!isValidLongField(msg.reason)) {
+        send(ws, { type: 'error', message: `Rejection reason must be at most ${MAX_LONG_FIELD} characters.` });
+        return;
+      }
       const playerWs = socketFor(currentJoinCode, pending.sessionToken);
       if (playerWs) send(playerWs, { type: 'character-validated', characterId: pending.id, approved: false, feedback: `Host feedback: ${msg.reason}` });
       const neg = negotiations.get(msg.characterId);
@@ -989,8 +1004,19 @@ wss.on('connection', (ws) => {
       const ownerToken = getSessionTokenForCharacter(db, revokeCampaign.id, msg.characterId);
       if (ownerToken) {
         clearSessionCharacter(db, ownerToken);
-        const interview = getInterviewBySession(db, revokeCampaign.id, ownerToken);
-        if (interview) setInterviewStatus(db, interview.id, 'open');
+        // Reopening the interview is only honest during character-creation —
+        // that's the only phase submit-character and char-chat still accept
+        // it in. A revoke mid-game (playing/ended) must not leave the
+        // interview 'open' promising a rebuild path that leads nowhere: both
+        // of those handlers would refuse the very player this reopened for.
+        // Not reopening here, rather than reopening and telling them they
+        // can't use it yet, is the smaller lie to leave standing — it needs
+        // no new client-facing copy and no new state for anything else to
+        // contradict.
+        if (revokeCampaign.phase === 'character-creation') {
+          const interview = getInterviewBySession(db, revokeCampaign.id, ownerToken);
+          if (interview) setInterviewStatus(db, interview.id, 'open');
+        }
       }
 
       const playerInRoom = rooms.get(currentJoinCode)?.find(p => p.sessionToken === ownerToken);
@@ -1028,6 +1054,13 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'negotiation-message' && currentJoinCode && currentPlayer) {
+      // Unbounded otherwise: this reaches every other client's screen via
+      // broadcast AND the DM/character agent prompts on the next round.
+      // Mirrors revoke-character's reason bound above.
+      if (!isValidLongField(msg.text)) {
+        send(ws, { type: 'error', message: `Message must be at most ${MAX_LONG_FIELD} characters.` });
+        return;
+      }
       const negotiation = negotiations.get(msg.characterId);
       if (!negotiation || negotiation.isClosed()) return;
       const sender = negotiation.isParticipant(ws);
