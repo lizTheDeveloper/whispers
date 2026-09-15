@@ -964,8 +964,6 @@ wss.on('connection', (ws) => {
       }
       const playerWs = socketFor(currentJoinCode, pending.sessionToken);
       if (playerWs) send(playerWs, { type: 'character-validated', characterId: pending.id, approved: false, feedback: `Host feedback: ${msg.reason}` });
-      const neg = negotiations.get(msg.characterId);
-      if (neg) { neg.close(); negotiations.delete(msg.characterId); }
       deletePendingCharacter(db, msg.characterId);
 
       // The host's own socket gets nothing today unless told explicitly —
@@ -974,6 +972,18 @@ wss.on('connection', (ws) => {
       // the pending row is actually gone, so a client painting "Rejected"
       // off this event is never ahead of the database.
       send(ws, { type: 'character-rejected', characterId: pending.id, reason: msg.reason });
+
+      // close() (which broadcasts the generic negotiation-closed) runs LAST,
+      // after both sides already have their specific outcome message
+      // (character-validated for the player, character-rejected for the
+      // host) — same ordering host-approve-character uses. The client
+      // treats whichever specific message it saw first as authoritative and
+      // no-ops on negotiation-closed once already closed (see
+      // negotiation-chat.ts), so this ordering is what keeps the generic
+      // notice from ever winning the race and displaying instead of the
+      // specific one.
+      const neg = negotiations.get(msg.characterId);
+      if (neg) { neg.close(); negotiations.delete(msg.characterId); }
     }
 
     // The host keeps a silent, non-blocking veto over a character even after
@@ -1085,6 +1095,22 @@ wss.on('connection', (ws) => {
             gameLoops.delete(jc);
           });
       }
+
+      // Defensive, not currently reachable through this handler's own
+      // control flow: revokeCharacter above only ever succeeds against a
+      // row already in the `characters` table, and the only two paths that
+      // put a row there — the AI-auto-approve branch of submit-character,
+      // and host-approve-character — either never open a negotiation for
+      // that id at all, or write the row and call neg.close() in the same
+      // synchronous handler with no await between them, so today there is
+      // no tick in which a revocable character's negotiation can still be
+      // open. Kept anyway because that is an invariant of today's call
+      // graph, not a guarantee revoke-character's own contract makes — a
+      // live character with a dangling negotiation entry must not leave the
+      // player staring at a phantom input box, however that entry came to
+      // still exist.
+      const neg = negotiations.get(msg.characterId);
+      if (neg && !neg.isClosed()) { neg.close(); negotiations.delete(msg.characterId); }
 
       broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
     }

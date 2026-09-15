@@ -1033,6 +1033,84 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(hostWs2);
     }, 30_000);
 
+    it('revoking a character notifies both parties with negotiation-closed and refuses further negotiation-message with an error', async () => {
+      // revoke-character only ever succeeds against a row already in the
+      // `characters` table (see room.ts's revokeCharacter), and today's two
+      // paths into that table either never open a negotiation for the id at
+      // all (the AI-auto-approve branch of submit-character) or write the
+      // row and call neg.close() in the same synchronous handler with no
+      // await between them (host-approve-character) — so the protocol
+      // itself cannot produce "a live, revocable character whose own
+      // negotiation is still open." This test constructs that state
+      // directly (same technique the room-teardown test above uses:
+      // reaching into serverMod.negotiations) to exercise revoke-
+      // character's own defensive cleanup, which must not depend on that
+      // invariant holding forever.
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      const campaignId = joined.campaignId as string;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      await hostQ.waitFor('negotiation-message', 15_000); // the DM's opening turn, host side
+      await pq.waitFor('negotiation-message', 15_000); // same opening turn, player side
+
+      const serverMod = await import('../src/server/index.js');
+      const negotiation = serverMod.negotiations.get(review.characterId);
+      expect(negotiation).toBeDefined();
+      expect(negotiation!.isClosed()).toBe(false);
+
+      // Make the character live WITHOUT going through host-approve-
+      // character — that handler is the one thing that would close this
+      // negotiation itself, and bypassing it is the whole point: it leaves
+      // a live character with its negotiation still open, the exact state
+      // revoke-character's defensive cleanup exists for.
+      const { getDb } = await import('../src/server/db.js');
+      const { listPendingCharacters } = await import('../src/server/room.js');
+      const { makeCharacterLive } = await import('../src/server/character-live.js');
+      const db = getDb();
+      const pendingRow = listPendingCharacters(db, campaignId).find(p => p.id === review.characterId);
+      expect(pendingRow).toBeDefined();
+      makeCharacterLive(db, pendingRow!);
+
+      // Still open — makeCharacterLive alone does not touch the negotiation.
+      expect(serverMod.negotiations.get(review.characterId)!.isClosed()).toBe(false);
+
+      sendMsg(hostWs, { type: 'revoke-character', characterId: review.characterId, reason: 'Recast' });
+      await hostQ.waitFor('character-revoked', 10_000);
+      await pq.waitFor('character-revoked', 10_000);
+
+      // The falsifiable core: BOTH parties get the structured, client-
+      // actionable negotiation-closed signal — not just a character-revoked
+      // broadcast neither side's negotiation panel listens for.
+      const hostClosed = await hostQ.waitFor('negotiation-closed', 10_000) as any;
+      expect(hostClosed.characterId).toBe(review.characterId);
+      const playerClosed = await pq.waitFor('negotiation-closed', 10_000) as any;
+      expect(playerClosed.characterId).toBe(review.characterId);
+
+      // The map entry is actually gone, not just marked closed in place.
+      expect(serverMod.negotiations.has(review.characterId)).toBe(false);
+
+      // Past the revoke, a further human message is refused — WITH a
+      // message, not silently — and never reaches the other party.
+      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'still there?' });
+      const refusal = await hostQ.waitFor('error', 10_000) as any;
+      expect(refusal.message).toMatch(/closed/i);
+      await expect(pq.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 30_000);
+
     it('does not reopen a negotiation on reconnect once the host has switched to playing — no approver, no negotiation', async () => {
       const { ws: hostWs, q: hostQ, joined } = await createGame();
       const { joinCode } = joined;

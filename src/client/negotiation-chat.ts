@@ -103,9 +103,23 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     addMessage(msg.senderName, msg.sender, msg.text);
   });
 
+  // negotiation-closed is the generic signal behind EVERY genuine close —
+  // approve, reject, revoke, and room teardown all go through
+  // NegotiationRoom.close(), which broadcasts it (see negotiation.ts). Three
+  // of those paths (approve, reject, and — when it eventually lands — a
+  // revoke observed by this panel) ALSO send their own specific outcome
+  // message (character-submitted / character-validated / character-
+  // rejected), and the server sends the specific one first. Whichever of
+  // the four handlers below runs first sets `closed` and shows ITS notice;
+  // every handler after that is a guarded no-op, so exactly one notice ever
+  // shows regardless of arrival order — this is what keeps the generic
+  // "discussion is closed" notice from double-firing alongside a specific
+  // one instead of covering only the cases that have no specific message of
+  // their own (revoke, teardown).
   ws.on('negotiation-closed', (msg) => {
     if (msg.type !== 'negotiation-closed') return;
     if (msg.characterId !== characterId) return;
+    if (closed) return;
     closed = true;
     input.disabled = true;
     sendBtn.disabled = true;
@@ -119,6 +133,8 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   ws.on('character-submitted', (msg) => {
     if (msg.type !== 'character-submitted') return;
     if (msg.characterId !== characterId) return;
+    if (closed) return;
+    closed = true;
     actionPending = false;
     const notice = document.createElement('div');
     notice.className = 'negotiation-bubble system';
@@ -132,6 +148,8 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     if (msg.type !== 'character-validated') return;
     if (msg.characterId !== characterId) return;
     if (!msg.approved) {
+      if (closed) return;
+      closed = true;
       actionPending = false;
       const notice = document.createElement('div');
       notice.className = 'negotiation-bubble system';
@@ -150,6 +168,8 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   ws.on('character-rejected', (msg) => {
     if (msg.type !== 'character-rejected') return;
     if (msg.characterId !== characterId) return;
+    if (closed) return;
+    closed = true;
     actionPending = false;
     const notice = document.createElement('div');
     notice.className = 'negotiation-bubble system';

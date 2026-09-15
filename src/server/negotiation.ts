@@ -138,7 +138,21 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
     }
   }
 
-  close(): void { this.closed = true; }
+  /**
+   * The single place every genuine close goes through — host-approve-
+   * character, host-reject-character, revoke-character, and room teardown
+   * all call this (see src/server/index.ts) — so `negotiation-closed`
+   * fires from here once, rather than being duplicated at each call site
+   * and inevitably missed at a new one. Idempotent: a second close() call
+   * on an already-closed instance (defensive — no current call site does
+   * this, since every one also deletes its map entry right after calling
+   * close()) is a no-op rather than a second broadcast.
+   */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.sendToBoth({ type: 'negotiation-closed', characterId: this.characterId });
+  }
 
   /**
    * `close()` can land mid-call from host-approve-character, host-reject-
