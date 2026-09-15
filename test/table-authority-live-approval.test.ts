@@ -136,6 +136,42 @@ describe('AI DM approves characters when the host is playing', () => {
     await closeWs(hostWs);
   }, 60_000);
 
+  it("acknowledges a successful host-reject-character to the host's own socket, not just the player's", async () => {
+    // character-validated (approved: false) already told the player. Before
+    // this fix round, the host who clicked Reject got nothing back at all —
+    // the client painted "Rejected" on the click itself, a claim the server
+    // had not yet made good on. This is the acknowledgement that closes that
+    // gap: sent to the rejecting host once the pending row is actually gone.
+    const { ws: hostWs, q: hostQ, joined } = await createGame();
+    const { joinCode } = joined;
+
+    await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+    await pq.waitFor('room-joined', 10_000);
+    sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+    const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+    // Drain the AI DM's own approved:true confirmation — sent to the player
+    // the moment it validates the submission, before host review even
+    // starts — so the assertion below observes the host's decision, not
+    // this earlier one.
+    await pq.waitFor('character-validated', 10_000);
+
+    sendMsg(hostWs, { type: 'host-reject-character', characterId: review.characterId, reason: 'Not a fit for this table' });
+
+    const ack = await hostQ.waitFor('character-rejected', 10_000) as any;
+    expect(ack.characterId).toBe(review.characterId);
+    expect(ack.reason).toBe('Not a fit for this table');
+
+    const validated = await pq.waitFor('character-validated', 10_000) as any;
+    expect(validated.approved).toBe(false);
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
+
   describe('host review guards refuse with a message, not silence', () => {
     it('refuses host-approve-character from a host without DM authority, with a message naming that', async () => {
       const { ws: hostWs, q: hostQ, joined } = await createGame();

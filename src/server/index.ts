@@ -845,6 +845,13 @@ wss.on('connection', (ws) => {
       const neg = negotiations.get(msg.characterId);
       if (neg) { neg.close(); negotiations.delete(msg.characterId); }
       deletePendingCharacter(db, msg.characterId);
+
+      // The host's own socket gets nothing today unless told explicitly —
+      // acknowledge the reject actually landed, the same way
+      // character-submitted acknowledges an approve. Sent last, only once
+      // the pending row is actually gone, so a client painting "Rejected"
+      // off this event is never ahead of the database.
+      send(ws, { type: 'character-rejected', characterId: pending.id, reason: msg.reason });
     }
 
     // The host keeps a silent, non-blocking veto over a character even after

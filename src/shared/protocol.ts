@@ -34,6 +34,7 @@ export type ServerMessage =
   | { type: 'character-submitted'; characterId: string; definition: CharacterDefinition }
   | { type: 'character-revoked'; characterId: string; reason: string }
   | { type: 'character-validated'; characterId: string; approved: boolean; feedback: string }
+  | { type: 'character-rejected'; characterId: string; reason: string }
   | { type: 'character-pending-review'; characterId: string; definition: CharacterDefinition; aiApproved: boolean; aiFeedback: string; playerName: string }
   | { type: 'negotiation-message'; characterId: string; sender: 'dm-agent' | 'host' | 'player' | 'char-agent'; senderName: string; text: string }
   | { type: 'negotiation-opened'; characterId: string; characterName: string; playerName: string }

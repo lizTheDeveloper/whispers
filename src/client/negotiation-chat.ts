@@ -123,6 +123,23 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     }
   });
 
+  // The player's side learns a reject happened from character-validated
+  // above. The host's own socket gets nothing from that message — it goes
+  // only to the player — so without this, a host who rejects from this
+  // panel sees both buttons go disabled and then silence forever, with no
+  // sign the reject ever took effect (or that it didn't).
+  ws.on('character-rejected', (msg) => {
+    if (msg.type !== 'character-rejected') return;
+    if (msg.characterId !== characterId) return;
+    actionPending = false;
+    const notice = document.createElement('div');
+    notice.className = 'negotiation-bubble system';
+    notice.textContent = `Character rejected: ${msg.reason}`;
+    log.appendChild(notice);
+    input.disabled = true;
+    sendBtn.disabled = true;
+  });
+
   // A refused approve/reject (no authority, no such pending character, wrong
   // phase) must not leave this panel's buttons permanently disabled with no
   // explanation — that is the exact bug this panel existed to avoid on the

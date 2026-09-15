@@ -584,8 +584,11 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
       ws.send({ type: 'host-reject-character', characterId: msg.characterId, reason });
       approveBtn.disabled = true;
       rejectBtn.disabled = true;
+      // Not 'Rejected' — the server hasn't said so yet. That label only
+      // belongs to the character-rejected handler below, which fires
+      // exclusively once the pending row is actually gone.
       const status = card.querySelector('.dm-char-status');
-      if (status) { status.textContent = 'Rejected'; status.className = 'dm-char-status rejected'; }
+      if (status) { status.textContent = 'Rejecting…'; status.className = 'dm-char-status pending'; }
       pendingCharacterActions.add(card);
     });
     actions.append(approveBtn, rejectBtn);
@@ -655,6 +658,19 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     }
     approvedCount++;
     updateStartButton();
+  });
+
+  ws.on('character-rejected', (msg) => {
+    if (msg.type !== 'character-rejected') return;
+    const existing = submissions.querySelector(`[data-char-id="${CSS.escape(msg.characterId)}"]`) as HTMLElement | null;
+    if (!existing) return;
+    pendingCharacterActions.delete(existing);
+    existing.classList.remove('pending');
+    existing.classList.add('rejected');
+    const actionsEl = existing.querySelector('.dm-char-actions');
+    if (actionsEl) actionsEl.remove();
+    const status = existing.querySelector('.dm-char-status');
+    if (status) { status.textContent = 'Rejected'; status.className = 'dm-char-status rejected'; }
   });
 
   ws.on('character-revoked', (msg) => {
