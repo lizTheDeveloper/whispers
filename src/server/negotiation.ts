@@ -9,11 +9,33 @@ interface NegotiationEntry {
   text: string;
 }
 
+/**
+ * Hard cap on back-and-forth rounds (one DM turn + one character turn, run
+ * together once both the host and the player have spoken) before a
+ * negotiation force-closes on its own. Without this, two sides that never
+ * converge — or simply never stop typing — keep the DM and character agents
+ * running forever on every exchange, with no owner but "the conversation
+ * happens to end."
+ *
+ * This project has two existing precedents for "how long is too long for an
+ * unbounded LLM back-and-forth": the 35-message scene-transcript compaction
+ * threshold and game-loop.ts's 10-round hard cap on a scene's own turn
+ * counter (see CLAUDE.md). A sibling game caps a similarly open-ended
+ * stuck-dialogue loop at 3 turns. Splitting the difference toward the
+ * stricter, same-project precedent: 5 rounds is 10 agent messages (DM +
+ * character, twice per round) — the same order of magnitude as the scene
+ * cap, generous enough for a real negotiation to actually happen, but bounded
+ * so a disagreement that will not resolve itself cannot starve the host of
+ * ever having to make the call.
+ */
+export const MAX_NEGOTIATION_ROUNDS = 5;
+
 export class NegotiationRoom {
   private history: NegotiationEntry[] = [];
   private hostSpoke = false;
   private playerSpoke = false;
   private closed = false;
+  private round = 0;
 
   /**
    * Sockets are resolved on every send rather than captured up front: either
@@ -29,6 +51,8 @@ export class NegotiationRoom {
     private resolveHostWs: () => WebSocket | null,
     private campaignId: string,
     private dmPreset: string,
+    /** Which room this negotiation belongs to, so room teardown can find it. */
+    readonly joinCode: string,
   ) {}
 
   async open(): Promise<void> {
@@ -58,6 +82,11 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
     if (this.hostSpoke && this.playerSpoke) {
       this.hostSpoke = false;
       this.playerSpoke = false;
+      this.round++;
+      if (this.round > MAX_NEGOTIATION_ROUNDS) {
+        this.closeAtCap();
+        return;
+      }
       await this.runAgentTurns();
     }
   }
@@ -91,6 +120,24 @@ Introduce the character to the group. Summarize the sheet, note what you like, a
   }
 
   close(): void { this.closed = true; }
+
+  /**
+   * Reaching the round cap ends the DISCUSSION, not the DECISION — it never
+   * calls makeCharacterLive or anything like it. Auto-approving here would
+   * mean the model decides the outcome of a stuck negotiation, which is
+   * exactly the authority this feature exists to keep with the host. The
+   * Approve/Reject buttons on the host's panel remain live after this: the
+   * negotiation is closed, the character is not.
+   */
+  private closeAtCap(): void {
+    if (this.closed) return;
+    this.addAndBroadcast(
+      'dm-agent',
+      'DM',
+      `We've reached the ${MAX_NEGOTIATION_ROUNDS}-round limit for this discussion. The negotiation is closed — it's up to the host to approve or reject the character from here.`,
+    );
+    this.close();
+  }
 
   private async runAgentTurns(): Promise<void> {
     if (this.closed) return;

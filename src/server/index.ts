@@ -25,7 +25,7 @@ import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
 import { NegotiationRoom } from './negotiation.js';
-import { hasDmAuthority, isWorldAuthor, effectiveTableRole } from './seat.js';
+import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
   getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewStatus, getInterviewBySession,
   type InterviewTurn,
@@ -36,6 +36,10 @@ import type { CampaignMaterial } from '../shared/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
+// Same reasoning as PORT/DATA_DIR/LLM_PROXY_URL above: read once at import
+// time so a test harness can shrink the reconnect grace period instead of a
+// test needing to actually wait 30 real seconds for room teardown.
+const ROOM_TEARDOWN_GRACE_MS = parseInt(process.env.ROOM_TEARDOWN_GRACE_MS ?? '30000', 10);
 
 process.on('uncaughtException', (err) => {
   console.error('[server] Uncaught exception — game state may be inconsistent:', err.stack ?? err.message);
@@ -160,16 +164,26 @@ function pendingReviewMsg(p: PendingCharacterRow): ServerMessage {
 }
 
 function openNegotiation(
-  campaign: { id: string; dmPreset: string },
+  campaign: { id: string; dmPreset: string; hostTableRole: TableRole | null },
   joinCode: string,
   pending: PendingCharacterRow,
 ): void {
   if (negotiations.has(pending.id)) return;
+  // Belt-and-braces with the early return in the submit-character handler
+  // (which never reaches this function at all on the host-as-player path):
+  // this call site is also reachable from the reconnect replay loop above,
+  // independently of that guard, for every character still pending review.
+  // If the host's table role moved to 'player' between submission and
+  // reconnect — and this task's own leak fix means a stale negotiation entry
+  // no longer permanently blocks this from running again — this is the only
+  // thing standing between a player and a negotiation panel with dead
+  // Approve/Reject buttons and no way to end it.
+  if (!hasDmAuthority({ isOwner: true }, campaign.hostTableRole)) return;
   const negotiation = new NegotiationRoom(
     pending.id, pending.definition, pending.aiFeedback, pending.playerName,
     () => socketFor(joinCode, pending.sessionToken),
     () => hostSocket(joinCode),
-    campaign.id, campaign.dmPreset,
+    campaign.id, campaign.dmPreset, joinCode,
   );
   negotiations.set(pending.id, negotiation);
   negotiation.open().catch(e => console.error('[negotiation] open failed:', e));
@@ -1289,9 +1303,18 @@ wss.on('connection', (ws) => {
             rooms.delete(jc);
             const loop = gameLoops.get(jc);
             if (loop) { loop.stop(); gameLoops.delete(jc); }
+            // Cleared in the same place as rooms/gameLoops so the three
+            // cannot drift apart. Without this, a negotiation for this room
+            // sits in the map forever: openNegotiation's has() guard then
+            // permanently blocks a fresh negotiation from ever being opened
+            // for that character again, even after everyone reconnects —
+            // not just a memory leak, a dead feature for anyone who does.
+            for (const [charId, neg] of negotiations) {
+              if (neg.joinCode === jc) { neg.close(); negotiations.delete(charId); }
+            }
             console.log(`[server] Room ${jc} cleaned up after reconnect grace period`);
           }
-        }, 30_000);
+        }, ROOM_TEARDOWN_GRACE_MS);
       } else {
         broadcast(currentJoinCode, { type: 'player-left', playerName: currentPlayer.playerName });
       }
@@ -1329,4 +1352,4 @@ server.listen(PORT, () => {
   console.log(`Whispers server listening on port ${PORT}`);
 });
 
-export { app, server, wss, gameLoops };
+export { app, server, wss, gameLoops, negotiations };

@@ -76,6 +76,18 @@ export const LLM_STUB_REPLIES = {
   },
   worldIntroduction:
     'The lamp has been lit every night for thirty years. Tonight the relief keeper did not arrive, and the chapel below has no bell to ring.',
+  // Two short, plain-prose replies for the negotiation agents (negotiation.ts
+  // calls callLlm with no schema, so these are returned as-is, not parsed as
+  // JSON). Without a dedicated branch, every negotiation turn falls through
+  // to the generic 'Understood. Lets keep moving.' fallback below — it still
+  // works, but it is indistinguishable from every other unmatched prompt, so
+  // any test asserting on negotiation dialogue content would be trivially
+  // fooled by the wrong branch matching. See the dispatcher below for why
+  // these use unique substrings instead of the dangerously generic 'You ARE '.
+  negotiationDmReply:
+    'This sheet looks solid to me — good hooks in the trouble, and the skills are balanced for the table. My one note is whether the stunt is a touch strong for this power level, but I would like to hear from both of you first.',
+  negotiationCharReply:
+    'That stunt is core to who I am, so I would like to keep it — but I am glad to trim a skill point if that is what gets us to a yes.',
 };
 
 export interface Harness {
@@ -98,6 +110,14 @@ export async function startHarness(): Promise<Harness> {
 
   const port = await getFreePort();
   process.env.PORT = String(port);
+
+  // Same read-at-import-time rule as PORT/DATA_DIR/LLM_PROXY_URL above.
+  // Shrunk from the 30s production default so a test can actually exercise
+  // the room-teardown path (which now also clears `negotiations` — see
+  // src/server/index.ts) without a real 30-second wait per test. No test
+  // asserts on the literal 30s production value, so this is safe to set
+  // unconditionally for every harness-backed test.
+  process.env.ROOM_TEARDOWN_GRACE_MS ??= '300';
 
   const mod = await import('../../src/server/index.js');
   if (!mod.server.listening) {
@@ -149,6 +169,23 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
               ? LLM_STUB_REPLIES.validationBadModifications
               : LLM_STUB_REPLIES.validation
           );
+        } else if (body.includes('facilitating character creation negotiation')) {
+          // negotiation.ts's DM-agent turn (both the opening summary and
+          // every later round). Unique against every other system prompt in
+          // the server — verified by grep before adding this branch.
+          text = LLM_STUB_REPLIES.negotiationDmReply;
+        } else if (body.includes('character creation discussion')) {
+          // negotiation.ts's character-agent turn. The brief's suggested
+          // dispatch substring for this branch was the prompt's literal
+          // opening, 'You ARE '. Grepping every system prompt in the server
+          // found that exact substring also opens the in-game action
+          // agent's prompt (src/server/agents/character.ts: 'You ARE
+          // ${d.name}. Stay completely in character.') — an earlier branch
+          // wins in this dispatcher, so matching on it here would have
+          // silently rerouted every live gameplay turn in every other test
+          // into negotiation dialogue instead of action-agent output.
+          // 'character creation discussion' is unique to this prompt only.
+          text = LLM_STUB_REPLIES.negotiationCharReply;
         } else if (body.includes('helping set up a new game')) {
           const hostSpoke = body.includes('"role":"user"');
           text = JSON.stringify(hostSpoke ? LLM_STUB_REPLIES.setupDone : LLM_STUB_REPLIES.setupOpen);

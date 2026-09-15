@@ -555,4 +555,176 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(hostWs);
     }, 60_000);
   });
+
+  describe('a negotiation that can end', () => {
+    it('caps agent turns at the round limit, broadcasts a closure, and does not auto-approve', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default) — a human approver exists
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      const opening = await hostQ.waitFor('negotiation-message', 15_000) as any;
+      expect(opening.sender).toBe('dm-agent');
+
+      const { MAX_NEGOTIATION_ROUNDS } = await import('../src/server/negotiation.js');
+
+      // Drive one round past the cap. Each round in-bounds must produce
+      // exactly one dm-agent turn and one char-agent turn; the round that
+      // crosses the cap must produce neither — only a closure notice — which
+      // is the falsifiable core of this test: a handler that kept calling
+      // runAgentTurns regardless of the cap would still pass a weaker
+      // assertion like "a message was sent," but fails this one on the
+      // round MAX_NEGOTIATION_ROUNDS + 1's missing char-agent turn.
+      let charAgentTurns = 0;
+      for (let round = 1; round <= MAX_NEGOTIATION_ROUNDS + 1; round++) {
+        sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: `Host says round ${round}` });
+        const hostEcho = await hostQ.waitFor('negotiation-message', 10_000) as any;
+        expect(hostEcho.sender).toBe('host');
+
+        sendMsg(playerWs, { type: 'negotiation-message', characterId: review.characterId, text: `Player says round ${round}` });
+        const playerEcho = await hostQ.waitFor('negotiation-message', 10_000) as any;
+        expect(playerEcho.sender).toBe('player');
+
+        if (round <= MAX_NEGOTIATION_ROUNDS) {
+          const dmTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
+          expect(dmTurn.sender).toBe('dm-agent');
+          const charTurn = await hostQ.waitFor('negotiation-message', 15_000) as any;
+          expect(charTurn.sender).toBe('char-agent');
+          charAgentTurns++;
+        } else {
+          const closure = await hostQ.waitFor('negotiation-message', 15_000) as any;
+          expect(closure.sender).toBe('dm-agent');
+          expect(closure.text).toMatch(/closed|limit/i);
+          // No char-agent turn ran for the round that crossed the cap.
+          await expect(hostQ.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
+        }
+      }
+      expect(charAgentTurns).toBe(MAX_NEGOTIATION_ROUNDS);
+
+      // The negotiation is fully closed, not merely "quiet": a further
+      // exchange produces no broadcast of any kind, not even the human
+      // messages' own echo.
+      sendMsg(hostWs, { type: 'negotiation-message', characterId: review.characterId, text: 'still there?' });
+      await expect(hostQ.waitFor('negotiation-message', 2_000)).rejects.toThrow(/Timeout/);
+
+      // Do NOT auto-approve at the cap — the decision stays with the host.
+      await expect(pq.waitFor('character-submitted', 2_000)).rejects.toThrow(/Timeout/);
+      await expect(hostQ.waitFor('character-submitted', 2_000)).rejects.toThrow(/Timeout/);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 90_000);
+
+    it('room teardown clears a stale negotiation so a replacement can open for the same character', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      const hostSessionToken = joined.sessionToken as string;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      await hostQ.waitFor('negotiation-message', 15_000); // the DM's opening turn
+
+      const serverMod = await import('../src/server/index.js');
+      const originalNegotiation = serverMod.negotiations.get(review.characterId);
+      expect(originalNegotiation).toBeDefined();
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+
+      // Past the (test-shortened, see server-harness.ts) room-teardown grace
+      // period, which clears rooms/gameLoops/negotiations together.
+      await new Promise((r) => setTimeout(r, 900));
+
+      // The map itself shrank — not merely "the room emptied".
+      expect(serverMod.negotiations.has(review.characterId)).toBe(false);
+
+      // The consequence a shrunk-but-not-checked map would miss: reconnect
+      // must actually be able to open a REPLACEMENT negotiation for this
+      // still-pending character. Before this fix, has() being permanently
+      // true blocked openNegotiation from ever running again for this
+      // characterId — not just a memory leak, a dead feature for anyone who
+      // reconnects. A fresh NegotiationRoom instance (not the same
+      // reference) proves openNegotiation actually ran, as opposed to
+      // replayTo() quietly resending the old, dead one.
+      const hostWs2 = await connectWs(port);
+      const hostQ2 = new MessageQueue(hostWs2);
+      sendMsg(hostWs2, { type: 'rejoin', joinCode, sessionToken: hostSessionToken } as any);
+      await hostQ2.waitFor('room-joined', 10_000);
+      await hostQ2.waitFor('negotiation-opened', 10_000);
+      await hostQ2.waitFor('negotiation-message', 15_000); // the replacement's own opening turn
+
+      const replacementNegotiation = serverMod.negotiations.get(review.characterId);
+      expect(replacementNegotiation).toBeDefined();
+      expect(replacementNegotiation).not.toBe(originalNegotiation);
+
+      await closeWs(hostWs2);
+    }, 30_000);
+
+    it('does not reopen a negotiation on reconnect once the host has switched to playing — no approver, no negotiation', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+      const hostSessionToken = joined.sessionToken as string;
+
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default) — needed so submission creates a pending row + negotiation instead of auto-approving
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+
+      sendMsg(playerWs, { type: 'submit-character', definition: CHAR });
+      await hostQ.waitFor('character-pending-review', 20_000);
+      await pq.waitFor('character-validated', 10_000);
+      await hostQ.waitFor('negotiation-opened', 10_000);
+      await hostQ.waitFor('negotiation-message', 15_000); // the DM's opening turn
+
+      // Nothing today stops the host from switching to playing WHILE a
+      // character is still under negotiation. The pending row, and the now-
+      // abandoned negotiation object, are both still sitting there.
+      sendMsg(hostWs, { type: 'choose-table-role', role: 'player' } as any);
+      await hostQ.waitFor('room-joined', 10_000);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+      // Past the (test-shortened) room-teardown grace period — this task's
+      // own leak fix clears the stale negotiation entry, which is exactly
+      // what makes the reconnect loop's `else openNegotiation(...)` branch
+      // reachable again below. Without the hasDmAuthority gate this is
+      // testing, that branch would happily reopen a negotiation for a table
+      // that now has nobody able to approve or reject anything.
+      await new Promise((r) => setTimeout(r, 900));
+
+      const hostWs2 = await connectWs(port);
+      const hostQ2 = new MessageQueue(hostWs2);
+      sendMsg(hostWs2, { type: 'rejoin', joinCode, sessionToken: hostSessionToken } as any);
+      await hostQ2.waitFor('room-joined', 10_000);
+
+      // The pending character is still reported — there is still a row to
+      // act on eventually — but no negotiation panel opens for a table with
+      // no one able to end it.
+      await hostQ2.waitFor('character-pending-review', 10_000);
+      await expect(hostQ2.waitFor('negotiation-opened', 3_000)).rejects.toThrow(/Timeout/);
+
+      await closeWs(hostWs2);
+    }, 30_000);
+  });
 });
