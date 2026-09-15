@@ -37,9 +37,11 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
   // 'error' arriving with neither button disabled came from somewhere else
   // (another panel, another request) and must not touch this one.
   let actionPending = false;
-  // Set once the round cap closes this discussion (negotiation-closed) so
-  // doSend can refuse locally — input.disabled alone doesn't stop a queued
-  // keydown handler from firing on a field a click already raced past.
+  // Set only on a GENUINE close (negotiation-closed: approved, rejected,
+  // revoked, or the room torn down) so doSend can refuse locally —
+  // input.disabled alone doesn't stop a queued keydown handler from firing on
+  // a field a click already raced past. The round cap does NOT set this: it
+  // sends negotiation-ai-stepped-back and leaves the humans talking.
   let closed = false;
 
   if (isHost) {
