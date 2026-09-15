@@ -1019,6 +1019,16 @@ wss.on('connection', (ws) => {
         });
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
+        // interview was fetched BEFORE the await above — a stale snapshot
+        // from before dm.interviewForCharacter's round trip. This same
+        // socket's confirm-character handler (or, in principle, a second
+        // char-chat this one raced against) reads and writes this row from
+        // the database on every call, never from an in-memory copy, so
+        // gating on or sending back the pre-await object here could
+        // contradict what's actually stored by the time this reply lands.
+        // Re-read fresh before computing readiness or sending anything.
+        const current = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken) ?? interview;
+
         // A clarifying question ("can she be called Ash?") gets `definition:
         // null` back from the model — it isn't re-proposing a sheet, just
         // answering. And a thin-but-non-null proposal (the model believes a
@@ -1030,12 +1040,12 @@ wss.on('connection', (ws) => {
         // every field — and loses both its preview and its confirm button —
         // on its very next follow-up message.
         const proposalReadiness = reply.definition ? checkCharacterReadiness(reply.definition) : null;
-        const storedReadiness = checkCharacterReadiness(interview.definition);
+        const storedReadiness = checkCharacterReadiness(current.definition);
         if (reply.definition && proposalReadiness!.ready) {
           setInterviewDefinition(db, interview.id, reply.definition);
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
           send(ws, { type: 'character-preview', definition: reply.definition, readiness: proposalReadiness! });
-        } else if (interview.definition && storedReadiness.ready) {
+        } else if (current.definition && storedReadiness.ready) {
           // Nothing usable was proposed this turn — either nothing at all, or
           // a thin proposal that doesn't clear the bar — but the stored sheet
           // is still ready. Re-send IT as the preview instead of a false
@@ -1045,7 +1055,7 @@ wss.on('connection', (ws) => {
           // click is a minor inconvenience, not a lie about the character's
           // state.
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: null });
-          send(ws, { type: 'character-preview', definition: interview.definition, readiness: storedReadiness });
+          send(ws, { type: 'character-preview', definition: current.definition, readiness: storedReadiness });
         } else {
           // A proposed-but-incomplete sheet is NOT shown as a definition — the
           // model does not get to decide the interview is finished.

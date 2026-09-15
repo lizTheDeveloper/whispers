@@ -1046,4 +1046,133 @@ describe('AI DM approves characters when the host is playing', () => {
       await closeWs(hostWs);
     }, 60_000);
   });
+
+  // Code-review finding 1 on this task: the Step 4 notice tells the HOST
+  // once, at creation, that their chosen system has no ingested rulebook —
+  // but it does not by itself stop the underlying sentinel from reaching
+  // every OTHER prompt this server sends for the rest of the campaign.
+  // lookupRules (src/server/agents/dm.ts) used to return the literal string
+  // '(No rules found for this query)' on zero chunks, and four call sites
+  // interpolated it raw: setupChat (re-invoked on every dm-chat),interviewForCharacter, validateCharacter, and resolve()'s <rules> block
+  // for in-game action resolution. This drives one full campaign through
+  // ALL FOUR of those call sites — setup chat (via finishWorldSetup's
+  // dm-chat), a two-turn character interview, submission/validation, and
+  // one full action-resolution turn — against a system with zero
+  // rule_chunks (every systemId in this harness, since its DATA_DIR has no
+  // systems/ subdirectory to bootstrap from — see the describe block above
+  // this one), then asserts the sentinel appears in NONE of the raw prompt
+  // bodies the LLM stub received across the whole flow.
+  describe('the "(No rules found for this query)" sentinel never reaches a prompt', () => {
+    it('is absent from every prompt body across setup chat, interview, validation, and resolution', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode } = joined;
+
+      // Drives setupChat: once for the 'create' greeting (intercepted by
+      // the Step 4 notice, so no LLM call), and once for real via the
+      // host's own dm-chat message below.
+      await finishWorldSetup(hostWs, hostQ); // host runs the table (default)
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      await pq.waitFor('room-joined', 10_000);
+      await pq.waitFor('world-introduction', 10_000);
+
+      // Drives interviewForCharacter twice — the harness's stub turns
+      // "done" on the second turn (see server-harness.ts).
+      sendMsg(playerWs, { type: 'char-chat', text: 'I want to play a scavenger with a grudge against the company.' });
+      await pq.waitFor('char-chat-reply', 15_000);
+      await pq.waitFor('character-readiness', 10_000);
+      sendMsg(playerWs, { type: 'char-chat', text: 'She lost her sister to the dust and never forgave the company for it.' });
+      await pq.waitFor('char-chat-reply', 15_000);
+      const preview = await pq.waitFor('character-preview', 10_000) as any;
+
+      // Drives validateCharacter.
+      sendMsg(playerWs, { type: 'confirm-character' });
+      sendMsg(playerWs, { type: 'submit-character', definition: preview.definition });
+      const review = await hostQ.waitFor('character-pending-review', 20_000) as any;
+      await pq.waitFor('character-validated', 10_000);
+
+      sendMsg(hostWs, { type: 'host-approve-character', characterId: review.characterId });
+      await pq.waitFor('character-submitted', 10_000);
+      await hostQ.waitFor('character-submitted', 10_000);
+
+      // Drives resolve() via one full action-resolution turn.
+      sendMsg(hostWs, { type: 'start-game' });
+      await hostQ.waitFor('phase-change', 15_000);
+      await hostQ.waitFor('action-proposals', 15_000);
+      await hostQ.waitFor('whisper-prompt', 15_000);
+      sendMsg(hostWs, { type: 'whisper', text: 'Push forward.' });
+      await hostQ.waitFor('resolution', 20_000);
+
+      sendMsg(hostWs, { type: 'end-game' });
+      await hostQ.waitFor('phase-change', 20_000);
+
+      const offenders = harness.receivedBodies.filter(b => b.includes('(No rules found for this query)'));
+      expect(offenders).toHaveLength(0);
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 90_000);
+  });
+
+  // Code-review finding 2 on this task: `interview` in the char-chat handler
+  // (src/server/index.ts) is fetched BEFORE `await dm.interviewForCharacter`.
+  // The Step 2 fix now reads `.definition` off that pre-await snapshot in
+  // two places after the await — a gating condition and the payload sent to
+  // the client — instead of re-reading the database. This proves the fix:
+  // a concurrent write that lands during the round trip (simulated directly
+  // against the DB, held open with RACE_DELAY_TRIGGER — see
+  // server-harness.ts) must be reflected in this turn's response.
+  describe('char-chat re-reads the interview after the LLM round trip, not a stale pre-await snapshot', () => {
+    it('reflects a concurrent clear of the stored definition, not the definition fetched before the round trip', async () => {
+      const { ws: hostWs, q: hostQ, joined } = await createGame();
+      const { joinCode, campaignId } = joined;
+      await finishWorldSetup(hostWs, hostQ);
+
+      const playerWs = await connectWs(port);
+      const pq = new MessageQueue(playerWs);
+      sendMsg(playerWs, { type: 'join', joinCode, playerName: 'Wendy' });
+      const playerJoined = await pq.waitFor('room-joined', 10_000) as any;
+      await pq.waitFor('world-introduction', 10_000);
+
+      sendMsg(playerWs, { type: 'char-chat', text: 'I want to play a scavenger with a grudge against the company.' });
+      await pq.waitFor('char-chat-reply', 15_000);
+      await pq.waitFor('character-readiness', 10_000);
+
+      sendMsg(playerWs, { type: 'char-chat', text: 'She lost her sister to the dust and never forgave the company for it.' });
+      await pq.waitFor('char-chat-reply', 15_000);
+      const readyPreview = await pq.waitFor('character-preview', 10_000) as any;
+      expect(readyPreview.readiness.ready).toBe(true);
+
+      // RACE_DELAY_TRIGGER holds this turn's LLM reply open ~600ms.
+      // THIN_SHEET_TRIGGER makes the model's OWN proposal thin/not-ready
+      // too, so the only way this turn could still come back "ready" is by
+      // reusing the stale pre-await snapshot rather than re-reading the DB.
+      sendMsg(playerWs, { type: 'char-chat', text: 'RACE_DELAY_TRIGGER THIN_SHEET_TRIGGER can she be called Ash?' });
+
+      // Land a concurrent write directly against the database while that
+      // reply is still held open — the same shape of interleaving a second,
+      // faster char-chat (or a revoke) could produce for real.
+      await new Promise((r) => setTimeout(r, 150));
+      const { getDb } = await import('../src/server/db.js');
+      const { getInterviewBySession, setInterviewDefinition } = await import('../src/server/character-interview.js');
+      const db = getDb();
+      const stale = getInterviewBySession(db, campaignId, playerJoined.sessionToken);
+      expect(stale?.definition).not.toBeNull(); // sanity: was ready before the concurrent write
+      setInterviewDefinition(db, stale!.id, null);
+
+      const reply3 = await pq.waitFor('char-chat-reply', 15_000) as any;
+      expect(reply3.definition).toBeNull();
+
+      // Must reflect the concurrent clear — not ready, a checklist — rather
+      // than the ready snapshot fetched before the LLM call started.
+      const readiness = await pq.waitFor('character-readiness', 10_000) as any;
+      expect(readiness.readiness.ready).toBe(false);
+      await expect(pq.waitFor('character-preview', 300)).rejects.toThrow();
+
+      await closeWs(playerWs);
+      await closeWs(hostWs);
+    }, 30_000);
+  });
 });

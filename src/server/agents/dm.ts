@@ -306,7 +306,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       `\n<action>\n${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n</action>`,
       ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',
       `\n<context>\n${recentTranscript}\n</context>`,
-      `\n<rules>\n${ruleContext}\n</rules>`,
+      ruleContext ? `\n<rules>\n${ruleContext}\n</rules>` : '',
       `\n<task>`,
       `Resolve ${characterInfo ? characterInfo.name + "'s" : 'this'} action using the FATE steps above. A wounded character (high stress, existing consequences) should face HIGHER difficulty (+1 per consequence). Apply meaningful state changes:`,
       `- "tie": minor cost (1 stress, or reveal information to an enemy, or lose time)`,
@@ -356,9 +356,7 @@ Be conversational and enthusiastic. Ask one or two questions at a time, never a 
 Accumulate every influence the host names into "influences" — return the full list every time, not just new ones.
 When you have enough to build a world, set "done": true and fill in dmInstructions (a summary of how they want this run) and dmCustomPrompt (your tailored direction for running it).
 Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.
-
-Rules reference for their chosen system:
-${ruleContext}${unmetBlock}
+${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` : ''}${unmetBlock}
 
 Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }`;
 
@@ -477,9 +475,7 @@ INDIRECT — put the character in a real place from the world below and ask what
 Open indirect. Use direct questions only to close the gaps listed below. Never present a checklist, never ask for more than two things at once, and never use the words "high concept", "aspect" or "stunt" in a question — describe what you mean instead.
 
 Aim them at characters with INTERNAL TENSION: a clear strength and a clear vulnerability. The trouble should create genuine dilemmas, not minor inconveniences, and it should have somewhere to bite in THIS world.
-${worldBlock}${unmetBlock}
-Rules reference:
-${ruleContext}
+${worldBlock}${unmetBlock}${ruleContext ? `\nRules reference:\n${ruleContext}\n` : ''}
 
 CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON.
 
@@ -511,7 +507,7 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
 
     return callLlm({
       messages: [
-        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.\n\nRules reference:\n${ruleContext}\n\nThis sheet has already passed the game's own required-fields check — every field you'd check for presence is already there. Do not reject it over anything missing or empty. Your job is judgment, not a checklist: does this character actually FIT the world this campaign is running and the rules system above? Weigh whether the concept, trouble, and skills cohere; whether the aspects give the table something real to lean on; and whether anything here would break the game — an impossible skill spread, a trouble with nowhere to bite, a stunt that ignores the rules reference. Reject only for a genuine problem along those lines, not a matter of taste. If a small tweak would fix it, propose that in modifications instead of rejecting outright.` },
+        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.${ruleContext ? `\n\nRules reference:\n${ruleContext}` : ''}\n\nThis sheet has already passed the game's own required-fields check — every field you'd check for presence is already there. Do not reject it over anything missing or empty. Your job is judgment, not a checklist: does this character actually FIT the world this campaign is running and the rules system above? Weigh whether the concept, trouble, and skills cohere; whether the aspects give the table something real to lean on; and whether anything here would break the game — an impossible skill spread, a trouble with nowhere to bite, a stunt that ignores the rules reference. Reject only for a genuine problem along those lines, not a matter of taste. If a small tweak would fix it, propose that in modifications instead of rejecting outright.` },
         { role: 'user', content: `Validate:\n${JSON.stringify(definition, null, 2)}\n\nRespond as JSON: {"approved": <your judgement, true or false>, "feedback": "one sentence explaining it", "modifications": null, or an object with only the fields you want changed}` },
       ],
       schema: CharacterValidationSchema,
@@ -589,7 +585,7 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
       dmCustomPrompt: ctx.dmCustomPrompt,
       houseRules: ctx.houseRules,
       dmInstructions: ctx.dmInstructions,
-      campaignMaterials: campaignMaterials !== '(No rules found for this query)' ? campaignMaterials : null,
+      campaignMaterials: campaignMaterials || null,
       influences: ctx.influences,
     });
   }
@@ -605,9 +601,20 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
     return `\nCOMPEL OPPORTUNITY: ${target}. Create a situation THIS narration that directly confronts this trouble — a person from their past, a temptation that exploits their flaw, or a dilemma where their weakness is the path of least resistance. The best compels feel inevitable, not forced.`;
   }
 
+  /**
+   * Returns '' — never a sentinel string — when the system has no ingested
+   * rules. A fabricated placeholder like '(No rules found for this query)'
+   * interpolated into a prompt reads to the model as content, not as an
+   * absence; every call site below must be able to omit its "Rules
+   * reference" section entirely instead. Task 7 Step 4's campaign-creation
+   * notice (src/server/index.ts) only tells the HOST once, at creation —
+   * this is what stops the same leak from reaching every setup reply,
+   * character interview, validation, and action resolution for the rest of
+   * the campaign.
+   */
   private lookupRules(systemId: string, query: string): string {
     const chunks = searchRules(this.db, systemId, query, 3);
-    if (chunks.length === 0) return '(No rules found for this query)';
+    if (chunks.length === 0) return '';
     return chunks.map((c: RuleChunk) => `[${c.section}] ${c.content}`).join('\n\n');
   }
 }

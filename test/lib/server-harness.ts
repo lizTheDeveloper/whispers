@@ -93,6 +93,11 @@ export const LLM_STUB_REPLIES = {
 export interface Harness {
   port: number;
   dataDir: string;
+  // Every raw request body the LLM stub received, in order — lets a test
+  // assert on prompt CONTENT across an entire flow (e.g. "the
+  // '(No rules found for this query)' sentinel must never appear in any
+  // prompt this server sends"), not just on the stub's canned replies.
+  receivedBodies: string[];
   stop(): Promise<void>;
 }
 
@@ -104,6 +109,7 @@ export interface Harness {
 export async function startHarness(): Promise<Harness> {
   const llm = await startLlmStub();
   process.env.LLM_PROXY_URL = llm.url;
+  const receivedBodies = llm.receivedBodies;
 
   const dataDir = mkdtempSync(join(tmpdir(), 'whispers-test-'));
   process.env.DATA_DIR = dataDir;
@@ -127,6 +133,7 @@ export async function startHarness(): Promise<Harness> {
   return {
     port,
     dataDir,
+    receivedBodies,
     async stop() {
       await new Promise<void>((r) => mod.server.close(() => r()));
       await new Promise<void>((r) => llm.server.close(() => r()));
@@ -139,12 +146,14 @@ export async function startHarness(): Promise<Harness> {
  * The host says "done" only after at least one message, so a test can drive a
  * campaign to "world set up" deterministically by sending exactly one dm-chat.
  */
-function startLlmStub(): Promise<{ server: Server; url: string }> {
+function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: string[] }> {
   return new Promise((resolve) => {
+    const receivedBodies: string[] = [];
     const server = createHttpServer((req, res) => {
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
+        receivedBodies.push(body);
         let text: string;
         if (body.includes('You are a world builder for a TTRPG')) {
           text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
@@ -234,7 +243,7 @@ function startLlmStub(): Promise<{ server: Server; url: string }> {
     });
     server.listen(0, () => {
       const { port } = server.address() as { port: number };
-      resolve({ server, url: `http://localhost:${port}` });
+      resolve({ server, url: `http://localhost:${port}`, receivedBodies });
     });
   });
 }
