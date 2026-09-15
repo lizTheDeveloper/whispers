@@ -80,6 +80,7 @@ export const LLM_STUB_REPLIES = {
 
 export interface Harness {
   port: number;
+  dataDir: string;
   stop(): Promise<void>;
 }
 
@@ -105,6 +106,7 @@ export async function startHarness(): Promise<Harness> {
 
   return {
     port,
+    dataDir,
     async stop() {
       await new Promise<void>((r) => mod.server.close(() => r()));
       await new Promise<void>((r) => llm.server.close(() => r()));
