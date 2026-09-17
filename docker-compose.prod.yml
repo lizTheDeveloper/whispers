@@ -3,13 +3,26 @@ version: "3.9"
 services:
   web:
     build: .
+    # image is deliberately pinned (rather than left to compose's
+    # project-name default) so deploy.sh can retag "latest" as "rollback"
+    # before building a new one, and can point compose at "rollback" by
+    # setting WHISPERS_IMAGE_TAG without rebuilding.
+    image: whispers-server:${WHISPERS_IMAGE_TAG:-latest}
     container_name: whispers-server
     restart: unless-stopped
     environment:
       LLM_PROXY_URL: http://llm-token-proxy:4242
       PORT: "3000"
+      # DATA_DIR is static content baked into the image (scenarios/,
+      # dm-presets/, systems/) — never mount a volume over this path, it
+      # would shadow that content.
       DATA_DIR: /app/data
+      # STATE_DIR is the live database's own home, on the volume below, so
+      # it survives `docker compose up --build` recreating the container.
+      STATE_DIR: /app/state
       DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+    volumes:
+      - whispers_state:/app/state
     networks:
       - coolify
     labels:
@@ -31,3 +44,11 @@ services:
 networks:
   coolify:
     external: true
+
+volumes:
+  # Named explicitly (rather than left to compose's project-name-prefixed
+  # default) so deploy.sh and any manual `docker volume`/`docker cp` calls
+  # can address it by a fixed name regardless of which directory or
+  # COMPOSE_PROJECT_NAME this file is invoked from.
+  whispers_state:
+    name: whispers_state

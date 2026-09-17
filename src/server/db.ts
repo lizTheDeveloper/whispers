@@ -1,17 +1,99 @@
 import Database from 'better-sqlite3';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, copyFileSync, renameSync, rmSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR ?? join(__dirname, '..', '..', 'data');
+// DATA_DIR holds both the image's static content (scenarios/, dm-presets/,
+// systems/) and, historically, the live database — which meant mounting a
+// volume at DATA_DIR to persist the database would shadow the static
+// content shipped in the image. STATE_DIR is a separate, dedicated home for
+// the database so it can be volume-mounted without touching DATA_DIR at
+// all. Defaulting it to DATA_DIR keeps local dev and the test harness
+// working with zero config: STATE_DIR only needs to be set where the two
+// must diverge (production).
+const STATE_DIR = process.env.STATE_DIR ?? DATA_DIR;
+
+const DB_FILENAME = 'whispers.db';
+const DB_SIDECAR_SUFFIXES = ['-wal', '-shm'];
+const MIGRATION_STAGING_DIRNAME = '.whispers-db-migration-tmp';
 
 let db: Database.Database | null = null;
 
+/**
+ * Boot-time, one-shot migration off the legacy layout (database co-located
+ * with static content in DATA_DIR) onto STATE_DIR. This is what carries a
+ * production database onto a freshly-mounted volume the first time this
+ * code runs there — get it wrong and real campaigns are lost, so every step
+ * is ordered to make an interrupted run safe to retry:
+ *
+ *  1. Never touches anything if a database already exists at STATE_DIR —
+ *     that's the signal migration already happened (or STATE_DIR/DATA_DIR
+ *     are the same directory and there's nothing to separate).
+ *  2. Does nothing if there's no legacy database either — a clean start.
+ *  3. Otherwise, COPIES (not moves) the legacy files into a scratch staging
+ *     directory under STATE_DIR. The legacy files are untouched by this
+ *     step, so a crash here just leaves discardable debris in staging.
+ *  4. "Commits" by renaming staged files into their final STATE_DIR paths —
+ *     sidecars (-wal, -shm) first, the main .db file LAST. Renames within
+ *     one directory are atomic, and `existsSync(newDbPath)` above is what
+ *     every caller (including a retried migration) uses to decide whether
+ *     migration already happened — so nothing is considered "migrated"
+ *     until that final rename of the main .db file lands. A crash at any
+ *     point before that leaves the legacy source fully intact and staging
+ *     safely re-runnable; a crash after it is a no-op on the next boot.
+ *  5. Only once the new database is fully in place does it delete the
+ *     legacy files. If that cleanup itself is interrupted, the leftover
+ *     legacy files are inert — the guard in step 1 will skip migration on
+ *     every subsequent boot.
+ */
+export function migrateLegacyDatabase(): void {
+  const newDbPath = join(STATE_DIR, DB_FILENAME);
+  const legacyDbPath = join(DATA_DIR, DB_FILENAME);
+
+  if (STATE_DIR === DATA_DIR) return;
+
+  mkdirSync(STATE_DIR, { recursive: true });
+
+  if (existsSync(newDbPath)) return;
+  if (!existsSync(legacyDbPath)) return;
+
+  const suffixesPresent = DB_SIDECAR_SUFFIXES.filter(suffix => existsSync(legacyDbPath + suffix));
+  console.log(
+    `[db] Legacy database found at ${legacyDbPath} (plus sidecars: ${suffixesPresent.join(', ') || 'none'}). ` +
+    `Migrating to ${newDbPath}...`
+  );
+
+  const stagingDir = join(STATE_DIR, MIGRATION_STAGING_DIRNAME);
+  rmSync(stagingDir, { recursive: true, force: true });
+  mkdirSync(stagingDir, { recursive: true });
+
+  copyFileSync(legacyDbPath, join(stagingDir, DB_FILENAME));
+  for (const suffix of suffixesPresent) {
+    copyFileSync(legacyDbPath + suffix, join(stagingDir, DB_FILENAME + suffix));
+  }
+
+  for (const suffix of suffixesPresent) {
+    renameSync(join(stagingDir, DB_FILENAME + suffix), newDbPath + suffix);
+  }
+  renameSync(join(stagingDir, DB_FILENAME), newDbPath);
+
+  rmSync(stagingDir, { recursive: true, force: true });
+
+  rmSync(legacyDbPath, { force: true });
+  for (const suffix of DB_SIDECAR_SUFFIXES) {
+    rmSync(legacyDbPath + suffix, { force: true });
+  }
+
+  console.log(`[db] Migration complete — database now lives at ${newDbPath}.`);
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
-  mkdirSync(DATA_DIR, { recursive: true });
-  db = new Database(join(DATA_DIR, 'whispers.db'));
+  migrateLegacyDatabase();
+  mkdirSync(STATE_DIR, { recursive: true });
+  db = new Database(join(STATE_DIR, DB_FILENAME));
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   migrate(db);
@@ -20,6 +102,10 @@ export function getDb(): Database.Database {
 
 export function getDataDir(): string {
   return DATA_DIR;
+}
+
+export function getStateDir(): string {
+  return STATE_DIR;
 }
 
 function migrate(db: Database.Database): void {
