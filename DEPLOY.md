@@ -36,20 +36,22 @@ working tree). Do this **once**, by hand, on the server:
 ssh games
 cd /opt
 
-# Preserve what must survive the swap: existing backups and the live .env.
+# Preserve what must survive the swap: existing backups, and the live
+# .env if this host has one (multiverse-games-hel1 does not — it gets its
+# config from docker-compose.prod.yml, so the cp is expected to fail there).
 mv whispers/backups whispers-backups.preserve
-cp whispers/.env whispers-env.preserve
+cp whispers/.env whispers-env.preserve 2>/dev/null || true
 
 # Keep the old directory around as a fallback rather than deleting it.
 mv whispers whispers.rsync-backup
 
 # Clone the real thing.
-git clone git@github.com:lizTheDeveloper/whispers.git whispers
+git clone https://github.com/lizTheDeveloper/whispers.git whispers
 cd whispers
 
 # Restore what was preserved.
 mv /opt/whispers-backups.preserve backups
-cp /opt/whispers-env.preserve .env
+cp /opt/whispers-env.preserve .env 2>/dev/null || true
 chmod +x deploy.sh
 
 # Sanity check before trusting it: nothing should differ except files that
