@@ -20,6 +20,28 @@ The DM is also an agent: it narrates scenes, resolves actions against dice the s
 4. **Characters are approved.** If the host is running the table, they review. If the host is playing, the AI DM approves — and the host keeps a silent veto they can use later.
 5. **Play.** Scenes run in initiative order. Humans whisper. Agents act. The server is authoritative for everything that matters.
 
+### Whispers: who may speak, and when
+
+A whisper is your own character's inner voice, so the server routes it by
+*your seat*, not by whose input box happens to be on screen:
+
+- You whisper to the character you built. Another player's character is not
+  yours to steer, and a whisper aimed there is refused, out loud.
+- **In the moment** — your character's decision window is open (30s) — the
+  whisper lands immediately and that turn's verdict tells you whether it was
+  heeded, partially heeded, or resisted.
+- **Between moments** — no window open for your character — the whisper is
+  *saved* and carried into their next decision, up to three at a time. You
+  see a "carried your whisper into this choice" line and a verdict either
+  way. Nothing you type is ever dropped without a reason shown back to you.
+- The host seat, if it has no character of its own, is a table driver rather
+  than a voice: it may whisper into whoever is deciding right now, and gets a
+  refusal when nobody is. Playtest harnesses and solo-driver tables rely on
+  this path.
+
+Saved whispers live in the running game only — a server restart or an ended
+table drops them, and the log says so.
+
 ## Architecture
 
 - **The server is authoritative for all game state.** Agents propose; the server validates and applies.

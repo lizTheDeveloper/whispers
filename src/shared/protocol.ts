@@ -42,7 +42,7 @@ export type ReplayEntry =
   | { type: 'revoked-note'; text: string };
 
 export type ServerMessage =
-  | { type: 'room-joined'; campaignId: string; joinCode: string; isOwner: boolean; tableRole: import('./types.js').TableRole | null; sessionToken: string; gameName: string; playerName: string; phase: GamePhase }
+  | { type: 'room-joined'; campaignId: string; joinCode: string; isOwner: boolean; tableRole: import('./types.js').TableRole | null; sessionToken: string; gameName: string; playerName: string; phase: GamePhase; characterId: string | null }
   | { type: 'lobby-state'; players: string[]; setupChat: Array<{ role: string; content: string }>; dmReady: boolean; approvedCount: number; phase: GamePhase; influences: string[]; hostTableRole: import('./types.js').TableRole | null; readiness: import('./types.js').WorldReadiness }
   | { type: 'room-state'; state: import('./types.js').RoomState }
   | { type: 'player-joined'; playerName: string; characterId: string | null }
@@ -60,7 +60,9 @@ export type ServerMessage =
   | { type: 'narration'; text: string; sceneNumber: number; locationName?: string; isEpilogue?: boolean }
   | { type: 'scene-image'; imageUrl: string; locationName: string }
   | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; actionReasons?: string[]; whisperTrust: number }
-  | { type: 'whisper-prompt'; characterId: string; characterName: string; mood?: string; trustHint?: string; suggestions?: string[]; goals?: string[] }
+  | { type: 'whisper-prompt'; characterId: string; characterName: string; mood?: string; trustHint?: string; suggestions?: string[]; goals?: string[]; carryingQueued?: number }
+  | { type: 'whisper-ack'; status: 'delivered' | 'queued' | 'rejected'; characterId: string | null; characterName: string | null; message: string }
+  | { type: 'whisper-dropped'; characterId: string; count: number }
   | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }
   | { type: 'dice-roll'; result: DiceResult; context: string }
   | { type: 'resolution'; text: string }

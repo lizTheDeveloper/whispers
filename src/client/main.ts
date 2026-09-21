@@ -19,6 +19,11 @@ const ws = new WsClient();
 let currentView: string | null = null;
 let isOwner = false;
 let hostTableRole: TableRole | null = null;
+// The seat's own character, learned from the server (room-joined carries it
+// on join/rejoin; approval sets it mid-session). game-view needs it to know
+// whose whisper windows are theirs — the server routes whispers by the same
+// seat binding, never by a client-claimed target (MUL-73).
+let myCharacterId: string | null = null;
 
 function renderFor(joinCode: string, campaignId: string, owner: boolean, tableRole: TableRole | null, phase: GamePhase, gameName: string): void {
   const key = renderKey(owner, tableRole, joinCode, phase);
@@ -28,7 +33,7 @@ function renderFor(joinCode: string, campaignId: string, owner: boolean, tableRo
   hostTableRole = tableRole;
 
   if (phase === 'playing' || phase === 'ended') {
-    renderGameView(root, ws, owner);
+    renderGameView(root, ws, owner, myCharacterId);
   } else if (owner && (phase === 'lobby' || tableRole !== 'player')) {
     // The owner runs world setup from the DM lobby regardless of which
     // table role they've chosen — table role only matters for where they
@@ -45,6 +50,9 @@ function renderFor(joinCode: string, campaignId: string, owner: boolean, tableRo
 ws.on('room-joined', (msg) => {
   if (msg.type !== 'room-joined') return;
   ws.setSession(msg.joinCode, msg.sessionToken);
+  // A rejoin mid-game carries the seat's character; a join cannot have one
+  // yet, and a later approval fills it in via character-validated below.
+  if (msg.characterId) myCharacterId = msg.characterId;
   saveSession({
     campaignId: msg.campaignId,
     joinCode: msg.joinCode,
@@ -59,6 +67,13 @@ ws.on('room-joined', (msg) => {
   renderFor(msg.joinCode, msg.campaignId, msg.isOwner, msg.tableRole, msg.phase, msg.gameName);
 });
 
+ws.on('character-validated', (msg) => {
+  // Sent only to the submitting player's own socket, and only for the
+  // character that player built — an approval binds the seat.
+  if (msg.type !== 'character-validated' || !msg.approved) return;
+  myCharacterId = msg.characterId;
+});
+
 ws.on('phase-change', (msg) => {
   if (msg.type !== 'phase-change') return;
   // currentView's format is fixed by renderKey: `${dm|play}:${tableRole}:${joinCode}:${phase}`.
@@ -69,7 +84,7 @@ ws.on('phase-change', (msg) => {
     const key = renderKey(isOwner, hostTableRole, joinCode, 'playing');
     if (currentView === key) return;
     currentView = key;
-    renderGameView(root, ws, isOwner);
+    renderGameView(root, ws, isOwner, myCharacterId);
   } else if (msg.phase === 'character-creation' && (!isOwner || hostTableRole === 'player')) {
     // A host who chose to play reaches the character creator exactly like
     // any other player once the table opens — there is no DM lobby left
@@ -84,6 +99,14 @@ ws.on('phase-change', (msg) => {
     // think it's stale and needlessly re-render it.
     currentView = renderKey(true, hostTableRole, joinCode, 'character-creation');
   }
+});
+
+ws.on('character-revoked', (msg) => {
+  // The server clears the seat's DB binding on revoke, so whispers would
+  // start coming back rejected — unbind here too and the whisper box stops
+  // promising a voice the table just took away.
+  if (msg.type !== 'character-revoked' || msg.characterId !== myCharacterId) return;
+  myCharacterId = null;
 });
 
 ws.on('error', (msg) => {

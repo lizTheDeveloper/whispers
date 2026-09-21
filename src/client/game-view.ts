@@ -1,7 +1,7 @@
 import type { WsClient } from './ws-client.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
-export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean): void {
+export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean, myCharacterId?: string | null): void {
   root.innerHTML = `
     <div class="game-view">
       <div class="scene-image-container" id="scene-image" style="display:none">
@@ -253,9 +253,44 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     trustDisplay.textContent = `Trust: ${(msg.whisperTrust * 100).toFixed(0)}%`;
   });
 
+  // A whisper's whole life is server-acknowledged now (MUL-73): the box
+  // stays usable between windows because the server SAVES out-of-window
+  // whispers for the character's next decision instead of swallowing them,
+  // and the "You whisper" line is drawn only when the table actually
+  // accepted the words. windowCharId tracks the one live countdown this
+  // client is watching; hasOwnCharacter splits the two UI modes — a seated
+  // player (persistent queue-capable box) vs the world author driving the
+  // table from a seat with no character (window-only box, matching the
+  // server's driver path).
+  const hasOwnCharacter = typeof myCharacterId === 'string' && myCharacterId.length > 0;
   let whisperTimer: ReturnType<typeof setInterval> | null = null;
+  let windowCharId: string | null = null;
+  function setWhisperQueueMode(): void {
+    windowCharId = null;
+    whisperBtn.textContent = 'Whisper';
+    whisperInput.placeholder = 'Whisper to your character… (saved until their next choice)';
+  }
   ws.on('whisper-prompt', (msg) => {
     if (msg.type !== 'whisper-prompt') return;
+    // The prompt is a room broadcast so everyone sees WHO is deciding; the
+    // server derives every whisper's target from the sender's own seat, so
+    // a player must not countdown (or falsely log "[You stayed silent.]")
+    // for someone else's moment. The world author with no seat-character of
+    // their own keeps watching every window — that is the driver path.
+    if (hasOwnCharacter && msg.characterId !== myCharacterId) return;
+    if (msg.carryingQueued && msg.carryingQueued > 0) {
+      // The server is spending this character's saved whispers on the
+      // decision happening right now; there is no window to win a race
+      // against, so no countdown — and anything typed next queues for the
+      // choice after this one.
+      appendLog(`[${msg.characterName} carries your saved ${msg.carryingQueued === 1 ? 'whisper' : msg.carryingQueued + ' whispers'} into this choice.]`, 'system');
+      if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+      if (hasOwnCharacter) {
+        whisperArea.style.display = 'flex';
+        setWhisperQueueMode();
+      }
+      return;
+    }
     whisperArea.style.display = 'flex';
     whisperInput.focus();
     whisperInput.placeholder = `Whisper to ${msg.characterName}...`;
@@ -305,16 +340,25 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       whisperArea.insertBefore(sugDiv, whisperInput);
     }
     let remaining = 30;
+    windowCharId = msg.characterId;
     whisperBtn.textContent = `Whisper (${remaining}s)`;
     if (whisperTimer) clearInterval(whisperTimer);
     whisperTimer = setInterval(() => {
       remaining--;
       if (remaining <= 0) {
         if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
-        whisperArea.style.display = 'none';
-        whisperBtn.textContent = 'Whisper';
-        whisperInput.value = '';
         appendLog('[You stayed silent.]', 'system');
+        if (hasOwnCharacter) {
+          // The moment passed, not the voice: the box stays so the next
+          // words can wait for the next decision instead of evaporating.
+          // A typed draft survives too — silence was a choice, the words
+          // were not.
+          setWhisperQueueMode();
+        } else {
+          whisperArea.style.display = 'none';
+          setWhisperQueueMode();
+          whisperInput.value = '';
+        }
         return;
       }
       whisperBtn.textContent = `Whisper (${remaining}s)`;
@@ -338,10 +382,17 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     if (msg.type !== 'action-taken') return;
     // Panel resets are live-turn chrome, not log content — a replay never
     // sees them, which is correct: it restores what happened, not what the
-    // whisper box was doing at the moment the page died.
-    whisperArea.style.display = 'none';
-    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
-    whisperBtn.textContent = 'Whisper';
+    // whisper box was doing at the moment the page died. The whisper box
+    // only resets for the character whose window just closed; another
+    // player's turn must not tear down my queue-mode box.
+    if (windowCharId === msg.characterId) {
+      if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+      if (hasOwnCharacter) setWhisperQueueMode();
+      else {
+        whisperArea.style.display = 'none';
+        setWhisperQueueMode();
+      }
+    }
     actionArea.innerHTML = '';
     renderActionTaken(msg);
   });
@@ -448,19 +499,71 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     }
   });
 
+  // Sent whispers waiting on their whisper-ack. A socket delivers messages
+  // to one handler in order and the server acks synchronously, so acks
+  // return in send order and a FIFO pairs each one with its text.
+  const pendingWhispers: string[] = [];
+  let whisperAckTimer: ReturnType<typeof setTimeout> | null = null;
   function sendWhisper(): void {
     const text = whisperInput.value.trim();
-    if (!text) return;
+    if (!text || pendingWhispers.length > 0) return;
+    pendingWhispers.push(text);
     ws.send({ type: 'whisper', text });
-    appendLog(`You whisper: "${text}"`, 'whisper');
     whisperInput.value = '';
-    whisperArea.style.display = 'none';
+    whisperBtn.disabled = true;
     if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
-    whisperBtn.textContent = 'Whisper';
+    if (whisperAckTimer) clearTimeout(whisperAckTimer);
+    // The server routes whispers synchronously on the same socket, so five
+    // silent seconds means the wire died, not that the table is thinking.
+    whisperAckTimer = setTimeout(() => {
+      whisperAckTimer = null;
+      const lost = pendingWhispers.shift() ?? '';
+      whisperBtn.disabled = false;
+      whisperInput.value = lost;
+      showSystemNotice('The table did not answer — your whisper may not have been sent.');
+    }, 5_000);
   }
+
+  ws.on('whisper-ack', (msg) => {
+    if (msg.type !== 'whisper-ack') return;
+    const text = pendingWhispers.shift() ?? '';
+    if (whisperAckTimer) { clearTimeout(whisperAckTimer); whisperAckTimer = null; }
+    if (pendingWhispers.length === 0) whisperBtn.disabled = false;
+    if (msg.status === 'rejected') {
+      // The words were not heard, so nothing goes into the log and the
+      // draft goes back into the box — MUL-73's silent loss, inverted: the
+      // player sees the refusal and keeps the text.
+      showSystemNotice(msg.message || 'The table refused your whisper.');
+      if (whisperInput.value.trim().length === 0) whisperInput.value = text;
+      return;
+    }
+    appendLog(`You whisper: "${text}"`, 'whisper');
+    if (msg.status === 'queued') {
+      appendLog(`[${msg.message}]`, 'system');
+    }
+    if (hasOwnCharacter) setWhisperQueueMode();
+    else whisperArea.style.display = 'none';
+  });
+
+  ws.on('whisper-dropped', (msg) => {
+    if (msg.type !== 'whisper-dropped') return;
+    // The broadcast is room-visible, but the saved words were one player's;
+    // only their client has the context to say so.
+    if (msg.characterId !== myCharacterId) return;
+    appendLog(msg.count === 1
+      ? '[Your saved whisper fades away unheard.]'
+      : `[Your ${msg.count} saved whispers fade away unheard.]`, 'system');
+  });
 
   whisperBtn.addEventListener('click', sendWhisper);
   whisperInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendWhisper(); });
+
+  // A seated player's voice never needs a prompt to open — between windows
+  // the server saves the words; the box is only ever in a different mode.
+  if (hasOwnCharacter) {
+    whisperArea.style.display = 'flex';
+    setWhisperQueueMode();
+  }
 
   if (isHost) {
     root.querySelector('#end-game-btn')?.addEventListener('click', () => {

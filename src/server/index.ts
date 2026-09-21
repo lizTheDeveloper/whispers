@@ -500,6 +500,7 @@ wss.on('connection', (ws) => {
         gameName: msg.name,
         playerName: 'Host',
         phase: 'lobby',
+        characterId: null,
       });
 
       if (campaign) sendDmSettings(ws, campaign);
@@ -555,6 +556,7 @@ wss.on('connection', (ws) => {
         gameName: campaign.name,
         playerName: msg.playerName,
         phase: campaign.phase,
+        characterId: null,
       });
       broadcast(msg.joinCode, { type: 'player-joined', playerName: msg.playerName, characterId: null });
       if (campaign.phase === 'character-creation') {
@@ -610,6 +612,7 @@ wss.on('connection', (ws) => {
         gameName: campaign.name,
         playerName,
         phase: campaign.phase,
+        characterId: currentPlayer.characterId,
       });
 
       // Read once, reused by both the interview-replay check below and the
@@ -934,6 +937,7 @@ wss.on('connection', (ws) => {
         sessionToken: currentPlayer!.sessionToken,
         gameName: campaign.name, playerName: currentPlayer!.playerName,
         phase: campaign.phase,
+        characterId: currentPlayer!.characterId,
       });
     }
 
@@ -1551,26 +1555,39 @@ wss.on('connection', (ws) => {
       gameLoop.start().catch(e => console.error('Game loop error:', e));
     }
 
-    if (msg.type === 'whisper' && currentJoinCode) {
+    if (msg.type === 'whisper' && currentJoinCode && currentPlayer) {
       const raw = msg.text;
       if (typeof raw !== 'string' || raw.trim().length === 0) return;
       const whisperText = raw.trim().slice(0, 200);
       const loop = gameLoops.get(currentJoinCode);
-      // The live "You whisper: ..." line is a local render game-view does on
-      // send — no broadcast ever carries it, so a refresh would lose it even
+      if (!loop) {
+        send(ws, { type: 'whisper-ack', status: 'rejected', characterId: null, characterName: null, message: 'There is no game running at this table right now.' });
+        return;
+      }
+      // Whose voice is this? campaign_sessions.character_id — written at
+      // approval, cleared at revoke — is the binding this process and a
+      // restarted one agree on; the seat object's in-memory characterId
+      // goes stale on some rejoin paths, so the DB row is the authority and
+      // the whisper is routed by it, never by whose window happens to be
+      // open (MUL-73: the silent drop AND the cross-player reach were both
+      // artifacts of that routing).
+      const seatRow = db.prepare('SELECT character_id FROM campaign_sessions WHERE token = ?').get(currentPlayer.sessionToken) as { character_id: string | null } | undefined;
+      const senderCharacterId = seatRow?.character_id ?? null;
+      const ack = loop.handleWhisper(whisperText, { characterId: senderCharacterId, isOwner: currentPlayer.isOwner });
+      // The live "You whisper: ..." line is a local render game-view does
+      // when the server ACCEPTS the whisper (on 'whisper-ack', MUL-73) —
+      // no broadcast ever carries it, so a refresh would lose it even
       // though everyone else never saw it. Record it here, scoped to this
       // session's own replay view (loadReplayLog filters on session_token).
-      // Tagged only while a loop is actually live: outside 'playing' the
-      // client has no whisper box to draw the local echo with, and a note
-      // replaying into the log on a phase the whisper could not happen in
-      // would tell a lie.
-      if (loop && currentPlayer) {
+      // Only accepted whispers echo: a rejected one was never shown live
+      // either, and replaying it would resurrect words the table refused.
+      if (ack.status !== 'rejected') {
         const whisperCampaign = joinRoom(db, currentJoinCode);
         if (whisperCampaign) {
           appendReplayEntry(db, whisperCampaign.id, { type: 'whisper-echo', text: whisperText }, currentPlayer.sessionToken);
         }
       }
-      loop?.handleWhisper(whisperText);
+      send(ws, { type: 'whisper-ack', ...ack });
     }
 
     if (msg.type === 'end-game' && currentJoinCode && isWorldAuthor(currentPlayer)) {

@@ -18,6 +18,14 @@ import type { ServerMessage } from '../shared/protocol.js';
 const BASE_COMPACTION_THRESHOLD = 35;
 const BASE_COMPACTION_KEEP_RECENT = 12;
 
+/** Result of routing one whisper through GameLoop.handleWhisper. */
+export interface WhisperAck {
+  status: 'delivered' | 'queued' | 'rejected';
+  characterId: string | null;
+  characterName: string | null;
+  message: string;
+}
+
 const TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor']);
 function getFirstName(fullName: string): string {
   const parts = fullName.split(/\s+/);
@@ -34,6 +42,13 @@ export class GameLoop {
   private state: RoomState;
   private characters = new Map<string, Character>();
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
+  private pendingWhisperCharacterId: string | null = null;
+  // Out-of-window whispers wait here for their character's next decision
+  // window instead of evaporating (MUL-73). Volatile by design: a whisper
+  // is a live attempt to speak, not durable state — after a server restart
+  // the player is no longer at the table waiting.
+  private whisperQueue = new Map<string, string[]>();
+  private static readonly WHISPER_QUEUE_LIMIT = 3;
   private stopped = false;
   private sceneTurnCount = 0;
   private locationTurnCount = 0;
@@ -153,6 +168,7 @@ export class GameLoop {
   async revokeCharacter(characterId: string, onEmptied?: () => void): Promise<boolean> {
     this.characters.delete(characterId);
     this.state.initiativeOrder = this.state.initiativeOrder.filter(id => id !== characterId);
+    this.drainWhisperQueue(characterId);
     if (this.characters.size === 0 && !this.stopped) {
       onEmptied?.();
       await this.endGame();
@@ -229,6 +245,11 @@ export class GameLoop {
       this.pendingWhisperResolve(null);
       this.pendingWhisperResolve = null;
     }
+    this.pendingWhisperCharacterId = null;
+    // Saved whispers die with the table, but loudly: the player who is
+    // still carrying words learns they will never be adjudicated rather
+    // than wondering why no verdict ever lands (MUL-73).
+    this.drainWhisperQueue();
   }
 
   async endGame(): Promise<void> {
@@ -471,9 +492,19 @@ export class GameLoop {
     const companionLastAction = this.getCompanionLastAction(characterId);
     const suggestions = this.buildWhisperSuggestions(character, proposals.actions.map(a => a.description), sceneNarration, companionLastAction);
     const goals = this.characterAgent.deriveGoals(memories);
-    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined });
+    // Drain this character's saved whispers BEFORE the window opens: a
+    // player who spoke between windows is heard now (MUL-73), and a
+    // whisper that lands after this drain simply queues for the next
+    // window rather than racing a half-open slot. carryingQueued tells
+    // the client not to render a countdown it cannot win — the wait below
+    // is skipped when saved words are already in hand.
+    const carrying = this.whisperQueue.get(characterId);
+    if (carrying) this.whisperQueue.delete(characterId);
+    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length });
 
-    const whisper = await this.waitForWhisper(30_000);
+    const whisper = carrying && carrying.length > 0
+      ? carrying.join('\n')
+      : await this.waitForWhisper(characterId, 30_000);
     this.state.awaitingWhisper = false;
 
     if (whisper) {
@@ -1184,23 +1215,104 @@ export class GameLoop {
     console.log(`[game-loop] Seeded scenario "${scenarioId}"`);
   }
 
-  handleWhisper(text: string): void {
-    if (this.pendingWhisperResolve) {
-      this.pendingWhisperResolve(text);
-      this.pendingWhisperResolve = null;
+  /**
+   * What happens when a player presses Whisper. The server is authoritative
+   * about WHOSE voice a whisper is: the target is derived from the sender's
+   * own seat binding, never from whose window happens to be open (that
+   * cross-wiring let any player steer any character and silently swallowed
+   * out-of-window input). Outcomes:
+   *  - delivered: the sender's character is deciding right now, this very
+   *    instant — the open window's promise.
+   *  - queued:    no open moment for this character, so the words wait in
+   *    their inbox and are heard at that character's NEXT decision window.
+   *  - rejected:  nowhere for the words to go (game over, no seat at a live
+   *    character, inbox full) — with a client-visible reason, because
+   *    dropping input without a trace is the bug this replaces.
+   * The world author (DM seat) keeps a driver's reach: whisper into whoever
+   * is deciding right now — the escape hatch every playtest harness and the
+   * solo-driver table lean on. The DM never accumulates an inbox: with no
+   * character of their own, out-of-window is simply the wrong moment.
+   */
+  handleWhisper(text: string, sender: { characterId: string | null; isOwner: boolean }): WhisperAck {
+    const nameOf = (id: string | null) => (id ? this.characters.get(id)?.definition.name ?? null : null);
+    if (this.stopped) {
+      return { status: 'rejected', characterId: null, characterName: null, message: 'The game has ended — your whisper had nowhere to go.' };
     }
+    let targetId = sender.characterId;
+    if (!targetId && sender.isOwner) targetId = this.pendingWhisperCharacterId;
+    if (!targetId) {
+      return {
+        status: 'rejected', characterId: null, characterName: null,
+        message: sender.isOwner
+          ? 'No one is deciding right now — there is no moment to whisper into.'
+          : 'You are not the voice of anyone at this table.',
+      };
+    }
+    const target = this.characters.get(targetId);
+    if (!target) {
+      return { status: 'rejected', characterId: targetId, characterName: null, message: 'That character is no longer at this table.' };
+    }
+    if (this.pendingWhisperResolve && this.pendingWhisperCharacterId === targetId) {
+      const resolve = this.pendingWhisperResolve;
+      this.pendingWhisperResolve = null;
+      this.pendingWhisperCharacterId = null;
+      resolve(text);
+      return { status: 'delivered', characterId: targetId, characterName: target.definition.name, message: '' };
+    }
+    if (sender.isOwner && !sender.characterId) {
+      return { status: 'rejected', characterId: targetId, characterName: target.definition.name, message: 'No one is deciding right now — there is no moment to whisper into.' };
+    }
+    const queue = this.whisperQueue.get(targetId) ?? [];
+    if (queue.length >= GameLoop.WHISPER_QUEUE_LIMIT) {
+      return {
+        status: 'rejected', characterId: targetId, characterName: target.definition.name,
+        message: `${target.definition.name} is still carrying your last whispers — wait for their next choice.`,
+      };
+    }
+    queue.push(text);
+    this.whisperQueue.set(targetId, queue);
+    return {
+      status: 'queued', characterId: targetId, characterName: target.definition.name,
+      message: `${target.definition.name} will carry your whisper into their next choice.`,
+    };
   }
 
-  private waitForWhisper(timeoutMs: number): Promise<string | null> {
+  private waitForWhisper(characterId: string, timeoutMs: number): Promise<string | null> {
     return new Promise(resolve => {
       this.pendingWhisperResolve = resolve;
+      this.pendingWhisperCharacterId = characterId;
       setTimeout(() => {
         if (this.pendingWhisperResolve === resolve) {
           this.pendingWhisperResolve = null;
+          this.pendingWhisperCharacterId = null;
           resolve(null);
         }
       }, timeoutMs);
     });
+  }
+
+  /**
+   * Empty the saved-whisper inbox — for one character (revoked: their
+   * next window will never open) or for everyone (stop/endGame: the table
+   * is done deciding). Broadcasts whisper-dropped so the owning player sees
+   * their saved words end unheard, instead of the MUL-73 silence wearing a
+   * different costume.
+   */
+  private drainWhisperQueue(characterId?: string): void {
+    const ids = characterId ? [characterId] : Array.from(this.whisperQueue.keys());
+    for (const id of ids) {
+      const queued = this.whisperQueue.get(id);
+      if (!queued || queued.length === 0) {
+        this.whisperQueue.delete(id);
+        continue;
+      }
+      this.whisperQueue.delete(id);
+      try {
+        this.broadcastFn({ type: 'whisper-dropped', characterId: id, count: queued.length });
+      } catch (e) {
+        console.error('[game-loop] whisper-dropped broadcast failed:', e);
+      }
+    }
   }
 
   private applyStateChange(characterId: string, field: string, action: string, value: unknown): void {
