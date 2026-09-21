@@ -31,6 +31,7 @@ import {
   type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness } from './character-readiness.js';
+import { appendReplayEntry, loadReplayLog } from './replay-log.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import type { CampaignMaterial } from '../shared/types.js';
 
@@ -655,6 +656,24 @@ wss.on('connection', (ws) => {
         }
       }
 
+      // The playing-phase analog of interview-replay above: a refresh
+      // mid-game must not erase the story so far. Every display line the
+      // game loop broadcast (and this viewer's own whispers) is replayed so
+      // #narration-log refills instead of starting empty. Sent BEFORE the
+      // phase-change below on purpose: game-view renders the 'ended' recap
+      // panel on that message from counters the replayed scene-end entries
+      // accumulate, so the recap must arrive second. Read from the DB, not
+      // the live loop, so a rejoin after a server restart (loop gone) or
+      // after end-game (loop deleted from gameLoops) still gets the
+      // transcript. Whisper echoes carry their sender's session token and
+      // loadReplayLog scopes them to exactly that viewer.
+      if (campaign.phase === 'playing' || campaign.phase === 'ended') {
+        const replay = loadReplayLog(db, campaign.id, currentPlayer.sessionToken);
+        if (replay.entries.length > 0 || replay.omitted > 0) {
+          send(ws, { type: 'transcript-replay', entries: replay.entries, omitted: replay.omitted });
+        }
+      }
+
       send(ws, { type: 'phase-change', phase: campaign.phase });
 
       // Sent last and deliberately not awaited: sendWorldIntroduction makes an
@@ -1112,6 +1131,27 @@ wss.on('connection', (ws) => {
       const neg = negotiations.get(msg.characterId);
       if (neg && !neg.isClosed()) { neg.close(); negotiations.delete(msg.characterId); }
 
+      // The live line this broadcast paints in game-view ("Name has been
+      // removed from the table…") is resolved from the roster at render
+      // time, and the replayed roster only ever holds LIVE characters — so
+      // record the resolved text instead, or a refreshed player's log shows
+      // an anonymous removal. Scoped to playing/ended: a revoke during
+      // character-creation never painted a play-log line and must not
+      // fabricate one when the table later starts.
+      if (revokeCampaign.phase === 'playing' || revokeCampaign.phase === 'ended') {
+        let revokedName = 'A character';
+        try {
+          const revokedRow = db.prepare('SELECT definition FROM characters WHERE id = ?').get(msg.characterId) as { definition: string } | undefined;
+          revokedName = (revokedRow ? JSON.parse(revokedRow.definition).name : null) ?? revokedName;
+        } catch {
+          // Fall back to the anonymous name the pre-fix client showed.
+        }
+        appendReplayEntry(db, revokeCampaign.id, {
+          type: 'revoked-note',
+          text: reason ? `${revokedName} has been removed from the table: ${reason}` : `${revokedName} has been removed from the table.`,
+        });
+      }
+
       broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
     }
 
@@ -1516,6 +1556,20 @@ wss.on('connection', (ws) => {
       if (typeof raw !== 'string' || raw.trim().length === 0) return;
       const whisperText = raw.trim().slice(0, 200);
       const loop = gameLoops.get(currentJoinCode);
+      // The live "You whisper: ..." line is a local render game-view does on
+      // send — no broadcast ever carries it, so a refresh would lose it even
+      // though everyone else never saw it. Record it here, scoped to this
+      // session's own replay view (loadReplayLog filters on session_token).
+      // Tagged only while a loop is actually live: outside 'playing' the
+      // client has no whisper box to draw the local echo with, and a note
+      // replaying into the log on a phase the whisper could not happen in
+      // would tell a lie.
+      if (loop && currentPlayer) {
+        const whisperCampaign = joinRoom(db, currentJoinCode);
+        if (whisperCampaign) {
+          appendReplayEntry(db, whisperCampaign.id, { type: 'whisper-echo', text: whisperText }, currentPlayer.sessionToken);
+        }
+      }
       loop?.handleWhisper(whisperText);
     }
 

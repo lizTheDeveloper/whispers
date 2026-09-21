@@ -270,6 +270,15 @@ function migrate(db: Database.Database): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_interview_session ON character_interviews(campaign_id, session_token);
+
+    CREATE TABLE IF NOT EXISTS replay_log (
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+      seq INTEGER NOT NULL,
+      entry TEXT NOT NULL,
+      session_token TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (campaign_id, seq)
+    );
   `);
 
   const cols = db.pragma('table_info(campaigns)') as Array<{ name: string }>;

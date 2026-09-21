@@ -10,6 +10,7 @@ import { CharacterMemoryStore } from './character-memory.js';
 import { callLlm } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
+import { recordReplayBroadcast } from './replay-log.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
@@ -38,11 +39,12 @@ export class GameLoop {
   private locationTurnCount = 0;
   private lastLocationName = '';
   private sceneWhisperStats = new Map<string, { name: string; followed: number; partial: number; ignored: number; trustStart: number; trustEnd: number }>();
+  private broadcastFn: (msg: ServerMessage) => void;
 
   constructor(
     private db: Database.Database,
     private campaignId: string,
-    private broadcastFn: (msg: ServerMessage) => void,
+    broadcastFn: (msg: ServerMessage) => void,
     private sendToHostFn: (msg: ServerMessage) => void,
     initialState: RoomState,
   ) {
@@ -50,6 +52,22 @@ export class GameLoop {
     this.worldBible = new WorldBible(db);
     this.memoryStore = new CharacterMemoryStore(db);
     this.state = initialState;
+    // Everything the game view paints into #narration-log is broadcast
+    // through this one funnel, so the playing-phase replay log — the thing
+    // that refills a refreshed player's transcript (the playing-phase
+    // analog of interview-replay) — is captured here rather than at a
+    // dozen call sites. recordReplayBroadcast ignores message kinds that
+    // never reach the log. A replay-write failure must never cost a live
+    // table its broadcast, hence the try/catch: the log is recovery, play
+    // is the product.
+    this.broadcastFn = (msg: ServerMessage) => {
+      try {
+        recordReplayBroadcast(this.db, this.campaignId, msg);
+      } catch (e) {
+        console.error('[game-loop] replay-log append failed:', e);
+      }
+      broadcastFn(msg);
+    };
   }
 
   loadCharacters(): void {

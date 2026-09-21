@@ -1,4 +1,5 @@
 import type { WsClient } from './ws-client.js';
+import type { ServerMessage } from '../shared/protocol.js';
 
 export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean): void {
   root.innerHTML = `
@@ -121,9 +122,17 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   });
 
   const locationBar = root.querySelector('#location-bar') as HTMLElement;
-  ws.on('narration', (msg) => {
-    if (msg.type !== 'narration') return;
-    const cls = (msg as any).isEpilogue ? 'epilogue'
+  // The render paths below are shared with the 'transcript-replay' handler
+  // at the bottom of this function: a replayed line must be styled by the
+  // same code as a live one, or reload fidelity drifts the moment either
+  // side changes. Live handlers keep their non-log side effects (location
+  // bar, stat counters, panel resets) inside these same functions so a
+  // replay restores those too — sessionStats is declared above them for
+  // exactly that reason.
+  const sessionStats = { scenes: 0, followed: 0, partial: 0, ignored: 0 };
+
+  function renderNarration(msg: Extract<ServerMessage, { type: 'narration' }>): void {
+    const cls = msg.isEpilogue ? 'epilogue'
       : msg.text.startsWith('[Compel:') ? 'compel'
       : msg.text.includes('TAKEN OUT') ? 'taken-out'
       : 'dm';
@@ -132,17 +141,28 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
       locationBar.textContent = msg.locationName;
       locationBar.style.display = 'block';
     }
+  }
+  ws.on('narration', (msg) => {
+    if (msg.type !== 'narration') return;
+    renderNarration(msg);
   });
-  ws.on('resolution', (msg) => { if (msg.type === 'resolution') appendLog(msg.text, 'resolution'); });
-  const sessionStats = { scenes: 0, followed: 0, partial: 0, ignored: 0 };
+  function renderDiceRoll(msg: Extract<ServerMessage, { type: 'dice-roll' }>): void {
+    appendLog(`[dice] ${msg.result.description} (${msg.context})`, 'dice');
+  }
+  ws.on('dice-roll', (msg) => {
+    if (msg.type === 'dice-roll') renderDiceRoll(msg);
+  });
+  function renderResolution(msg: Extract<ServerMessage, { type: 'resolution' }>): void {
+    appendLog(msg.text, 'resolution');
+  }
+  ws.on('resolution', (msg) => { if (msg.type === 'resolution') renderResolution(msg); });
 
-  ws.on('scene-end', (msg) => {
-    if (msg.type === 'scene-end') {
-      sessionStats.scenes++;
-      appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system');
+  function renderSceneEnd(msg: Extract<ServerMessage, { type: 'scene-end' }>): void {
+    sessionStats.scenes++;
+    appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system');
 
-      const stats = (msg as any).whisperStats as Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> | undefined;
-      if (stats && stats.length > 0) {
+    const stats = msg.whisperStats;
+    if (stats && stats.length > 0) {
         const card = document.createElement('div');
         card.className = 'narration-entry whisper-stats-card';
 
@@ -186,14 +206,14 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
           card.appendChild(row);
         }
 
-        log.appendChild(card);
-        log.scrollTop = log.scrollHeight;
-      }
-
-      const sceneImage = root.querySelector('#scene-image') as HTMLElement;
-      sceneImage.style.display = 'none';
+      log.appendChild(card);
+      log.scrollTop = log.scrollHeight;
     }
-  });
+
+    const sceneImage = root.querySelector('#scene-image') as HTMLElement;
+    sceneImage.style.display = 'none';
+  }
+  ws.on('scene-end', (msg) => { if (msg.type === 'scene-end') renderSceneEnd(msg); });
 
   ws.on('scene-image', (msg) => {
     if (msg.type !== 'scene-image') return;
@@ -206,10 +226,6 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     img.alt = msg.locationName;
     label.textContent = msg.locationName;
     container.style.display = 'block';
-  });
-
-  ws.on('dice-roll', (msg) => {
-    if (msg.type === 'dice-roll') appendLog(`[dice] ${msg.result.description} (${msg.context})`, 'dice');
   });
 
   ws.on('action-proposals', (msg) => {
@@ -305,12 +321,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     }, 1000);
   });
 
-  ws.on('action-taken', (msg) => {
-    if (msg.type !== 'action-taken') return;
-    whisperArea.style.display = 'none';
-    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
-    whisperBtn.textContent = 'Whisper';
-    actionArea.innerHTML = '';
+  function renderActionTaken(msg: Extract<ServerMessage, { type: 'action-taken' }>): void {
     appendLog(`${msg.characterName}: ${msg.action}`, 'character');
     if (msg.spokenWords) {
       appendLog(`"${msg.spokenWords}"`, 'dialogue');
@@ -322,6 +333,17 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
         : 'resisted your whisper';
       appendLog(`[${msg.characterName} ${label}]`, 'system');
     }
+  }
+  ws.on('action-taken', (msg) => {
+    if (msg.type !== 'action-taken') return;
+    // Panel resets are live-turn chrome, not log content — a replay never
+    // sees them, which is correct: it restores what happened, not what the
+    // whisper box was doing at the moment the page died.
+    whisperArea.style.display = 'none';
+    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+    whisperBtn.textContent = 'Whisper';
+    actionArea.innerHTML = '';
+    renderActionTaken(msg);
   });
 
   ws.on('character-state-update', (msg) => {
@@ -382,10 +404,14 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
   });
 
   let shownTutorial = false;
+  function showTutorial(): void {
+    if (shownTutorial) return;
+    shownTutorial = true;
+    appendLog('You are the voice inside your character\'s head. When prompted, whisper a thought to guide them — but they may not listen. Trust is earned through good advice.', 'system');
+  }
   ws.on('phase-change', (msg) => {
-    if (msg.type === 'phase-change' && msg.phase === 'playing' && !shownTutorial) {
-      shownTutorial = true;
-      appendLog('You are the voice inside your character\'s head. When prompted, whisper a thought to guide them — but they may not listen. Trust is earned through good advice.', 'system');
+    if (msg.type === 'phase-change' && msg.phase === 'playing') {
+      showTutorial();
     }
     if (msg.type === 'phase-change' && msg.phase === 'ended') {
       whisperArea.style.display = 'none';
@@ -454,6 +480,36 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean)
     showSystemNotice(msg.message);
     for (const btn of pendingRevokes) btn.disabled = false;
     pendingRevokes.clear();
+  });
+
+  // The playing-phase analog of interview-replay: the server ships back
+  // every #narration-log line this session's view would have shown before
+  // the refresh (its own whispers included; other players' whispers are
+  // filtered server-side). Each entry is re-rendered through the exact
+  // live message's function — same classes, same stat accounting, same
+  // location bar — so a reloading player sees the story so far, not just
+  // that the game survived.
+  ws.on('transcript-replay', (msg) => {
+    if (msg.type !== 'transcript-replay') return;
+    if (msg.entries.length === 0 && msg.omitted === 0) return;
+    // A campaign can only have log entries because play started, and play
+    // starting is what shows the one-time tutorial live. The server sends
+    // this before the rejoin phase-change, so claim the tutorial here and
+    // it lands where it did originally: on top of the transcript.
+    showTutorial();
+    if (msg.omitted > 0) appendLog(`— ${msg.omitted} earlier log entries omitted —`, 'system');
+    for (const entry of msg.entries) {
+      switch (entry.type) {
+        case 'narration': renderNarration(entry); break;
+        case 'resolution': renderResolution(entry); break;
+        case 'dice-roll': renderDiceRoll(entry); break;
+        case 'action-taken': renderActionTaken(entry); break;
+        case 'scene-end': renderSceneEnd(entry); break;
+        case 'whisper-echo': appendLog(`You whisper: "${entry.text}"`, 'whisper'); break;
+        case 'revoked-note': appendLog(entry.text, 'system'); break;
+      }
+    }
+    log.scrollTop = log.scrollHeight;
   });
 
   const connBanner = document.createElement('div');

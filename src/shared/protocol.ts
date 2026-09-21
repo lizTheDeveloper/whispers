@@ -25,6 +25,22 @@ export type ClientMessage =
   | { type: 'start-game' }
   | { type: 'end-game' };
 
+/**
+ * One display line of a session's playing-phase log, shaped exactly like the
+ * live ServerMessage that produced it (plus two kinds that never were
+ * broadcasts: the player's own whisper echo and a revoke note). Sent as an
+ * array by 'transcript-replay' when a client rejoins mid-game or after the
+ * table ended, so a page refresh does not erase the story so far.
+ */
+export type ReplayEntry =
+  | { type: 'narration'; text: string; sceneNumber: number; locationName?: string; isEpilogue?: boolean }
+  | { type: 'resolution'; text: string }
+  | { type: 'dice-roll'; result: DiceResult; context: string }
+  | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }
+  | { type: 'scene-end'; summary: string; sceneNumber: number; whisperStats?: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
+  | { type: 'whisper-echo'; text: string }
+  | { type: 'revoked-note'; text: string };
+
 export type ServerMessage =
   | { type: 'room-joined'; campaignId: string; joinCode: string; isOwner: boolean; tableRole: import('./types.js').TableRole | null; sessionToken: string; gameName: string; playerName: string; phase: GamePhase }
   | { type: 'lobby-state'; players: string[]; setupChat: Array<{ role: string; content: string }>; dmReady: boolean; approvedCount: number; phase: GamePhase; influences: string[]; hostTableRole: import('./types.js').TableRole | null; readiness: import('./types.js').WorldReadiness }
@@ -60,6 +76,7 @@ export type ServerMessage =
   | { type: 'character-preview'; definition: CharacterDefinition; readiness: CharacterReadiness }
   | { type: 'character-readiness'; readiness: CharacterReadiness }
   | { type: 'interview-replay'; transcript: Array<{ role: string; content: string }>; definition: CharacterDefinition | null }
+  | { type: 'transcript-replay'; entries: ReplayEntry[]; omitted: number }
   | { type: 'material-uploaded'; material: import('./types.js').CampaignMaterial }
   | { type: 'token-usage'; used: number; remaining: number | null }
   | { type: 'error'; message: string };
