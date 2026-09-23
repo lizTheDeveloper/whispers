@@ -108,3 +108,37 @@ export function setInterviewStatus(db: Database.Database, id: string, status: In
   db.prepare("UPDATE character_interviews SET status = ?, updated_at = datetime('now') WHERE id = ?")
     .run(status, id);
 }
+
+/**
+ * Everyone already at this table, as the interviewer needs them: characters
+ * in play, characters waiting on approval, and sheets other players are
+ * still shaping in their own interviews. Each player is interviewed alone,
+ * so without this a mother and her son could be built in parallel with
+ * neither interview knowing the other exists. Excludes the asking session's
+ * own sheet; deduped by name, first source wins.
+ */
+export function listTableCharacters(db: Database.Database, campaignId: string, excludeSessionToken: string): Array<{ name: string; highConcept: string }> {
+  const out: Array<{ name: string; highConcept: string }> = [];
+  const seen = new Set<string>();
+  const add = (raw: unknown) => {
+    if (typeof raw !== 'string' || !raw) return;
+    let def: Partial<CharacterDefinition>;
+    try { def = JSON.parse(raw); } catch { return; }
+    const name = typeof def?.name === 'string' ? def.name.trim() : '';
+    if (!name || seen.has(name.toLowerCase())) return;
+    seen.add(name.toLowerCase());
+    out.push({ name, highConcept: typeof def.highConcept === 'string' ? def.highConcept.trim() : '' });
+  };
+  const ownCharacter = db.prepare('SELECT character_id FROM campaign_sessions WHERE token = ?').get(excludeSessionToken) as { character_id: string | null } | undefined;
+  for (const row of db.prepare('SELECT id, definition FROM characters WHERE campaign_id = ? AND revoked_at IS NULL ORDER BY created_at').all(campaignId) as Array<{ id: string; definition: string }>) {
+    if (row.id === ownCharacter?.character_id) continue;
+    add(row.definition);
+  }
+  for (const row of db.prepare('SELECT definition FROM pending_characters WHERE campaign_id = ? AND session_token != ? ORDER BY created_at').all(campaignId, excludeSessionToken) as Array<{ definition: string }>) {
+    add(row.definition);
+  }
+  for (const row of db.prepare("SELECT definition FROM character_interviews WHERE campaign_id = ? AND session_token != ? AND definition IS NOT NULL AND status != 'revoked' ORDER BY created_at").all(campaignId, excludeSessionToken) as Array<{ definition: string }>) {
+    add(row.definition);
+  }
+  return out;
+}

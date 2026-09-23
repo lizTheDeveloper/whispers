@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { DmAgent } from './agents/dm.js';
-import { CharacterAgent } from './agents/character.js';
+import { DmAgent, describeRelationships, type PartyMember } from './agents/dm.js';
+import { CharacterAgent, type PartyMemberView } from './agents/character.js';
+import type { DmOpening } from './agents/schemas.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
 import { getInfluences } from './room.js';
-import { loadStockScenario, seedWorld } from './world-seed.js';
+import { loadStockScenario, getWorldSeed } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
 import { callLlm } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
@@ -53,6 +54,10 @@ export class GameLoop {
   private sceneTurnCount = 0;
   private locationTurnCount = 0;
   private lastLocationName = '';
+  // True between the narration-only opening and the first DM narration of
+  // play, so that narration picks up from the arrival instead of re-setting
+  // the stage the table just heard.
+  private openingJustDelivered = false;
   private sceneWhisperStats = new Map<string, { name: string; followed: number; partial: number; ignored: number; trustStart: number; trustEnd: number }>();
   private broadcastFn: (msg: ServerMessage) => void;
 
@@ -197,7 +202,8 @@ export class GameLoop {
     this.loadCharacters();
 
     const checkpoint = loadCheckpoint(this.db, this.campaignId);
-    if (checkpoint && checkpoint.state.currentTurn > 0) {
+    const resuming = Boolean(checkpoint && checkpoint.state.currentTurn > 0);
+    if (checkpoint && resuming) {
       this.state = { ...this.state, ...checkpoint.state, phase: 'playing' };
       this.state.initiativeOrder = Array.from(this.characters.keys());
       this.sceneTurnCount = checkpoint.state.sceneTurnCount ?? 0;
@@ -227,16 +233,156 @@ export class GameLoop {
     this.broadcastFn({ type: 'character-roster', characters: this.rosterSnapshot });
     const campaign = this.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(this.campaignId) as any;
 
-    if (campaign.scenario_id) {
-      const existingLocs = this.worldBible.getAllLocationNames(this.campaignId);
-      if (existingLocs.length === 0) {
-        await this.seedScenario(campaign.scenario_id);
-      } else {
-        console.log(`[game-loop] Scenario already seeded (${existingLocs.length} locations exist)`);
-      }
+    // The world bible is seeded when the host accepts the world
+    // (accept-world-seed), before anyone makes a character — so there is no
+    // seeding left to do here. What start() owes a FRESH table is the
+    // opening: the arrival and the introductions, narration only, before any
+    // agent acts. A resumed table already had its opening.
+    if (!resuming) {
+      this.seedPartyRelationships();
+      await this.runOpening(campaign);
     }
 
     await this.runScene(campaign);
+  }
+
+  /** Two names refer to the same person: exact (case-insensitive) or same first name ("Liz" ~ "Liz Harper"). */
+  private namesMatch(a: string, b: string): boolean {
+    const x = a.trim().toLowerCase();
+    const y = b.trim().toLowerCase();
+    if (!x || !y) return false;
+    return x === y || getFirstName(a).toLowerCase() === getFirstName(b).toLowerCase();
+  }
+
+  /** The live party as the DM needs to know it — the real players, never setup placeholders. */
+  private partyForDm(): PartyMember[] {
+    return Array.from(this.characters.values()).map(c => ({
+      name: c.definition.name,
+      highConcept: c.definition.highConcept,
+      age: c.definition.age,
+      relationships: c.definition.relationships,
+    }));
+  }
+
+  /** How `viewer` sees `other`: the relation and address term from viewer's sheet, or the reverse tie from other's. */
+  private companionView(viewer: Character, other: Character): Pick<PartyMemberView, 'relation' | 'address' | 'viewerIsTheir' | 'age'> {
+    const mine = (viewer.definition.relationships ?? []).find(r => this.namesMatch(r.to, other.definition.name));
+    const theirs = mine ? undefined : (other.definition.relationships ?? []).find(r => this.namesMatch(r.to, viewer.definition.name));
+    return {
+      relation: mine?.relation,
+      address: mine?.address,
+      viewerIsTheir: theirs?.relation,
+      age: other.definition.age,
+    };
+  }
+
+  /**
+   * Stated relationships between party members go into the world bible's
+   * relationships table, so the DM's world state carries them alongside
+   * everything learned in play. Idempotent: the table is keyed on the pair.
+   */
+  private seedPartyRelationships(): void {
+    for (const c of this.characters.values()) {
+      for (const rel of c.definition.relationships ?? []) {
+        const target = Array.from(this.characters.values()).find(o => o.id !== c.id && this.namesMatch(rel.to, o.definition.name));
+        if (!target) continue;
+        const [sentence] = describeRelationships({ name: c.definition.name, highConcept: c.definition.highConcept, relationships: [{ ...rel, to: target.definition.name }] });
+        try {
+          this.worldBible.addRelationship({ campaignId: this.campaignId, entityAId: c.id, entityBId: target.id, type: rel.relation, description: sentence ?? null });
+        } catch (e) {
+          console.error('[game-loop] could not record party relationship:', e);
+        }
+      }
+    }
+  }
+
+  /**
+   * The narration-only opening of a fresh game. First the scene is set — a
+   * stock scenario's own openingNarration verbatim, otherwise the DM's
+   * arrival built from the accepted premise — then each character is
+   * introduced as the others would see them, stated relationships included.
+   * No agent acts until this returns: start() awaits it before runScene.
+   */
+  private async runOpening(campaign: any): Promise<void> {
+    const seed = getWorldSeed(this.db, this.campaignId);
+    const stock = campaign.scenario_id ? loadStockScenario(campaign.scenario_id) : null;
+    const scenarioOpening = stock?.openingNarration?.trim() || null;
+    const premise = (seed?.premise ?? stock?.seed.premise ?? '').trim();
+    const places = this.worldBible.getAllLocationNames(this.campaignId).map(name => ({
+      name,
+      description: this.worldBible.getLocationByName(this.campaignId, name)?.description ?? null,
+    }));
+
+    let opening: DmOpening | null = null;
+    try {
+      opening = await this.dm.openScene({
+        preset: campaign.dm_preset,
+        houseRules: campaign.house_rules,
+        dmInstructions: campaign.dm_instructions ?? null,
+        dmCustomPrompt: campaign.dm_custom_prompt ?? null,
+        campaignId: this.campaignId,
+        worldSummary: '',
+        transcript: this.transcript,
+        systemId: campaign.system_id,
+        influences: getInfluences(this.db, this.campaignId),
+        party: this.partyForDm(),
+      }, { premise, scenarioOpening, places });
+    } catch (e) {
+      console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
+    }
+    if (this.stopped) return;
+
+    let locationName: string | undefined;
+    const proposed = opening?.currentLocationName?.trim();
+    if (proposed) {
+      const snapped = this.worldBible.getLocationByName(this.campaignId, proposed) ? proposed : this.worldBible.snapToKnownLocation(this.campaignId, proposed);
+      const loc = snapped ? this.worldBible.getLocationByName(this.campaignId, snapped) : null;
+      if (loc) {
+        this.state.currentLocationId = loc.id;
+        this.worldBible.markLocationVisited(this.campaignId, loc.id);
+        locationName = loc.name;
+      }
+    }
+
+    const sceneText = scenarioOpening ?? (opening?.narration.trim() || premise);
+    if (sceneText) {
+      this.addTranscript('dm', sceneText);
+      this.broadcastFn({ type: 'narration', text: sceneText, sceneNumber: this.state.currentScene, locationName });
+    } else {
+      console.warn(`[game-loop] campaign ${this.campaignId} has no premise or scenario opening — opening with introductions only`);
+    }
+
+    for (const id of this.state.initiativeOrder) {
+      const c = this.characters.get(id);
+      if (!c) continue;
+      const text = this.introductionFor(c, opening);
+      this.addTranscript('dm', text);
+      this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene });
+    }
+    this.openingJustDelivered = true;
+    console.log(`[game-loop] Opening delivered (${scenarioOpening ? 'scenario' : opening?.narration.trim() ? 'DM' : 'premise'} scene-setting, ${this.characters.size} introductions)`);
+  }
+
+  /**
+   * A character as the others see them. The DM's prose when it wrote one —
+   * with any stated relationship it left out appended, because who is whose
+   * mother is a fact of the sheet, not a stylistic choice — otherwise a
+   * plain line built from the sheet itself.
+   */
+  private introductionFor(c: Character, opening: DmOpening | null): string {
+    const d = c.definition;
+    const member: PartyMember = { name: d.name, highConcept: d.highConcept, age: d.age, relationships: d.relationships };
+    const fromDm = opening?.introductions.find(i => this.namesMatch(i.name, d.name))?.text.trim();
+    if (fromDm) {
+      const lower = fromDm.toLowerCase();
+      const missing = (d.relationships ?? []).filter(r => !lower.includes(r.relation.trim().toLowerCase()));
+      const extra = missing.length > 0 ? ' ' + describeRelationships({ ...member, relationships: missing }).join(' ') : '';
+      return `${fromDm}${extra}`;
+    }
+    const ageText = d.age === undefined || !String(d.age).trim() ? ''
+      : typeof d.age === 'number' || /^\d+$/.test(String(d.age).trim()) ? `, ${String(d.age).trim()} years old` : `, ${String(d.age).trim()}`;
+    const rels = describeRelationships(member);
+    return `${d.name} — ${d.highConcept}${ageText}.${rels.length > 0 ? ' ' + rels.join(' ') : ''}`;
   }
 
   stop(): void {
@@ -287,6 +433,7 @@ export class GameLoop {
         transcript: this.transcript,
         systemId: campaign.system_id,
         influences: getInfluences(this.db, this.campaignId),
+        party: this.partyForDm(),
       },
       pacing: {
         sceneNumber: this.state.currentScene,
@@ -299,8 +446,10 @@ export class GameLoop {
         knownLocationNames: this.worldBible.getAllLocationNames(this.campaignId),
         unvisitedLocationNames: this.worldBible.getUnvisitedLocationNames(this.campaignId),
         isFinale: this.state.currentScene >= 4 && (this.state.currentTurn ?? 0) >= 18,
+        afterOpening: this.openingJustDelivered && this.sceneTurnCount === 0,
       },
     };
+    this.openingJustDelivered = false;
     let narration;
     try {
       narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
@@ -451,9 +600,9 @@ export class GameLoop {
 
     const partyMembers = Array.from(this.characters.entries())
       .filter(([id]) => id !== characterId)
-      .map(([id, c]) => {
+      .map(([id, c]): PartyMemberView => {
         const lastAction = this.transcript.filter(m => m.role === 'character' && m.characterId === id).slice(-1)[0]?.content;
-        return { name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble, stress: c.state.stress, lastAction: lastAction || undefined };
+        return { name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble, stress: c.state.stress, lastAction: lastAction || undefined, ...this.companionView(character, c) };
       });
 
     let proposals;
@@ -659,6 +808,7 @@ export class GameLoop {
           dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
           campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
           influences: getInfluences(this.db, this.campaignId),
+          party: this.partyForDm(),
         },
         decision.spokenWords
           ? `${decision.chosenAction} — says: "${decision.spokenWords}"`
@@ -1205,16 +1355,6 @@ export class GameLoop {
     }
   }
 
-  private async seedScenario(scenarioId: string): Promise<void> {
-    const loaded = loadStockScenario(scenarioId);
-    if (!loaded) return;
-    seedWorld(this.db, this.campaignId, loaded.seed);
-    if (loaded.openingNarration) {
-      this.transcript.push({ role: 'system' as const, content: `[Scenario] ${loaded.openingNarration}`, timestamp: new Date().toISOString() });
-    }
-    console.log(`[game-loop] Seeded scenario "${scenarioId}"`);
-  }
-
   /**
    * What happens when a player presses Whisper. The server is authoritative
    * about WHOSE voice a whisper is: the target is derived from the sender's
@@ -1505,10 +1645,19 @@ export class GameLoop {
         if (recentActions.length >= 3) {
           const cautious = /\b(look|observe|wait|cautious|careful|hide|watch|listen|stay)\b/i;
           const social = /\b(talk|speak|ask|persuade|convince|argue|negotiate|confront|shout)\b/i;
-          const otherNames = charIds.filter(id => id !== c.id).map(id => getFirstName(this.characters.get(id)!.definition.name).toLowerCase());
+          // A companion counts as engaged whether they are named or addressed
+          // the way this character actually speaks to them ("Mom").
+          const others = charIds.filter(id => id !== c.id).map(id => this.characters.get(id)!);
+          const otherNames = [...new Set(others.flatMap(o => {
+            const terms = [getFirstName(o.definition.name).toLowerCase()];
+            const address = this.companionView(c, o).address?.trim().toLowerCase();
+            if (address) terms.push(address);
+            return terms;
+          }))];
           const cautiousCount = recentActions.filter(a => cautious.test(a)).length;
           const socialCount = recentActions.filter(a => social.test(a)).length;
-          const companionMentions = otherNames.length > 0 ? recentActions.filter(a => otherNames.some(n => a.toLowerCase().includes(n))).length : 0;
+          const mentionPatterns = otherNames.map(n => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
+          const companionMentions = otherNames.length > 0 ? recentActions.filter(a => mentionPatterns.some(re => re.test(a))).length : 0;
           if (cautiousCount >= 3) behaviorHints.push('PLAYING TOO SAFE — force a confrontation they cannot avoid');
           if (socialCount === 0 && recentActions.length >= 4) behaviorHints.push('NEVER TALKS TO ANYONE — introduce an NPC who blocks their path and demands conversation');
           if (otherNames.length > 0 && companionMentions === 0 && recentActions.length >= 3) behaviorHints.push('IGNORING COMPANIONS — create a crisis that requires teamwork');

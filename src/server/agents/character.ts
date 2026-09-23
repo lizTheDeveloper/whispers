@@ -10,6 +10,21 @@ function getFirstName(fullName: string): string {
   return parts.find(p => !NAME_TITLES.has(p.toLowerCase())) ?? parts[0]!;
 }
 
+export interface PartyMemberView {
+  name: string;
+  highConcept: string;
+  trouble: string;
+  stress?: number;
+  lastAction?: string;
+  /** What this companion is to the viewing character ("mother"). */
+  relation?: string;
+  /** What the viewing character calls them ("Mom"). */
+  address?: string;
+  /** What the viewing character is to them, when only their sheet states the tie ("son"). */
+  viewerIsTheir?: string;
+  age?: number | string;
+}
+
 interface CharacterContext {
   definition: CharacterDefinition;
   state: CharacterState;
@@ -17,8 +32,47 @@ interface CharacterContext {
   transcript: TranscriptMessage[];
   memories?: CharacterMemory[];
   worldContext?: string;
-  partyMembers?: Array<{ name: string; highConcept: string; trouble: string; stress?: number; lastAction?: string }>;
+  partyMembers?: PartyMemberView[];
 }
+
+const FEMININE = /\b(mother|mom|mum|mama|sister|daughter|wife|aunt|grandmother|grandma|granny|niece|girlfriend|stepmother|stepdaughter|stepsister)\b/i;
+const MASCULINE = /\b(father|dad|papa|brother|son|husband|uncle|grandfather|grandpa|nephew|boyfriend|stepfather|stepson|stepbrother)\b/i;
+function pronounFor(relation: string | undefined): 'her' | 'him' | 'them' {
+  if (relation && FEMININE.test(relation)) return 'her';
+  if (relation && MASCULINE.test(relation)) return 'him';
+  return 'them';
+}
+
+/**
+ * How this character actually speaks to a companion: the address term from
+ * their sheet ("Mom") when there is one, otherwise the companion's first name.
+ */
+export function addressTermFor(p: PartyMemberView): string {
+  return p.address?.trim() || getFirstName(p.name);
+}
+
+/**
+ * One companion line, from the viewer's side:
+ * `- Liz — your mother (you call her "Mom"): Overworked Mom… (trouble: "…")`.
+ */
+export function describeCompanion(p: PartyMemberView): string {
+  // Only the viewer's own relation word says anything about the companion's
+  // gender ("mother" -> her); the reverse tie ("you are their son") does not.
+  const pron = pronounFor(p.relation);
+  let who = '';
+  if (p.relation) {
+    who = ` — your ${p.relation}`;
+  } else if (p.viewerIsTheir) {
+    who = ` — you are their ${p.viewerIsTheir}`;
+  }
+  const address = p.address && p.address.trim() && p.address.trim().toLowerCase() !== p.name.trim().toLowerCase()
+    ? ` (you call ${pron} "${p.address.trim()}")`
+    : '';
+  const age = p.age !== undefined && String(p.age).trim() ? `, age ${String(p.age).trim()}` : '';
+  return `- ${p.name}${who}${address}: ${p.highConcept}${age} (trouble: "${p.trouble}")`;
+}
+
+const ADDRESS_DIRECTIVE = 'address them the way your character naturally would — by the name, title or relation you use for them';
 
 export class CharacterAgent {
   private static SKILL_KEYWORDS: Record<string, string[]> = {
@@ -118,9 +172,9 @@ export class CharacterAgent {
           .slice(-2)
           .map(m => m.content)
       : [];
-    const companionNames = (ctx.partyMembers ?? []).map(p => getFirstName(p.name)).join(', ');
+    const companionNames = (ctx.partyMembers ?? []).map(addressTermFor).join(', ');
     const companionBlock = companionActions.length > 0
-      ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — complement them. At least one proposed action MUST reference ${companionNames} BY NAME — "I tell ${companionNames} to cover me while I..." or "I ask ${companionNames} what they think about..." or "I grab ${companionNames}'s arm and pull them toward...". Characters who never interact feel like strangers.`
+      ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — complement them. At least one proposed action MUST engage them directly — ${ADDRESS_DIRECTIVE} (${companionNames}): "I tell ${companionNames} to cover me while I..." or "I ask ${companionNames} what they think about..." or "I grab ${companionNames}'s arm and pull them toward...". Characters who never interact feel like strangers.`
       : '';
 
     const npcDirective = nearbyNpcs.length > 0
@@ -137,7 +191,7 @@ export class CharacterAgent {
       npcDirective ? `\n<npcs>${npcDirective}\n</npcs>` : '',
       `\n<events>\n${recentTranscript}\n</events>`,
       `\n<task>`,
-      `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action MUST name them — "I tell ${companionNames || 'my companion'} to watch the door" or "I ask ${companionNames || 'my companion'} for their opinion on..." — parties are parties because members interact.`,
+      `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action MUST involve them directly — ${ADDRESS_DIRECTIVE}: "I tell ${companionNames || 'my companion'} to watch the door" or "I ask ${companionNames || 'my companion'} for their opinion on..." — parties are parties because members interact.`,
       `AVOID repeating actions from recent events. If you recently smiled, try confronting instead. If you recently fought, try investigating. Vary your approach.`,
       `Respond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }`,
       `</task>`,
@@ -219,9 +273,9 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
           .slice(-1)
           .map(m => m.content)
       : [];
-    const decideCompanionNames = (ctx.partyMembers ?? []).map(p => getFirstName(p.name)).join(', ');
+    const decideCompanionNames = (ctx.partyMembers ?? []).map(addressTermFor).join(', ');
     const companionHint = companionRecent.length > 0
-      ? `\nYour companion just acted: "${companionRecent[0]}". COMPLEMENT their action — and MENTION ${decideCompanionNames} BY NAME in your action if you're interacting with them. "I call out to ${decideCompanionNames}..." or "I move to cover ${decideCompanionNames}..." — parties that never speak to each other feel dead.`
+      ? `\nYour companion just acted: "${companionRecent[0]}". COMPLEMENT their action — and if you're interacting with them, ${ADDRESS_DIRECTIVE} (${decideCompanionNames}). "I call out to ${decideCompanionNames}..." or "I move to cover ${decideCompanionNames}..." — parties that never speak to each other feel dead.`
       : '';
 
     const memoryGoals = this.deriveGoals(ctx.memories ?? []);
@@ -289,12 +343,16 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
     const topSkills = sortedSkills.slice(0, 3).map(([k, v]) => `${k} (+${v})`).join(', ');
     const skillLine = sortedSkills.map(([k, v]) => `${k}: +${v}`).join(', ');
 
+    const ageText = d.age !== undefined && String(d.age).trim() ? String(d.age).trim() : '';
     return [
       `You ARE ${d.name}. Stay completely in character.`,
+      ageText ? `Age: ${ageText}. Think, talk and act like someone your age — how you see the world, what you notice, what you would and would not do.` : '',
       `High concept: ${d.highConcept}`,
       `Trouble: ${d.trouble}`,
       `Personality: ${d.personality}`,
+      d.backstory && d.backstory.trim() ? `Backstory: ${d.backstory.trim()}` : '',
       `Aspects: ${d.aspects.join(', ')}`,
+      d.stunts && d.stunts.length > 0 ? `Stunts: ${d.stunts.join('; ')}` : '',
       `Skills: ${skillLine}`,
       `Your best skills are ${topSkills}, but you have a full skill set. Use ALL your skills across the adventure — a thief can also fight, observe, negotiate, or run. Vary which skill drives each action; never use the same approach twice in a row.`,
       `Current state: ${ctx.state.stress}/3 stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
@@ -313,11 +371,11 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       memoryBlock,
       ctx.partyMembers && ctx.partyMembers.length > 0
         ? `\nYour companions:\n${ctx.partyMembers.map(p => {
-            let line = `- ${p.name}: ${p.highConcept} (trouble: "${p.trouble}")`;
+            let line = describeCompanion(p);
             if (p.stress !== undefined && p.stress >= 2) line += ` [WOUNDED — stress ${p.stress}/3]`;
             if (p.lastAction) line += ` | Just did: ${p.lastAction.replace(/^[^:]+:\s*/, '').slice(0, 60)}`;
             return line;
-          }).join('\n')}\nYou can cooperate with them, argue, protect them, or ask for their help. Reference them by name. React to what they just did — support, question, or build on it.`
+          }).join('\n')}\nYou can cooperate with them, argue, protect them, or ask for their help. When you speak to them, ${ADDRESS_DIRECTIVE}. React to what they just did — support, question, or build on it.\n(In the events log, lines are labelled "Name: action". That label is bookkeeping, not how anyone speaks — never copy it as a form of address.)`
         : '',
       `\nAlways respond with valid JSON matching the requested format.`,
     ].filter(Boolean).join('\n');

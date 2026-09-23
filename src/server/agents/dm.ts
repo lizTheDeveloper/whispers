@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { callLlm } from './llm-client.js';
-import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema, WorldSeedSchema } from './schemas.js';
-import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply } from './schemas.js';
+import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema, WorldSeedSchema, DmOpeningSchema } from './schemas.js';
+import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply, DmOpening } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { safeDataFile } from '../data-paths.js';
 import type Database from 'better-sqlite3';
-import type { CharacterDefinition, TranscriptMessage, DiceResult, WorldSeed } from '../../shared/types.js';
+import type { CharacterDefinition, CharacterRelationship, TranscriptMessage, DiceResult, WorldSeed } from '../../shared/types.js';
 
 const presetCache = new Map<string, string>();
 function loadPresetText(presetName: string): string | null {
@@ -42,6 +42,87 @@ export function composePresetSections(preset: string): { head: string; critical:
   return { head, critical, narrationHint };
 }
 
+/** The slice of a character sheet the DM needs to know who is actually playing. */
+export interface PartyMember {
+  name: string;
+  highConcept: string;
+  age?: number | string;
+  relationships?: CharacterRelationship[];
+}
+
+const FEMININE_RELATIONS = /\b(mother|mom|mum|mama|sister|daughter|wife|aunt|grandmother|grandma|granny|niece|girlfriend|stepmother|stepdaughter|stepsister)\b/i;
+const MASCULINE_RELATIONS = /\b(father|dad|papa|brother|son|husband|uncle|grandfather|grandpa|nephew|boyfriend|stepfather|stepson|stepbrother)\b/i;
+
+/** Object pronoun implied by a relation word ("mother" -> her), else "them". */
+export function pronounForRelation(relation: string): 'her' | 'him' | 'them' {
+  if (FEMININE_RELATIONS.test(relation)) return 'her';
+  if (MASCULINE_RELATIONS.test(relation)) return 'him';
+  return 'them';
+}
+
+/**
+ * One plain sentence per stated relationship, from the sheet owner's side:
+ * "Liz is Biz's mother (Biz calls her "Mom")." Used by the DM's party block
+ * and the opening introductions, so both say the same thing.
+ */
+export function describeRelationships(member: PartyMember): string[] {
+  return (member.relationships ?? []).map(r => {
+    const address = r.address && r.address.trim() && r.address.trim().toLowerCase() !== r.to.trim().toLowerCase()
+      ? ` (${member.name} calls ${pronounForRelation(r.relation)} "${r.address.trim()}")`
+      : '';
+    return `${r.to} is ${member.name}'s ${r.relation}${address}.`;
+  });
+}
+
+/**
+ * The authoritative "who is playing" block for every DM prompt during play.
+ * The setup chat sometimes invents placeholder player characters; this block
+ * is what tells the DM those were never the players.
+ */
+export function describeParty(members: PartyMember[]): string {
+  if (members.length === 0) return '';
+  const lines = members.map(m => {
+    const age = m.age !== undefined && String(m.age).trim() ? `; age ${String(m.age).trim()}` : '';
+    const rels = describeRelationships(m);
+    return `- ${m.name}: ${m.highConcept}${age}.${rels.length > 0 ? ' ' + rels.join(' ') : ''}`;
+  });
+  const hasAges = members.some(m => m.age !== undefined && String(m.age).trim());
+  return [
+    'THE PARTY — the player characters actually at this table (authoritative). Any other player-character names that came up while setting the game up were placeholders: those people are not in this game and must never appear as party members.',
+    ...lines,
+    hasAges ? 'Characters act their stated ages — a child thinks, talks and is treated like a child.' : '',
+    'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
+  ].filter(Boolean).join('\n');
+}
+
+const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
+const NON_NAME_WORDS = new Set(['The', 'They', 'Their', 'A', 'An', 'And', 'But', 'Or', 'I', 'We', 'You', 'He', 'She', 'It', 'This', 'That', 'These', 'Those', 'Keep', 'Make', 'Let', 'Use', 'Run', 'Give', 'When', 'If', 'Both', 'Each', 'All']);
+
+/**
+ * Drops setup-invented player characters from free-text DM direction.
+ *
+ * The setup chat is had before anyone has made a character, so the DM
+ * sometimes fills the gap with placeholder PCs ("The players are Marilyn
+ * 'Merry' Harper and her son Jasper"). Stored direction keeps those names
+ * forever, and the DM kept playing them instead of the real party. For play,
+ * a sentence that talks about the players AND names someone who is not in
+ * the party is dropped; everything else in the direction is kept verbatim.
+ * The stored campaign text is never modified.
+ */
+export function withoutPlaceholderParty(text: string | null, partyNames: string[]): string | null {
+  if (!text || partyNames.length === 0) return text;
+  const partyTokens = new Set(partyNames.flatMap(n => n.split(/\s+/)).map(t => t.replace(/[^A-Za-z'-]/g, '').toLowerCase()).filter(Boolean));
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter(sentence => {
+    if (!PLAYER_REFERENCE.test(sentence)) return true;
+    const names = (sentence.match(/\b[A-Z][a-z]+(?:'[a-z]+)?\b/g) ?? [])
+      .filter(w => !NON_NAME_WORDS.has(w) && !partyTokens.has(w.toLowerCase()));
+    return names.length === 0;
+  });
+  const result = kept.join(' ').trim();
+  return result || null;
+}
+
 /**
  * Pure prompt assembly. Exported so the composition order and — critically —
  * the fact that dmCustomPrompt AUGMENTS rather than replaces the preset are
@@ -55,8 +136,13 @@ export function assembleSystemPrompt(input: {
   dmInstructions: string | null;
   campaignMaterials: string | null;
   influences: string[];
+  /** The live party. When present, it is stated as authoritative and setup-invented PCs are dropped from the direction. */
+  party?: PartyMember[];
 }): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
   const sections = composePresetSections(input.preset);
+  const partyNames = (input.party ?? []).map(p => p.name);
+  const dmCustomPrompt = withoutPlaceholderParty(input.dmCustomPrompt, partyNames);
+  const dmInstructions = withoutPlaceholderParty(input.dmInstructions, partyNames);
   let prompt = sections.head;
   const criticalSection = sections.critical;
   const narrationHint = sections.narrationHint;
@@ -64,8 +150,8 @@ export function assembleSystemPrompt(input: {
   // The setup conversation's tailored prompt is ADDITIONAL direction, not a
   // replacement — replacing it silently dropped the preset's personality
   // enforcement and its narration hint.
-  if (input.dmCustomPrompt) {
-    prompt += `\nFor this campaign specifically:\n${input.dmCustomPrompt}\n`;
+  if (dmCustomPrompt) {
+    prompt += `\nFor this campaign specifically:\n${dmCustomPrompt}\n`;
   }
 
   if (input.influences.length > 0) {
@@ -93,7 +179,9 @@ Storytelling principles:
 `;
 
   if (input.houseRules) prompt += `\nHouse rules: ${input.houseRules}\n`;
-  if (input.dmInstructions) prompt += `\nDM direction: ${input.dmInstructions}\n`;
+  if (dmInstructions) prompt += `\nDM direction: ${dmInstructions}\n`;
+  const partyBlock = describeParty(input.party ?? []);
+  if (partyBlock) prompt += `\n${partyBlock}\n`;
 
   if (input.campaignMaterials) {
     prompt += `\nCampaign reference materials:\n${input.campaignMaterials}\n`;
@@ -115,6 +203,8 @@ export interface ScenePacing {
   knownLocationNames?: string[];
   unvisitedLocationNames?: string[];
   isFinale?: boolean;
+  /** The narration-only opening (arrival + introductions) has just been delivered; this is the first real beat of play. */
+  afterOpening?: boolean;
 }
 
 interface DmContext {
@@ -127,6 +217,8 @@ interface DmContext {
   transcript: TranscriptMessage[];
   systemId: string;
   influences: string[];
+  /** The live party. Optional so older callers keep working; play always passes it. */
+  party?: PartyMember[];
 }
 
 export class DmAgent {
@@ -185,7 +277,9 @@ export class DmAgent {
     ];
 
     let pacingHint: string;
-    if (roundCount === 0) {
+    if (roundCount === 0 && !hasPreviousScene && pacing?.afterOpening) {
+      pacingHint = 'The opening — the party\'s arrival and each character\'s introduction — has JUST been read to the table (see the transcript). Do NOT repeat or re-describe the arrival, and do NOT re-introduce the characters. Continue from that exact moment with the first thing that happens: something the party can see, hear or be approached about, and respond to. The characters know only what they have perceived so far — do not assume they hold items, facts or tasks nobody has given them, and do not reveal secrets or the answer to the mystery. Hint at the dramatic question; do not state it.';
+    } else if (roundCount === 0) {
       pacingHint = hasPreviousScene
         ? 'This is the opening of a NEW scene. Bridge from the previous scene — acknowledge what changed, what was won or lost, and why the party is in a different situation now. Then set the new stage: describe the new location, atmosphere, and sensory details. If UNRESOLVED THREADS exist in the world state, weave at least one into this scene opening as a hook or complication. The scene transition should feel like a chapter break, not a jump cut.'
         : 'This is the opening of the FIRST scene. Set the stage vividly — describe the location, atmosphere, and any sensory details. Introduce the dramatic question. Hint at trouble or opportunity.';
@@ -253,6 +347,57 @@ export class DmAgent {
         { role: 'user', content: userMessage },
       ],
       schema: DmNarrationSchema,
+      maxTokens: 2048,
+    });
+  }
+
+  /**
+   * The narration-only opening of a fresh game: the arrival, then each
+   * character as the others would see them. Nobody acts during it.
+   *
+   * It deliberately sees only what the characters could perceive — the
+   * premise, the party, and the places — never NPC motives or plot hooks,
+   * because an opening that knows the twist tends to narrate it. When a stock
+   * scenario already has an openingNarration, that text is used verbatim by
+   * the caller and this only writes the introductions.
+   */
+  async openScene(ctx: DmContext, opts: {
+    premise: string;
+    scenarioOpening: string | null;
+    places: Array<{ name: string; description: string | null }>;
+  }): Promise<DmOpening> {
+    const { systemPrompt, criticalReminder } = this.buildSystemPrompt(ctx);
+    const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
+    const party = ctx.party ?? [];
+    const placeList = opts.places.slice(0, 8)
+      .map(p => `- ${p.name}${p.description ? `: ${p.description}` : ''}`).join('\n');
+
+    const userMessage = [
+      `<opening>`,
+      `This is the OPENING OF THE ADVENTURE. Nothing has happened yet and no one has acted.`,
+      opts.premise ? `Premise — the situation the party is arriving into: ${opts.premise}` : '',
+      opts.scenarioOpening
+        ? `This opening has already been read aloud to the table and will be used as-is — do not rewrite it, and set "narration" to "":\n"${opts.scenarioOpening}"`
+        : '',
+      `</opening>`,
+      party.length > 0 ? `\n<party>\n${describeParty(party)}\n</party>` : '',
+      placeList ? `\n<places>\n${placeList}\n</places>` : '',
+      `\n<task>`,
+      opts.scenarioOpening
+        ? `1. narration: "" (the scene is already set).`
+        : `1. narration: 3-5 vivid sentences setting the scene as the party arrives — where they are, what they see, hear and smell, and how disorienting or striking this first moment is. If they have just been dropped into a strange new world, this is the moment they take it in. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`,
+      `2. introductions: one per party member, 1-2 sentences each, describing that character as the others would see them on first glance — look, bearing, manner — and stating what they are to each other exactly as the party block says (e.g. "Liz, Biz's mother, ..."). Never invent a relationship that is not stated. Use the party members' exact names.`,
+      `3. currentLocationName: copy one exact name from <places> if the party is at one of them, otherwise "".${personalityReminder}`,
+      `Respond as JSON: { "narration": "...", "introductions": [{ "name": "exact character name", "text": "..." }], "currentLocationName": "..." }`,
+      `</task>`,
+    ].filter(Boolean).join('\n');
+
+    return callLlm({
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      schema: DmOpeningSchema,
       maxTokens: 2048,
     });
   }
@@ -489,8 +634,14 @@ ${hooks}`;
     seed: WorldSeed | null;
     history: Array<{ role: string; content: string }>;
     unmet: string[];
+    /** Characters already at this table (live, awaiting approval, or being made by another player). */
+    tableCharacters?: Array<{ name: string; highConcept: string }>;
   }): Promise<CharInterviewReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'character creation aspects skills stunts');
+    const tableCharacters = (opts.tableCharacters ?? []).filter(c => c.name.trim());
+    const tableBlock = tableCharacters.length > 0
+      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''}`).join('\n')}\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want.\n`
+      : '';
     const worldBlock = opts.seed
       ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\nUnresolved: ${opts.seed.plotHooks.slice(0, 4).join(' / ')}\n`
       : '';
@@ -509,12 +660,16 @@ INDIRECT — put the character in a real place from the world below and ask what
 Open indirect. Use direct questions only to close the gaps listed below. Never present a checklist, never ask for more than two things at once, and never use the words "high concept", "aspect" or "stunt" in a question — describe what you mean instead.
 
 Aim them at characters with INTERNAL TENSION: a clear strength and a clear vulnerability. The trouble should create genuine dilemmas, not minor inconveniences, and it should have somewhere to bite in THIS world.
-${worldBlock}${unmetBlock}${ruleContext ? `\nRules reference:\n${ruleContext}\n` : ''}
+
+If age matters to who they are — especially if they are a child or elderly — find out roughly how old they are.
+${worldBlock}${tableBlock}${unmetBlock}${ruleContext ? `\nRules reference:\n${ruleContext}\n` : ''}
 
 CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON.
 
 While the sheet is unfinished: {"reply": "your question", "definition": null}
-Once you believe it is finished: {"reply": "what you understand about them, in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."]}}`;
+Once you believe it is finished: {"reply": "what you understand about them, in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."],"age":null,"relationships":[]}}
+
+"age" is a number or short phrase if you know it, else null. "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a boy whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Fill it from what the player told you — including anything the backstory states, such as "her son Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
 
     const messages = [{ role: 'system', content: systemPrompt }, ...opts.history];
     const last = messages[messages.length - 1];
@@ -621,6 +776,7 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
       dmInstructions: ctx.dmInstructions,
       campaignMaterials: campaignMaterials || null,
       influences: ctx.influences,
+      party: ctx.party,
     });
   }
 

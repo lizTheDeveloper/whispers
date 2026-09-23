@@ -27,7 +27,7 @@ import { GameLoop } from './game-loop.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
-  getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewStatus, getInterviewBySession,
+  getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewStatus, getInterviewBySession, listTableCharacters,
   type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness } from './character-readiness.js';
@@ -254,6 +254,22 @@ function validateCharacterDefinitionShape(def: unknown): string | null {
   }
   if (!isValidSkillsRecord(d.skills)) {
     return `Skills must be at most ${MAX_LIST_ITEMS} entries, each a name up to ${MAX_SHORT_FIELD} characters with a rating from ${MIN_SKILL_RATING} to ${MAX_SKILL_RATING}.`;
+  }
+  // Optional, but client-reachable and injected into every party member's
+  // prompt and the DM's — bounded like everything else, never coerced.
+  if (d.age !== undefined && d.age !== null
+    && !(typeof d.age === 'number' && Number.isFinite(d.age) && d.age >= 0 && d.age <= 100000)
+    && !isValidShortField(d.age)) {
+    return `Age must be a number or at most ${MAX_SHORT_FIELD} characters.`;
+  }
+  if (d.relationships !== undefined && d.relationships !== null) {
+    const rels = d.relationships;
+    const ok = Array.isArray(rels) && rels.length <= MAX_LIST_ITEMS && rels.every(r =>
+      r && typeof r === 'object'
+      && isValidShortField((r as any).to)
+      && isValidShortField((r as any).relation)
+      && ((r as any).address === undefined || (r as any).address === null || isValidShortField((r as any).address)));
+    if (!ok) return `Relationships must be at most ${MAX_LIST_ITEMS} entries, each naming who (to) and what they are to this character (relation), with an optional form of address, ${MAX_SHORT_FIELD} characters each.`;
   }
   return null;
 }
@@ -1225,6 +1241,7 @@ wss.on('connection', (ws) => {
           seed: getWorldSeed(db, campaign.id),
           history,
           unmet: before.detail,
+          tableCharacters: listTableCharacters(db, campaign.id, currentPlayer.sessionToken),
         });
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
