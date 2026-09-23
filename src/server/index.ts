@@ -939,6 +939,12 @@ wss.on('connection', (ws) => {
         phase: campaign.phase,
         characterId: currentPlayer!.characterId,
       });
+      // The seat is one of the readiness requirements, so the host's
+      // Readiness panel must hear about the choice — otherwise it keeps
+      // asking them to pick one until an unrelated update refreshes it.
+      // Re-read so the readiness check sees the role just saved.
+      const updated = joinRoom(db, currentJoinCode);
+      if (updated) sendReadiness(ws, updated);
     }
 
     if (msg.type === 'host-approve-character' && currentJoinCode) {
