@@ -5,7 +5,7 @@ import { renderGameView } from './game-view.js';
 import { renderDmLobby } from './dm-lobby.js';
 import { renderWaitingRoom } from './waiting-room.js';
 import { getStoredSession, saveSession, removeSession, parseRoute, setRoute } from './session-store.js';
-import { renderKey } from './render-key.js';
+import { renderKey, screenFor } from './render-key.js';
 import type { GamePhase, TableRole } from '../shared/types.js';
 
 const root = document.getElementById('app')!;
@@ -17,6 +17,10 @@ const ws = new WsClient();
  * all and wiped whatever was on screen.
  */
 let currentView: string | null = null;
+// `${screenFor(...)}:${joinCode}` of what is actually mounted in #app right
+// now. Every mount goes through here or the phase-change/error handlers
+// below, which keep it in step.
+let mountedScreen: string | null = null;
 let isOwner = false;
 let hostTableRole: TableRole | null = null;
 // The seat's own character, learned from the server (room-joined carries it
@@ -32,15 +36,22 @@ function renderFor(joinCode: string, campaignId: string, owner: boolean, tableRo
   isOwner = owner;
   hostTableRole = tableRole;
 
-  if (phase === 'playing' || phase === 'ended') {
+  const screen = screenFor(owner, tableRole, phase);
+  const mountId = `${screen}:${joinCode}`;
+  if (screen === 'dm-lobby' && mountedScreen === mountId) {
+    // Same DM lobby, same game — only the table role changed. The lobby
+    // repaints its role buttons from this same room-joined itself; a
+    // remount would throw away the host's setup conversation with the DM
+    // (the server still has it, but sends it back only on rejoin).
+    return;
+  }
+  mountedScreen = mountId;
+
+  if (screen === 'game-view') {
     renderGameView(root, ws, owner, myCharacterId);
-  } else if (owner && (phase === 'lobby' || tableRole !== 'player')) {
-    // The owner runs world setup from the DM lobby regardless of which
-    // table role they've chosen — table role only matters for where they
-    // land once the table actually opens. A host who chose to play routes
-    // like any other player from here on.
+  } else if (screen === 'dm-lobby') {
     renderDmLobby(root, ws, joinCode, campaignId);
-  } else if (!owner && phase === 'lobby') {
+  } else if (screen === 'waiting-room') {
     renderWaitingRoom(root, ws, gameName, joinCode);
   } else {
     renderCharacterCreator(root, ws, joinCode, owner);
@@ -84,6 +95,7 @@ ws.on('phase-change', (msg) => {
     const key = renderKey(isOwner, hostTableRole, joinCode, 'playing');
     if (currentView === key) return;
     currentView = key;
+    mountedScreen = `game-view:${joinCode}`;
     renderGameView(root, ws, isOwner, myCharacterId);
   } else if (msg.phase === 'character-creation' && (!isOwner || hostTableRole === 'player')) {
     // A host who chose to play reaches the character creator exactly like
@@ -92,6 +104,7 @@ ws.on('phase-change', (msg) => {
     const key = renderKey(isOwner, hostTableRole, joinCode, 'character-creation');
     if (currentView === key) return;
     currentView = key;
+    mountedScreen = `character-creator:${joinCode}`;
     renderCharacterCreator(root, ws, joinCode, isOwner);
   } else if (msg.phase === 'character-creation' && isOwner) {
     // The DM lobby is already showing (dm-chat's own done:true handling put
@@ -117,6 +130,7 @@ ws.on('error', (msg) => {
     if (route.view !== 'lobby') removeSession(route.joinCode, route.view === 'dm' ? 'dm' : 'player');
     setRoute({ view: 'lobby' });
     currentView = null;
+    mountedScreen = null;
     renderLobby(root, ws);
   }
 });

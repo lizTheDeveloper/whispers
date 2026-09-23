@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderKey } from '../src/client/render-key.js';
+import { renderKey, screenFor } from '../src/client/render-key.js';
 
 describe('renderKey', () => {
   it('produces different keys for two states that differ only in table role', () => {
@@ -28,5 +28,28 @@ describe('renderKey', () => {
   it('is stable for identical inputs', () => {
     expect(renderKey(true, 'player', 'ABCD', 'character-creation'))
       .toBe(renderKey(true, 'player', 'ABCD', 'character-creation'));
+  });
+});
+
+describe('screenFor', () => {
+  it('keeps the host on the DM lobby for every table role during the lobby phase', () => {
+    // Different renderKeys, same screen — renderFor must not remount the
+    // lobby (and wipe the setup chat) when only the role changed.
+    expect(screenFor(true, null, 'lobby')).toBe('dm-lobby');
+    expect(screenFor(true, 'dm', 'lobby')).toBe('dm-lobby');
+    expect(screenFor(true, 'player', 'lobby')).toBe('dm-lobby');
+  });
+
+  it('routes a playing host to the character creator once the table opens', () => {
+    expect(screenFor(true, 'player', 'character-creation')).toBe('character-creator');
+    expect(screenFor(true, 'dm', 'character-creation')).toBe('dm-lobby');
+    expect(screenFor(true, null, 'character-creation')).toBe('dm-lobby');
+  });
+
+  it('routes non-owners and the running game as before', () => {
+    expect(screenFor(false, null, 'lobby')).toBe('waiting-room');
+    expect(screenFor(false, 'dm', 'character-creation')).toBe('character-creator');
+    expect(screenFor(true, 'dm', 'playing')).toBe('game-view');
+    expect(screenFor(false, 'player', 'ended')).toBe('game-view');
   });
 });
