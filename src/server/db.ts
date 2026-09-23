@@ -339,7 +339,10 @@ export function migrate(db: Database.Database): void {
     db.exec('ALTER TABLE characters ADD COLUMN revoked_at TEXT');
   }
 
-  migratePartyKnowledge(db);
+  // One transaction: the backfill is keyed on the columns not existing yet,
+  // so a crash between adding them and backfilling would otherwise skip the
+  // backfill forever and blank a live game's knowledge.
+  db.transaction(() => migratePartyKnowledge(db))();
 }
 
 /**
