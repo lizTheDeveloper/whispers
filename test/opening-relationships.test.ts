@@ -20,7 +20,7 @@ import { mkdirSync, copyFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { WebSocket } from 'ws';
 import { connectWs, sendMsg, MessageQueue } from './lib/ws-helpers.js';
-import { startHarness, type Harness } from './lib/server-harness.js';
+import { startHarness, slowLlmToken, type Harness } from './lib/server-harness.js';
 import { finishWorldSetup } from './lib/finish-world-setup.js';
 import type { CharacterDefinition, RoomState, WorldSeed } from '../src/shared/types.js';
 import type { ServerMessage } from '../src/shared/protocol.js';
@@ -287,5 +287,59 @@ describe('how characters see and address each other', () => {
 
     playerWs.close();
     hostWs.close();
+  }, 60_000);
+});
+
+describe('the opening respects pause', () => {
+  it('pausing while the opening is being written holds it; resume delivers it exactly once', async () => {
+    const { getDb } = await import('../src/server/db.js');
+    const { createRoom } = await import('../src/server/room.js');
+    const { setWorldSeed, markSeedAccepted, seedWorld } = await import('../src/server/world-seed.js');
+    const { GameLoop } = await import('../src/server/game-loop.js');
+    const db = getDb();
+    const { campaignId, joinCode } = createRoom(db, { name: `Opening pause ${++seq}`, dmPreset: 'chronicler', systemId: 'fate-core' });
+    // The premise is in the opening prompt, so the token makes the stub hold
+    // exactly that request for 2.5s — long enough to pause inside it.
+    const token = slowLlmToken();
+    const seed: WorldSeed = { ...IMPROVISED_SEED, premise: `${IMPROVISED_SEED.premise} ${token}` };
+    setWorldSeed(db, campaignId, seed);
+    markSeedAccepted(db, campaignId);
+    seedWorld(db, campaignId, seed);
+    const lizId = `liz-p-${seq}`;
+    db.prepare('INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)')
+      .run(lizId, campaignId, JSON.stringify(LIZ), JSON.stringify(STATE));
+    const state: RoomState = {
+      campaignId, joinCode, phase: 'playing', currentScene: 0, currentTurn: 0,
+      initiativeOrder: [], activeCharacterId: null,
+      awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null,
+    };
+
+    const broadcasts: ServerMessage[] = [];
+    const loop = new GameLoop(db, campaignId, (m) => broadcasts.push(m), () => {}, state);
+    const running = loop.start().catch(() => {});
+    const waitFor = async (cond: () => boolean, ms: number) => {
+      const end = Date.now() + ms;
+      while (!cond()) { if (Date.now() > end) throw new Error('timed out'); await new Promise(r => setTimeout(r, 25)); }
+    };
+    try {
+      await waitFor(() => harness.receivedBodies.some(b => b.includes(token)), 15_000);
+      expect(loop.pause('host')).toBe(true);
+
+      const narrationsAtPause = broadcasts.filter(m => m.type === 'narration').length;
+      await new Promise(r => setTimeout(r, 3_500)); // past when the held opening would have answered
+      expect(broadcasts.filter(m => m.type === 'narration').length).toBe(narrationsAtPause);
+      expect(broadcasts.some(m => m.type === 'action-proposals' || m.type === 'action-taken')).toBe(false);
+
+      expect(loop.resume()).toBe(true);
+      await waitFor(() => broadcasts.some(m => m.type === 'whisper-prompt'), 30_000);
+      // Liz is introduced exactly once — the opening was redone, not doubled.
+      const intros = broadcasts.filter(m => m.type === 'narration' && (m as any).text.includes('Liz'));
+      expect(intros.length).toBeGreaterThan(0);
+      const introTexts = intros.map(m => (m as any).text);
+      expect(new Set(introTexts).size).toBe(introTexts.length);
+    } finally {
+      loop.stop();
+      await Promise.race([running, new Promise(r => setTimeout(r, 5_000))]);
+    }
   }, 60_000);
 });

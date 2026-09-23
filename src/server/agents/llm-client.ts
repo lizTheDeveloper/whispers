@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { z } from 'zod';
 
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL ?? 'http://localhost:4242';
@@ -29,6 +30,54 @@ interface CallLlmOpts<S extends z.ZodType | undefined = undefined> {
   temperature?: number;
   timeout?: number;
   maxTokens?: number;
+  /**
+   * Cancels the call: an aborted signal rejects promptly with an
+   * LlmAbortError and is never retried (unlike a timeout or a bad reply).
+   * When omitted, the ambient signal from runWithLlmSignal applies.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Thrown when a caller's signal (not the timeout) cancels a call. A pause or
+ * an end-game is a decision, not a failure: callers tell the two apart with
+ * isLlmAbort so an aborted turn is never papered over with a fallback.
+ */
+export class LlmAbortError extends Error {
+  constructor() {
+    super('LLM call aborted');
+    this.name = 'LlmAbortError';
+  }
+}
+
+export function isLlmAbort(e: unknown): boolean {
+  return e instanceof LlmAbortError;
+}
+
+// The game loop's turn makes its LLM calls through the agents (dm.ts,
+// character.ts, extractor.ts, character-memory.ts), several of them
+// fire-and-forget. Rather than thread a signal through every agent method,
+// the loop runs its whole async chain inside runWithLlmSignal and every
+// callLlm underneath picks the signal up here. The store is a getter, not a
+// signal, because the loop swaps in a fresh AbortController on each resume.
+const ambientSignal = new AsyncLocalStorage<(() => AbortSignal | null) | null>();
+
+/**
+ * Run `fn` with `getSignal` as the default signal for every callLlm in its
+ * async call tree. Pass null to opt a subtree back out (the epilogue runs
+ * after stop() has aborted the loop's signal and must still be written).
+ */
+export function runWithLlmSignal<T>(getSignal: (() => AbortSignal | null) | null, fn: () => T): T {
+  return ambientSignal.run(getSignal, fn);
+}
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 type CallLlmResult<S> = S extends z.ZodTypeAny ? z.output<S> : string;
@@ -80,7 +129,7 @@ async function fetchWithRetry(url: string, init: RequestInit & { signal: AbortSi
     }
     const backoffMs = Math.min(1000 * Math.pow(2, i), 8000);
     console.log(`[llm-client] ${response.status} on attempt ${i + 1}/${maxRetries + 1}, retrying in ${backoffMs}ms`);
-    await new Promise(r => setTimeout(r, backoffMs));
+    await abortableSleep(backoffMs, init.signal);
   }
   throw new Error('unreachable');
 }
@@ -89,12 +138,18 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
   opts: CallLlmOpts<S>
 ): Promise<CallLlmResult<S>> {
   const { messages, schema, temperature, timeout = DEFAULT_TIMEOUT, maxTokens = DEFAULT_MAX_TOKENS } = opts;
+  const signal = opts.signal ?? ambientSignal.getStore()?.() ?? null;
   const maxAttempts = schema ? 4 : 1;
   let lastBadResponse = '';
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Every attempt, not just the first: the schema retries below `continue`
+    // straight past the catch, and an abort landing between attempts must
+    // still stop the next one from being sent.
+    if (signal?.aborted) throw new LlmAbortError();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
+    const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
       let promptMessages: Array<{ role: string; content: string }>;
@@ -126,7 +181,7 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
           'X-Game': 'whispers',
         },
         body: JSON.stringify({ messages: promptMessages, temperature: retryTemp, max_tokens: maxTokens }),
-        signal: controller.signal,
+        signal: requestSignal,
       });
 
       if (!response.ok) throw new Error(`LLM proxy returned ${response.status}`);
@@ -224,6 +279,8 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
         continue;
       }
     } catch (e) {
+      // Checked first: a cancelled call must not burn its remaining retries.
+      if (signal?.aborted) throw new LlmAbortError();
       if (attempt >= maxAttempts - 1) throw e;
       if (!lastBadResponse) lastBadResponse = String(e);
     } finally {

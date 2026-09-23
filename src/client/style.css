@@ -1328,6 +1328,22 @@ button:disabled {
   margin-bottom: 0.75rem;
   animation: pulse-banner 2s ease-in-out infinite;
 }
+/* Shown to everyone while the table is paused. Steady (no pulse) so it
+   reads as a state, not the connection-banner's alarm. */
+.pause-banner {
+  background: rgba(255, 107, 53, 0.1);
+  border: 1px solid rgba(255, 107, 53, 0.35);
+  color: var(--star-white);
+  text-align: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+}
+.pause-banner.hidden { display: none; }
+
 @keyframes pulse-banner {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

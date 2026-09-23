@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Campaign, CharacterDefinition, TableRole } from '../shared/types.js';
+import type { PauseReason } from '../shared/protocol.js';
 
 function generateJoinCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -258,4 +259,40 @@ export function getInfluences(db: Database.Database, campaignId: string): string
 export function setInfluences(db: Database.Database, campaignId: string, list: string[]): void {
   db.prepare("UPDATE campaigns SET influences = ?, updated_at = datetime('now') WHERE id = ?")
     .run(JSON.stringify(list), campaignId);
+}
+
+/**
+ * Persist (reason) or clear (null) a campaign's pause. Written BEFORE the
+ * loop is signalled, so a crash between the two leaves the table paused
+ * rather than silently running.
+ */
+export function setCampaignPaused(db: Database.Database, campaignId: string, reason: PauseReason | null): void {
+  if (reason) {
+    db.prepare("UPDATE campaigns SET paused_at = datetime('now'), paused_reason = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(reason, campaignId);
+  } else {
+    db.prepare("UPDATE campaigns SET paused_at = NULL, paused_reason = NULL, updated_at = datetime('now') WHERE id = ?")
+      .run(campaignId);
+  }
+}
+
+export function getCampaignPause(db: Database.Database, campaignId: string): { reason: PauseReason; pausedAt: string } | null {
+  const row = db.prepare('SELECT paused_at, paused_reason FROM campaigns WHERE id = ?').get(campaignId) as
+    { paused_at: string | null; paused_reason: string | null } | undefined;
+  if (!row?.paused_at) return null;
+  return { reason: (row.paused_reason ?? 'restart') as PauseReason, pausedAt: row.paused_at };
+}
+
+/**
+ * Boot reconciliation. A process that just started has no GameLoops, so
+ * every campaign the database still calls 'playing' was interrupted — by a
+ * deploy, a crash, anything. Mark each one paused (reason 'restart',
+ * overwriting any earlier reason: whatever paused it before, the loop is gone
+ * now) so the table says so, and nothing runs until the host resumes it.
+ * Returns how many were marked.
+ */
+export function pauseInterruptedGames(db: Database.Database): number {
+  return db.prepare(
+    "UPDATE campaigns SET paused_at = COALESCE(paused_at, datetime('now')), paused_reason = 'restart', updated_at = datetime('now') WHERE phase = 'playing'"
+  ).run().changes;
 }

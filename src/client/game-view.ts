@@ -1,5 +1,14 @@
 import type { WsClient } from './ws-client.js';
-import type { ServerMessage } from '../shared/protocol.js';
+import type { PauseReason, ServerMessage } from '../shared/protocol.js';
+
+// Banner copy per pause reason. 6 mirrors the server's
+// QUIET_TURNS_BEFORE_PAUSE (src/server/game-loop.ts) — keep them in step.
+const PAUSE_BANNER: Record<PauseReason, string> = {
+  host: 'Paused by the host',
+  'no-players': 'Paused: no players connected',
+  quiet: 'Paused after 6 quiet turns — whisper or resume to continue',
+  restart: 'Paused after a server restart',
+};
 
 export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean, myCharacterId?: string | null): void {
   root.innerHTML = `
@@ -9,6 +18,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         <div class="scene-image-label" id="scene-label"></div>
       </div>
       <div class="location-bar" id="location-bar" style="display:none"></div>
+      <div id="pause-banner" class="pause-banner hidden" role="status"></div>
       <div id="system-notice" class="system-notice hidden"></div>
       <div class="narration-log" id="narration-log"></div>
       <div id="action-area"></div>
@@ -17,7 +27,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         <input type="text" id="whisper-text" placeholder="Whisper to your character..." maxlength="200" />
         <button id="whisper-btn">Whisper</button>
       </div>
-      ${isHost ? '<div id="dm-controls"><button id="end-game-btn">End Game</button><div id="party-controls" class="party-controls"></div></div>' : ''}
+      ${isHost ? '<div id="dm-controls"><button id="pause-btn">Pause</button> <button id="end-game-btn">End Game</button><div id="party-controls" class="party-controls"></div></div>' : ''}
     </div>
   `;
 
@@ -467,6 +477,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     if (msg.type === 'phase-change' && msg.phase === 'ended') {
       whisperArea.style.display = 'none';
       actionArea.innerHTML = '';
+      showPaused(null);
 
       const total = sessionStats.followed + sessionStats.partial + sessionStats.ignored;
       const recapDiv = document.createElement('div');
@@ -499,6 +510,42 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     }
   });
 
+  // Pause state. Everyone gets the banner; the host's toggle flips between
+  // Pause and Resume. While paused the whisper box is locked — the server has
+  // no running turn to take the words — except after quiet turns, where a
+  // whisper is exactly what picks play back up. A held whisper window's
+  // countdown stops here too; the server re-sends its prompt on resume.
+  const pauseBanner = root.querySelector('#pause-banner') as HTMLElement;
+  const pauseBtn = isHost ? (root.querySelector('#pause-btn') as HTMLButtonElement | null) : null;
+  let pausedReason: PauseReason | null = null;
+  let whisperLocked = false;
+  function showPaused(reason: PauseReason | null): void {
+    pausedReason = reason;
+    if (reason) {
+      pauseBanner.textContent = PAUSE_BANNER[reason];
+      pauseBanner.classList.remove('hidden');
+    } else {
+      pauseBanner.textContent = '';
+      pauseBanner.classList.add('hidden');
+    }
+    if (pauseBtn) {
+      pauseBtn.textContent = reason ? 'Resume' : 'Pause';
+      pauseBtn.disabled = false;
+    }
+    whisperLocked = reason !== null && reason !== 'quiet';
+    whisperInput.disabled = whisperLocked;
+    whisperBtn.disabled = whisperLocked || pendingWhispers.length > 0;
+    if (whisperLocked && whisperTimer) {
+      clearInterval(whisperTimer);
+      whisperTimer = null;
+      whisperBtn.textContent = 'Whisper';
+    }
+  }
+  ws.on('game-paused', (msg) => {
+    if (msg.type !== 'game-paused') return;
+    showPaused(msg.paused ? (msg.reason ?? 'host') : null);
+  });
+
   // Sent whispers waiting on their whisper-ack. A socket delivers messages
   // to one handler in order and the server acks synchronously, so acks
   // return in send order and a FIFO pairs each one with its text.
@@ -518,7 +565,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     whisperAckTimer = setTimeout(() => {
       whisperAckTimer = null;
       const lost = pendingWhispers.shift() ?? '';
-      whisperBtn.disabled = false;
+      whisperBtn.disabled = whisperLocked;
       whisperInput.value = lost;
       showSystemNotice('The table did not answer — your whisper may not have been sent.');
     }, 5_000);
@@ -528,7 +575,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     if (msg.type !== 'whisper-ack') return;
     const text = pendingWhispers.shift() ?? '';
     if (whisperAckTimer) { clearTimeout(whisperAckTimer); whisperAckTimer = null; }
-    if (pendingWhispers.length === 0) whisperBtn.disabled = false;
+    if (pendingWhispers.length === 0) whisperBtn.disabled = whisperLocked;
     if (msg.status === 'rejected') {
       // The words were not heard, so nothing goes into the log and the
       // draft goes back into the box — MUL-73's silent loss, inverted: the
@@ -567,7 +614,15 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
 
   if (isHost) {
     root.querySelector('#end-game-btn')?.addEventListener('click', () => {
+      // Ending is final for everyone at the table, and the button sits right
+      // next to Pause — ask first.
+      if (!confirm('End the game for everyone? The DM will narrate an epilogue and the session will close.')) return;
       ws.send({ type: 'end-game' });
+    });
+    pauseBtn?.addEventListener('click', () => {
+      ws.send({ type: pausedReason ? 'resume-game' : 'pause-game' });
+      // Re-enabled by the server's game-paused answer (or its error).
+      pauseBtn.disabled = true;
     });
   }
 
@@ -583,6 +638,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     showSystemNotice(msg.message);
     for (const btn of pendingRevokes) btn.disabled = false;
     pendingRevokes.clear();
+    if (pauseBtn) pauseBtn.disabled = false;
   });
 
   // The playing-phase analog of interview-replay: the server ships back
