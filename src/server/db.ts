@@ -316,6 +316,15 @@ function migrate(db: Database.Database): void {
   if (!colNames.has('seed_accepted_at')) {
     db.exec('ALTER TABLE campaigns ADD COLUMN seed_accepted_at TEXT');
   }
+  // Pause state lives on the campaign row, not just in the GameLoop, so it
+  // survives the loop: a refreshed tab, a torn-down room and a server restart
+  // all read it back from here. NULL paused_at means not paused.
+  if (!colNames.has('paused_at')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN paused_at TEXT');
+  }
+  if (!colNames.has('paused_reason')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN paused_reason TEXT');
+  }
 
   const cpCols = db.pragma('table_info(checkpoints)') as Array<{ name: string }>;
   if (!cpCols.some(c => c.name === 'transcript')) {

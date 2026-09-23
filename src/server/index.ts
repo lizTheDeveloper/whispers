@@ -13,6 +13,7 @@ import {
   saveSetupChat, loadSetupChat, setCampaignPhase, advancePhaseIfLobby, setHostTableRole,
   countLiveCharacters, beginPlayIfReady, getInfluences, setInfluences,
   revokeCharacter, clearSessionCharacter, getSessionTokenForCharacter,
+  setCampaignPaused, getCampaignPause, pauseInterruptedGames,
   type PendingCharacterRow,
 } from './room.js';
 import { makeCharacterLive } from './character-live.js';
@@ -151,6 +152,44 @@ function socketFor(joinCode: string, sessionToken: string): WebSocket | null {
 function hostSocket(joinCode: string): WebSocket | null {
   const h = rooms.get(joinCode)?.find(p => p.isOwner);
   return h && h.ws.readyState === WebSocket.OPEN ? h.ws : null;
+}
+
+/** Tell one socket the table is paused (and why), if it is — so a tab that joins or refreshes mid-pause shows the banner. */
+function sendPauseState(ws: WebSocket, campaignId: string, phase: string): void {
+  if (phase !== 'playing') return;
+  const pause = getCampaignPause(getDb(), campaignId);
+  if (pause) send(ws, { type: 'game-paused', paused: true, reason: pause.reason });
+}
+
+/**
+ * The host's Resume. With a live loop that is just loop.resume(). With no
+ * loop — the server restarted under the game, or the room was torn down
+ * while it sat paused — a fresh GameLoop is built and started: start()
+ * restores scene, turn and transcript from the last checkpoint, so play
+ * picks up at the turn after the last one that finished.
+ */
+function resumeGame(jc: string, campaign: import('../shared/types.js').Campaign, by: string, ws: WebSocket): void {
+  const db = getDb();
+  const loop = gameLoops.get(jc);
+  if (loop && !loop.isStopped) {
+    loop.resume(by);
+    return;
+  }
+  if (countLiveCharacters(db, campaign.id) === 0) {
+    send(ws, { type: 'error', message: 'There is no one left at the table to resume play with.' });
+    return;
+  }
+  setCampaignPaused(db, campaign.id, null);
+  const rebuilt = new GameLoop(
+    db, campaign.id,
+    (m) => broadcast(jc, m),
+    (m) => { const host = hostSocket(jc); if (host) send(host, m); },
+    { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
+  );
+  gameLoops.set(jc, rebuilt);
+  broadcast(jc, { type: 'game-paused', paused: false, reason: null, by });
+  console.log(`[server] Rebuilt the game loop for room ${jc} from its checkpoint on resume`);
+  rebuilt.start().catch(e => console.error('Game loop error:', e));
 }
 
 function pendingReviewMsg(p: PendingCharacterRow): ServerMessage {
@@ -559,6 +598,7 @@ wss.on('connection', (ws) => {
         characterId: null,
       });
       broadcast(msg.joinCode, { type: 'player-joined', playerName: msg.playerName, characterId: null });
+      sendPauseState(ws, campaign.id, campaign.phase);
       if (campaign.phase === 'character-creation') {
         await sendWorldIntroduction(ws, campaign, session.token);
       }
@@ -678,6 +718,9 @@ wss.on('connection', (ws) => {
       }
 
       send(ws, { type: 'phase-change', phase: campaign.phase });
+      // After the phase-change, so the game view it mounts is there to paint
+      // the banner — a refresh mid-pause must not look like a hung table.
+      sendPauseState(ws, campaign.id, campaign.phase);
 
       // Sent last and deliberately not awaited: sendWorldIntroduction makes an
       // LLM call with its own multi-second/retry timeout, and a slow or
@@ -1567,7 +1610,14 @@ wss.on('connection', (ws) => {
       const whisperText = raw.trim().slice(0, 200);
       const loop = gameLoops.get(currentJoinCode);
       if (!loop) {
-        send(ws, { type: 'whisper-ack', status: 'rejected', characterId: null, characterName: null, message: 'There is no game running at this table right now.' });
+        const idleCampaign = joinRoom(db, currentJoinCode);
+        const paused = idleCampaign && idleCampaign.phase === 'playing' && getCampaignPause(db, idleCampaign.id);
+        send(ws, {
+          type: 'whisper-ack', status: 'rejected', characterId: null, characterName: null,
+          message: paused
+            ? 'The game is paused — your whisper can be heard once the host resumes it.'
+            : 'There is no game running at this table right now.',
+        });
         return;
       }
       // Whose voice is this? campaign_sessions.character_id — written at
@@ -1596,12 +1646,54 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'whisper-ack', ...ack });
     }
 
+    if ((msg.type === 'pause-game' || msg.type === 'resume-game') && currentJoinCode && currentPlayer) {
+      if (!isWorldAuthor(currentPlayer)) {
+        send(ws, { type: 'error', message: 'Only the host can pause or resume the game.' });
+        return;
+      }
+      const jc = currentJoinCode;
+      const campaign = joinRoom(db, jc);
+      if (!campaign || campaign.phase !== 'playing') {
+        send(ws, { type: 'error', message: 'There is no game in play to pause or resume.' });
+        return;
+      }
+      if (msg.type === 'pause-game') {
+        const loop = gameLoops.get(jc);
+        if (loop && !loop.isStopped) {
+          loop.pause('host', currentPlayer.playerName);
+        } else {
+          setCampaignPaused(db, campaign.id, 'host');
+          broadcast(jc, { type: 'game-paused', paused: true, reason: 'host', by: currentPlayer.playerName });
+        }
+      } else {
+        resumeGame(jc, campaign, currentPlayer.playerName, ws);
+      }
+    }
+
     if (msg.type === 'end-game' && currentJoinCode && isWorldAuthor(currentPlayer)) {
       const jc = currentJoinCode;
       const endedCampaign = joinRoom(db, jc);
-      if (endedCampaign) setCampaignPhase(db, endedCampaign.id, 'ended');
+      if (endedCampaign) {
+        setCampaignPhase(db, endedCampaign.id, 'ended');
+        setCampaignPaused(db, endedCampaign.id, null);
+      }
       const loop = gameLoops.get(jc);
-      if (loop) {
+      if (!loop && endedCampaign?.phase === 'playing') {
+        // The loop is gone (server restart, or torn down while paused) but
+        // the story isn't: rebuild just enough of it to write the epilogue,
+        // which endGame broadcasts along with the 'ended' phase-change.
+        const epilogueLoop = new GameLoop(
+          db, endedCampaign.id,
+          (m) => broadcast(jc, m),
+          (m) => { const host = hostSocket(jc); if (host) send(host, m); },
+          { campaignId: endedCampaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
+        );
+        epilogueLoop.restoreForEpilogue();
+        epilogueLoop.endGame().catch(e => {
+          console.error('[server] endGame (no live loop) failed:', e);
+          broadcast(jc, { type: 'phase-change', phase: 'ended' });
+        });
+      } else if (loop) {
         loop.endGame().then(() => {
           gameLoops.delete(jc);
         }).catch(e => {
@@ -1628,6 +1720,14 @@ wss.on('connection', (ws) => {
       if (idx >= 0) players.splice(idx, 1);
       if (players.length === 0) {
         const jc = currentJoinCode;
+        // Nobody is at the table: stop spending on it now, not after the
+        // teardown grace. Paused (not stopped) so it is persisted and the
+        // host can resume it — the teardown below may still drop the loop,
+        // and resume rebuilds it from the checkpoint. A deliberate host pause
+        // keeps its reason; a quiet pause does not, because once the loop is
+        // torn down a whisper can no longer lift it — only the host can.
+        const idleLoop = gameLoops.get(jc);
+        if (idleLoop && idleLoop.pausedReason !== 'host') idleLoop.pause('no-players');
         setTimeout(() => {
           const stillEmpty = rooms.get(jc);
           if (!stillEmpty || stillEmpty.length === 0) {
@@ -1679,6 +1779,13 @@ function bootstrapRules(): void {
 
 verifyDataDir();
 bootstrapRules();
+{
+  // No GameLoop survives a restart, so every game still 'playing' in the
+  // database was interrupted. Mark it paused (reason 'restart') instead of
+  // leaving it stranded; the host's Resume rebuilds it from its checkpoint.
+  const interrupted = pauseInterruptedGames(getDb());
+  if (interrupted > 0) console.log(`[server] Paused ${interrupted} game(s) interrupted by the restart`);
+}
 server.listen(PORT, () => {
   console.log(`Whispers server listening on port ${PORT}`);
 });

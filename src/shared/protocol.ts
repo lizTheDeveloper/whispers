@@ -23,7 +23,18 @@ export type ClientMessage =
   | { type: 'revoke-character'; characterId: string; reason?: string }
   | { type: 'negotiation-message'; characterId: string; text: string }
   | { type: 'start-game' }
-  | { type: 'end-game' };
+  | { type: 'end-game' }
+  | { type: 'pause-game' }
+  | { type: 'resume-game' };
+
+/**
+ * Why a table is paused. 'host' — the host pressed Pause. 'no-players' — the
+ * last socket left the room. 'quiet' — QUIET_TURNS_BEFORE_PAUSE turns went by
+ * with no human whisper. 'restart' — the server restarted under a game in
+ * play. Only the host's Resume (or, for 'quiet', any whisper) restarts play;
+ * nothing resumes on a timer.
+ */
+export type PauseReason = 'host' | 'no-players' | 'quiet' | 'restart';
 
 /**
  * One display line of a session's playing-phase log, shaped exactly like the
@@ -81,4 +92,7 @@ export type ServerMessage =
   | { type: 'transcript-replay'; entries: ReplayEntry[]; omitted: number }
   | { type: 'material-uploaded'; material: import('./types.js').CampaignMaterial }
   | { type: 'token-usage'; used: number; remaining: number | null }
+  // Broadcast on every pause/resume, and sent to a (re)joining socket when
+  // the table is paused. reason is null on a resume.
+  | { type: 'game-paused'; paused: boolean; reason: PauseReason | null; by?: string }
   | { type: 'error'; message: string };

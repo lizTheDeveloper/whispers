@@ -2,9 +2,35 @@ import { createServer as createHttpServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { vi } from 'vitest';
 import { getFreePort } from './ws-helpers.js';
 
+/**
+ * Put `slowLlmToken()` in a whisper and the FIRST LLM request that carries it
+ * — the character's decideAction call, the next call a delivered whisper
+ * feeds — is held open for SLOW_LLM_DELAY_MS and then answered with a valid
+ * decision. That gives a test a reliable window to land a pause-game or
+ * end-game while the call is in flight and prove the turn is halted rather
+ * than applied. One-shot per token: the whisper also lands in the transcript
+ * every later prompt quotes, and those must stay fast. Nothing else in the
+ * offline suite uses the marker.
+ */
+export const SLOW_LLM_TRIGGER = 'SLOW_LLM_TRIGGER';
+let slowTokenSeq = 0;
+export function slowLlmToken(): string {
+  return `${SLOW_LLM_TRIGGER}-${++slowTokenSeq}`;
+}
+const SLOW_LLM_DELAY_MS = 2500;
+
 export const LLM_STUB_REPLIES = {
+  // decideAction's answer to a SLOW_LLM_TRIGGER whisper (see above).
+  slowDecision: {
+    chosenAction: 'She works the crowbar into the lamp room door and heaves until the lock gives.',
+    spokenWords: null,
+    innerThought: 'The voice says the door first. Fine — the door first.',
+    whisperedInfluence: 'followed',
+    trustDelta: 0.05,
+  },
   validation: { approved: true, feedback: 'Solid sheet.', modifications: null },
   // A validation reply proposing a modification that would break readiness
   // (an emptied-out skills object) if merged in unchecked. Selected by a
@@ -128,6 +154,16 @@ export interface Harness {
   // prompt this server sends"), not just on the stub's canned replies.
   receivedBodies: string[];
   stop(): Promise<void>;
+  /**
+   * Simulates a server process dying and booting again on the same data dir
+   * (a deploy, a crash): every live GameLoop is stopped without an epilogue,
+   * every socket is dropped, the listener closes, and a FRESH copy of the
+   * server module graph is imported — so boot-time code runs again against
+   * the database the old process left behind. The LLM stub and its
+   * receivedBodies survive, so a test can assert on traffic across the
+   * restart. `port` changes; re-read it afterwards.
+   */
+  restart(): Promise<void>;
 }
 
 /**
@@ -154,12 +190,12 @@ export async function startHarness(): Promise<Harness> {
   // unconditionally for every harness-backed test.
   process.env.ROOM_TEARDOWN_GRACE_MS ??= '300';
 
-  const mod = await import('../../src/server/index.js');
+  let mod = await import('../../src/server/index.js');
   if (!mod.server.listening) {
     await new Promise<void>((r) => mod.server.once('listening', () => r()));
   }
 
-  return {
+  const harness: Harness = {
     port,
     dataDir,
     receivedBodies,
@@ -168,7 +204,22 @@ export async function startHarness(): Promise<Harness> {
       await new Promise<void>((r) => llm.server.close(() => r()));
       rmSync(dataDir, { recursive: true, force: true });
     },
+    async restart() {
+      for (const loop of mod.gameLoops.values()) loop.stop();
+      mod.gameLoops.clear();
+      for (const client of mod.wss.clients) client.terminate();
+      await new Promise<void>((r) => mod.server.close(() => r()));
+      const newPort = await getFreePort();
+      process.env.PORT = String(newPort);
+      vi.resetModules();
+      mod = await import('../../src/server/index.js');
+      if (!mod.server.listening) {
+        await new Promise<void>((r) => mod.server.once('listening', () => r()));
+      }
+      harness.port = newPort;
+    },
   };
+  return harness;
 }
 
 /**
@@ -178,13 +229,19 @@ export async function startHarness(): Promise<Harness> {
 function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: string[] }> {
   return new Promise((resolve) => {
     const receivedBodies: string[] = [];
+    const consumedSlowTokens = new Set<string>();
     const server = createHttpServer((req, res) => {
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
         receivedBodies.push(body);
         let text: string;
-        if (body.includes('You are a world builder for a TTRPG')) {
+        const slowToken = body.match(new RegExp(`${SLOW_LLM_TRIGGER}-\\d+`))?.[0];
+        const slow = !!slowToken && !consumedSlowTokens.has(slowToken);
+        if (slowToken) consumedSlowTokens.add(slowToken);
+        if (slow) {
+          text = JSON.stringify(LLM_STUB_REPLIES.slowDecision);
+        } else if (body.includes('You are a world builder for a TTRPG')) {
           text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
         } else if (body.includes('introducing a player to a world')) {
           // introduceWorld's system prompt is the only prompt in the server
@@ -284,6 +341,8 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
         };
         if (body.includes('RACE_DELAY_TRIGGER')) {
           setTimeout(respond, 600);
+        } else if (slow) {
+          setTimeout(respond, SLOW_LLM_DELAY_MS);
         } else {
           respond();
         }

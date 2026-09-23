@@ -4,16 +4,26 @@ import { DmAgent } from './agents/dm.js';
 import { CharacterAgent } from './agents/character.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
-import { getInfluences } from './room.js';
+import { getInfluences, setCampaignPaused, setCampaignPhase } from './room.js';
 import { loadStockScenario, seedWorld } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
-import { callLlm } from './agents/llm-client.js';
+import { callLlm, runWithLlmSignal } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { recordReplayBroadcast } from './replay-log.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
-import type { ServerMessage } from '../shared/protocol.js';
+import type { PauseReason, ServerMessage } from '../shared/protocol.js';
+
+/**
+ * Consecutive turns with no whisper from any human before the table pauses
+ * itself (reason 'quiet'). One idle open tab used to keep a game spending
+ * ~5 LLM calls a turn all the way to the session cap.
+ */
+export const QUIET_TURNS_BEFORE_PAUSE = 6;
+// How long a character waits for a whisper before deciding alone. Read once
+// at import (like index.ts's ROOM_TEARDOWN_GRACE_MS) so tests can shrink it.
+const WHISPER_WINDOW_MS = parseInt(process.env.WHISPER_WINDOW_MS ?? '30000', 10);
 
 const BASE_COMPACTION_THRESHOLD = 35;
 const BASE_COMPACTION_KEEP_RECENT = 12;
@@ -50,6 +60,16 @@ export class GameLoop {
   private whisperQueue = new Map<string, string[]>();
   private static readonly WHISPER_QUEUE_LIMIT = 3;
   private stopped = false;
+  // Pause/stop plumbing. While paused, the loop parks on resumeGate at its
+  // next checkpoint (awaitRunnable) and every in-flight LLM call is aborted
+  // through llmAbort, which runScene's whole async tree reads ambiently (see
+  // runWithLlmSignal). A resume swaps in a fresh controller.
+  private pauseReason: PauseReason | null = null;
+  private resumeGate: { promise: Promise<void>; release: () => void } | null = null;
+  private llmAbort = new AbortController();
+  private quietTurns = 0;
+  private pendingWhisperTimer: ReturnType<typeof setTimeout> | null = null;
+  private openWhisperPrompt: ServerMessage | null = null;
   private sceneTurnCount = 0;
   private locationTurnCount = 0;
   private lastLocationName = '';
@@ -236,11 +256,18 @@ export class GameLoop {
       }
     }
 
-    await this.runScene(campaign);
+    await runWithLlmSignal(() => this.llmAbort.signal, () => this.runScene(campaign));
   }
 
   stop(): void {
     this.stopped = true;
+    // Cancel whatever the current turn is waiting on — its result would be
+    // discarded anyway — and wake a parked loop so it can see it is done.
+    this.llmAbort.abort();
+    this.resumeGate?.release();
+    this.resumeGate = null;
+    this.clearWhisperTimer();
+    this.openWhisperPrompt = null;
     if (this.pendingWhisperResolve) {
       this.pendingWhisperResolve(null);
       this.pendingWhisperResolve = null;
@@ -258,16 +285,114 @@ export class GameLoop {
     this.broadcastFn({ type: 'phase-change', phase: 'ended' });
   }
 
+  get isStopped(): boolean {
+    return this.stopped;
+  }
+
+  get pausedReason(): PauseReason | null {
+    return this.pauseReason;
+  }
+
+  /**
+   * Pause the table. Persists first, then aborts every in-flight LLM call and
+   * parks the loop at its next checkpoint: an aborted step is redone on
+   * resume, never replaced by a fallback, and nothing half-finished is
+   * applied. An open whisper window is held (its countdown stops) rather than
+   * closed. Pausing an already-paused table only updates the reason — the
+   * host pressing Pause on a quiet-paused table turns it into a host pause,
+   * which a stray whisper no longer lifts. Returns whether anything changed.
+   */
+  pause(reason: PauseReason, by?: string): boolean {
+    if (this.stopped || this.pauseReason === reason) return false;
+    setCampaignPaused(this.db, this.campaignId, reason);
+    const wasRunning = this.pauseReason === null;
+    this.pauseReason = reason;
+    if (wasRunning) {
+      let release!: () => void;
+      const promise = new Promise<void>(r => { release = r; });
+      this.resumeGate = { promise, release };
+      this.llmAbort.abort();
+      this.clearWhisperTimer();
+    }
+    this.broadcastFn({ type: 'game-paused', paused: true, reason, by });
+    return true;
+  }
+
+  /** Lift a pause: persist, re-arm a held whisper window, wake the loop. */
+  resume(by?: string): boolean {
+    if (this.stopped || this.pauseReason === null) return false;
+    setCampaignPaused(this.db, this.campaignId, null);
+    this.pauseReason = null;
+    this.quietTurns = 0;
+    this.llmAbort = new AbortController();
+    this.broadcastFn({ type: 'game-paused', paused: false, reason: null, by });
+    if (this.pendingWhisperResolve) {
+      // The window was held; give the table a fresh countdown for it, and
+      // re-send its prompt so every client restarts theirs.
+      this.armWhisperTimer(WHISPER_WINDOW_MS);
+      if (this.openWhisperPrompt) this.broadcastFn(this.openWhisperPrompt);
+    }
+    const gate = this.resumeGate;
+    this.resumeGate = null;
+    gate?.release();
+    return true;
+  }
+
+  /**
+   * Rebuild just enough state from the database to write an epilogue for a
+   * table whose loop is gone (the server restarted under it) — End Game on a
+   * restart-paused table still gets its closing narration.
+   */
+  restoreForEpilogue(): void {
+    this.loadCharacters();
+    const checkpoint = loadCheckpoint(this.db, this.campaignId);
+    if (checkpoint) this.state = { ...this.state, ...checkpoint.state };
+  }
+
+  /** Park while paused. Resolves true to carry on, false once stopped. */
+  private async awaitRunnable(): Promise<boolean> {
+    while (!this.stopped && this.resumeGate) await this.resumeGate.promise;
+    return !this.stopped;
+  }
+
+  /**
+   * One LLM-backed step of the turn flow, made pause-safe. A real failure
+   * still takes the step's own fallback, exactly as before; a failure caused
+   * by a pause (the call was aborted) never does — the loop parks and redoes
+   * the call once resumed. Returns null only when the game was stopped, in
+   * which case the caller must apply nothing and return.
+   */
+  private async haltable<T>(call: () => Promise<T>, fallback: (e: unknown) => T): Promise<T | null> {
+    for (;;) {
+      let result: { value: T } | null;
+      try {
+        result = { value: await call() };
+      } catch (e) {
+        result = this.stopped || this.pauseReason ? null : { value: fallback(e) };
+      }
+      if (!(await this.awaitRunnable())) return null;
+      if (result) return result.value;
+    }
+  }
+
+  /** The loop's own natural end (finale, session cap): same close-out as End Game, plus the DB write end-game's handler would have made. */
+  private async finishSession(): Promise<void> {
+    await this.generateEpilogue();
+    setCampaignPhase(this.db, this.campaignId, 'ended');
+    setCampaignPaused(this.db, this.campaignId, null);
+    this.broadcastFn({ type: 'phase-change', phase: 'ended' });
+    this.stopped = true;
+  }
+
   private async runScene(campaign: any): Promise<void> {
-    if (this.stopped) return;
+    if (!(await this.awaitRunnable())) return;
     const partySize = this.characters.size || 1;
     const sessionHardLimit = 50 + (partySize - 1) * 10;
     if ((this.state.currentTurn ?? 0) >= sessionHardLimit) {
       console.log(`[game-loop] Session hard limit (${sessionHardLimit} turns, party ${partySize}) — ending session`);
       await this.endScene();
-      await this.generateEpilogue();
-      this.broadcastFn({ type: 'phase-change', phase: 'ended' });
-      this.stopped = true;
+      if (this.stopped) return;
+      await this.finishSession();
       return;
     }
 
@@ -301,17 +426,18 @@ export class GameLoop {
         isFinale: this.state.currentScene >= 4 && (this.state.currentTurn ?? 0) >= 18,
       },
     };
-    let narration;
-    try {
-      narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
+    const narration = await this.haltable(async () => {
+      let narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
       if (this.isDegenerateNarration(narration.narration)) {
         console.log(`[game-loop] Degenerate narration detected ("${narration.narration.slice(0, 40)}..."), retrying`);
         narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
       }
-    } catch (e) {
+      return narration;
+    }, (e) => {
       console.error('[game-loop] narration failed:', e);
-      narration = { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [], isSceneEnd: false };
-    }
+      return { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [] as string[], isSceneEnd: false };
+    });
+    if (!narration) return;
 
     this.addTranscript('dm', narration.narration);
 
@@ -392,11 +518,10 @@ export class GameLoop {
     }
     if ((narration.isSceneEnd && allowSceneEnd) || forceSceneEnd) {
       await this.endScene();
+      if (this.stopped) return;
       if (isFinale) {
         console.log(`[game-loop] Finale scene concluded — session complete`);
-        await this.generateEpilogue();
-        this.broadcastFn({ type: 'phase-change', phase: 'ended' });
-        this.stopped = true;
+        await this.finishSession();
         return;
       }
       if (!this.stopped) await this.runScene(campaign);
@@ -406,7 +531,12 @@ export class GameLoop {
     const charNames = this.state.initiativeOrder.map(id => this.characters.get(id)?.definition.name ?? `UNKNOWN(${id})`);
     console.log(`[game-loop] Round start: ${charNames.length} characters: ${charNames.join(', ')}`);
     for (const charId of this.state.initiativeOrder) {
-      if (this.stopped) return;
+      if (!(await this.awaitRunnable())) return;
+      if (this.quietTurns >= QUIET_TURNS_BEFORE_PAUSE) {
+        console.log(`[game-loop] ${this.quietTurns} turns without a whisper — pausing until someone speaks or the host resumes`);
+        this.pause('quiet');
+        if (!(await this.awaitRunnable())) return;
+      }
       await this.processTurn(charId, campaign);
     }
 
@@ -456,9 +586,7 @@ export class GameLoop {
         return { name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble, stress: c.state.stress, lastAction: lastAction || undefined };
       });
 
-    let proposals;
-    try {
-      proposals = await this.characterAgent.proposeActions({
+    const proposals = await this.haltable(() => this.characterAgent.proposeActions({
         definition: character.definition,
         state: character.state,
         sceneNarration,
@@ -466,11 +594,11 @@ export class GameLoop {
         memories,
         worldContext: fullCharContext,
         partyMembers,
-      });
-    } catch (e) {
+      }), (e) => {
       console.error('[game-loop] action proposal failed:', e);
-      proposals = { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }, { description: 'Press forward despite the uncertainty', reasoning: 'Fallback bold option' }] };
-    }
+      return { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }, { description: 'Press forward despite the uncertainty', reasoning: 'Fallback bold option' }] };
+    });
+    if (!proposals) return;
 
     for (const a of proposals.actions) {
       a.description = a.description.replace(/\*+/g, '').replace(/_+/g, '').replace(/^#+\s*/, '').trim();
@@ -500,34 +628,42 @@ export class GameLoop {
     // is skipped when saved words are already in hand.
     const carrying = this.whisperQueue.get(characterId);
     if (carrying) this.whisperQueue.delete(characterId);
-    this.broadcastFn({ type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length });
+    const whisperPrompt: ServerMessage = { type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length };
+    this.broadcastFn(whisperPrompt);
 
-    const whisper = carrying && carrying.length > 0
-      ? carrying.join('\n')
-      : await this.waitForWhisper(characterId, 30_000);
+    let whisper: string | null;
+    if (carrying && carrying.length > 0) {
+      whisper = carrying.join('\n');
+    } else {
+      this.openWhisperPrompt = whisperPrompt;
+      whisper = await this.waitForWhisper(characterId, WHISPER_WINDOW_MS);
+      this.openWhisperPrompt = null;
+    }
+    // A whisper that landed in a window the pause was holding is kept: the
+    // turn picks up here with it once the host resumes.
+    if (!(await this.awaitRunnable())) return;
     this.state.awaitingWhisper = false;
+    this.quietTurns = whisper ? 0 : this.quietTurns + 1;
 
     if (whisper) {
       this.addTranscript('whisper', whisper, characterId);
     }
 
-    let decision;
-    try {
-      decision = await this.characterAgent.decideAction(
+    const decision = await this.haltable(() => this.characterAgent.decideAction(
         { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: fullCharContext, partyMembers },
         whisper,
-      );
-    } catch (e) {
+      ), (e) => {
       console.error('[game-loop] action decision failed:', e);
       const fallbackAction = proposals.actions[0]?.description ?? 'Waits and observes';
-      decision = {
+      return {
         chosenAction: fallbackAction,
         spokenWords: null as string | null,
         innerThought: `I should ${fallbackAction.toLowerCase()} — the situation demands action, even if I'm uncertain.`,
         whisperedInfluence: 'ignored' as const,
         trustDelta: 0,
       };
-    }
+    });
+    if (!decision) return;
 
     decision.chosenAction = decision.chosenAction.replace(/\*+/g, '').replace(/_+/g, '').replace(/^#+\s*/, '').trim();
     if ('spokenWords' in decision && decision.spokenWords) {
@@ -651,9 +787,9 @@ export class GameLoop {
     this.addTranscript('dice', diceResult.description);
     this.broadcastFn({ type: 'dice-roll', result: diceResult, context: decision.chosenAction });
 
-    let resolution;
-    try {
-      resolution = await this.dm.resolve(
+    // The action and its dice are already on the table, so a pause here
+    // redoes only the DM's ruling on resume — same action, same roll.
+    const resolution = await this.haltable(() => this.dm.resolve(
         {
           preset: campaign.dm_preset, houseRules: campaign.house_rules,
           dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
@@ -674,8 +810,7 @@ export class GameLoop {
             .filter(([id]) => id !== characterId)
             .map(([id, c]) => ({ id, name: c.definition.name })),
         },
-      );
-    } catch (e) {
+      ), (e) => {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
       const actionSummary = (decision.chosenAction
         .replace(/^I\s+/i, '')
@@ -683,13 +818,14 @@ export class GameLoop {
         .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
-      resolution = {
+      return {
         diceExpression: null, difficulty: null, skill: null,
         outcome: 'tie' as const,
         narration: `${getFirstName(character.definition.name)} pushes through, but the cost is felt immediately.`,
         stateChanges: [{ characterId, field: 'stress' as const, action: 'set' as const, value: Math.min(character.state.stress + 1, 3) }],
       };
-    }
+    });
+    if (!resolution) return;
 
     if (resolution.narration === '__FALLBACK__') {
       const fallbackAction = (decision.chosenAction
@@ -1006,6 +1142,9 @@ export class GameLoop {
     } catch (e) {
       console.error('Mid-scene fact extraction failed:', e);
     }
+    // Paused or stopped mid-compaction: leave the transcript whole. The
+    // threshold still holds, so the next completed turn compacts it.
+    if (this.stopped || this.pauseReason) return;
 
     const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
     const worldState = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
@@ -1013,10 +1152,12 @@ export class GameLoop {
     try {
       summary = await this.dm.summarizeScene(toExtract, charNames, worldState);
     } catch (e) {
+      if (this.stopped || this.pauseReason) return;
       console.error('[game-loop] Compaction summary failed, using last DM narration as recap:', e);
       const lastDm = toExtract.filter(m => m.role === 'dm').slice(-1)[0]?.content;
       summary = lastDm ?? 'The adventure continues...';
     }
+    if (this.stopped || this.pauseReason) return;
 
     this.transcript = [
       { role: 'system' as const, content: `[Session recap] ${summary}`, timestamp: new Date().toISOString() },
@@ -1026,15 +1167,13 @@ export class GameLoop {
   }
 
   private async endScene(): Promise<void> {
-    let summary: string;
     const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
     const worldState = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
-    try {
-      summary = await this.dm.summarizeScene(this.transcript, charNames, worldState);
-    } catch (e) {
+    const summary = await this.haltable(() => this.dm.summarizeScene(this.transcript, charNames, worldState), (e) => {
       console.error('[game-loop] Scene summary failed:', e);
-      summary = 'The scene draws to a close.';
-    }
+      return 'The scene draws to a close.';
+    });
+    if (summary === null) return;
     const whisperStats = Array.from(this.sceneWhisperStats.values()).map(s => ({
       name: s.name,
       followed: s.followed,
@@ -1060,6 +1199,9 @@ export class GameLoop {
     } catch (e: any) {
       console.error('[game-loop] Fact extraction failed:', e.message?.slice(0, 200));
     }
+    // Ended mid-extraction: the scene-end above already went out, but the
+    // table is closing — no recovery beats after the epilogue.
+    if (this.stopped) return;
 
     for (const charId of this.characters.keys()) {
       this.memoryStore.decayMemories(charId);
@@ -1111,6 +1253,12 @@ export class GameLoop {
   }
 
   private async generateEpilogue(): Promise<void> {
+    // stop() has already aborted the loop's signal by the time End Game gets
+    // here; the epilogue is the one set of calls that must still go out.
+    return runWithLlmSignal(null, () => this.writeEpilogue());
+  }
+
+  private async writeEpilogue(): Promise<void> {
     const campaign = this.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(this.campaignId) as any;
     const scenes = this.db.prepare(
       'SELECT scene_number, summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number ASC'
@@ -1256,6 +1404,8 @@ export class GameLoop {
       const resolve = this.pendingWhisperResolve;
       this.pendingWhisperResolve = null;
       this.pendingWhisperCharacterId = null;
+      this.clearWhisperTimer();
+      this.heardWhisper();
       resolve(text);
       return { status: 'delivered', characterId: targetId, characterName: target.definition.name, message: '' };
     }
@@ -1271,24 +1421,53 @@ export class GameLoop {
     }
     queue.push(text);
     this.whisperQueue.set(targetId, queue);
+    this.heardWhisper();
     return {
       status: 'queued', characterId: targetId, characterName: target.definition.name,
       message: `${target.definition.name} will carry your whisper into their next choice.`,
     };
   }
 
+  /**
+   * A human spoke: the quiet-turn count starts over, and a table that paused
+   * itself for quiet picks back up — the banner there says "whisper or resume
+   * to continue". Any other pause (host, no-players, restart) stays put; the
+   * whisper is held or queued for when the host resumes.
+   */
+  private heardWhisper(): void {
+    this.quietTurns = 0;
+    if (this.pauseReason === 'quiet') this.resume();
+  }
+
   private waitForWhisper(characterId: string, timeoutMs: number): Promise<string | null> {
     return new Promise(resolve => {
       this.pendingWhisperResolve = resolve;
       this.pendingWhisperCharacterId = characterId;
-      setTimeout(() => {
-        if (this.pendingWhisperResolve === resolve) {
-          this.pendingWhisperResolve = null;
-          this.pendingWhisperCharacterId = null;
-          resolve(null);
-        }
-      }, timeoutMs);
+      // A window opened while paused is held from the start (resume arms it).
+      if (!this.pauseReason) this.armWhisperTimer(timeoutMs);
     });
+  }
+
+  /** (Re)start the countdown on the open whisper window; it closes with no whisper when it runs out. */
+  private armWhisperTimer(timeoutMs: number): void {
+    const resolve = this.pendingWhisperResolve;
+    if (!resolve) return;
+    this.clearWhisperTimer();
+    this.pendingWhisperTimer = setTimeout(() => {
+      this.pendingWhisperTimer = null;
+      if (this.pendingWhisperResolve === resolve) {
+        this.pendingWhisperResolve = null;
+        this.pendingWhisperCharacterId = null;
+        resolve(null);
+      }
+    }, timeoutMs);
+  }
+
+  private clearWhisperTimer(): void {
+    if (this.pendingWhisperTimer) {
+      clearTimeout(this.pendingWhisperTimer);
+      this.pendingWhisperTimer = null;
+    }
   }
 
   /**
