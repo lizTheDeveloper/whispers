@@ -22,6 +22,17 @@ export interface CampaignMaterial {
   createdAt: string;
 }
 
+/**
+ * Who someone is to this character, from this character's side.
+ * `relation` is what `to` is TO THIS CHARACTER ("mother" on Biz's sheet means
+ * Liz is Biz's mother); `address` is what this character calls them ("Mom").
+ */
+export interface CharacterRelationship {
+  to: string;
+  relation: string;
+  address?: string;
+}
+
 export interface CharacterDefinition {
   name: string;
   backstory: string;
@@ -31,6 +42,9 @@ export interface CharacterDefinition {
   aspects: string[];
   skills: Record<string, number>;
   stunts: string[];
+  /** Optional: a number or a phrase ("late thirties"). Children should play as children. */
+  age?: number | string;
+  relationships?: CharacterRelationship[];
 }
 
 export interface CharacterState {

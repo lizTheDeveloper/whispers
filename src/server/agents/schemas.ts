@@ -11,6 +11,14 @@ export const DmNarrationSchema = z.object({
 });
 export type DmNarration = z.infer<typeof DmNarrationSchema>;
 
+/** The narration-only opening: the arrival, and each character as the others see them. */
+export const DmOpeningSchema = z.object({
+  narration: z.string().default(''),
+  currentLocationName: z.string().nullish().transform(v => v ?? ''),
+  introductions: z.array(z.object({ name: z.string(), text: z.string() })).catch([]).default([]),
+});
+export type DmOpening = z.infer<typeof DmOpeningSchema>;
+
 const StateChangeItem = z.union([
   z.object({
     characterId: z.string().optional(),
@@ -116,6 +124,12 @@ export const DmSetupReplySchema = z.object({
 });
 export type DmSetupReply = z.infer<typeof DmSetupReplySchema>;
 
+export const CharacterRelationshipSchema = z.object({
+  to: z.string().min(1),
+  relation: z.string().min(1),
+  address: z.string().nullish().transform(v => (v && v.trim() ? v.trim() : undefined)),
+});
+
 export const CharInterviewReplySchema = z.object({
   reply: z.string().min(1),
   definition: z.object({
@@ -127,6 +141,14 @@ export const CharInterviewReplySchema = z.object({
     backstory: z.string().default(''),
     skills: z.record(z.number()).default({}),
     stunts: z.array(z.string()).default([]),
+    // Optional extras: a malformed age or relationship entry is dropped, never
+    // allowed to sink an otherwise-good sheet (and a retry) over a nicety.
+    age: z.union([z.number(), z.string()]).nullish().catch(undefined)
+      .transform(v => (v === null || v === undefined || (typeof v === 'string' && !v.trim()) ? undefined : v)),
+    relationships: z.array(z.unknown()).catch([]).default([]).transform(items => items.flatMap(item => {
+      const r = CharacterRelationshipSchema.safeParse(item);
+      return r.success ? [r.data] : [];
+    })),
   }).nullable().default(null),
 });
 export type CharInterviewReply = z.infer<typeof CharInterviewReplySchema>;

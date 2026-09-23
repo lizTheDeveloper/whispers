@@ -235,6 +235,18 @@ describe('private whispers', () => {
     expect(forB).toContain('Go to the cellar');
   });
 
+  it('story lines (what shared scene recaps are built from) carry no whisper text or verdicts', async () => {
+    // Scene summaries become the "Previous scene" line every character reads,
+    // so a whisper verdict surviving here would leak "2/3 whispers followed,
+    // trust 0.55" to the whole table.
+    const { storyLines } = await import('../src/server/transcript-visibility.js');
+    const story = storyLines(transcript).map(m => m.content).join('\n');
+    expect(story).not.toContain('Trust no one in a fox mask');
+    expect(story).not.toMatch(/heeded the whisper|resisted the whisper|trust: 0\./);
+    expect(story).toContain('The ballroom hushes.');
+    expect(story).toContain('invokes "Stubborn"');
+  });
+
   it('the fact extractor never reads whispers', async () => {
     const { ExtractorAgent } = await import('../src/server/agents/extractor.js');
     llmCalls.length = 0;

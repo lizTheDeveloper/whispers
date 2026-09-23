@@ -22,7 +22,13 @@ export function transcriptVisibleTo(transcript: TranscriptMessage[], characterId
   });
 }
 
-/** Transcript lines that are the story itself — everything but whispers. */
+/**
+ * Transcript lines that are the story itself — everything but whispers and
+ * the verdict lines recording how a character took one. Shared scene recaps
+ * are built from this and read by every character, so a verdict surviving
+ * here would tell the whole table "2/3 whispers followed, trust 0.55".
+ * Each character still carries its own trust in its own state.
+ */
 export function storyLines(transcript: TranscriptMessage[]): TranscriptMessage[] {
-  return transcript.filter(m => m.role !== 'whisper');
+  return transcript.filter(m => m.role !== 'whisper' && !(m.role === 'system' && WHISPER_VERDICT.test(m.content)));
 }

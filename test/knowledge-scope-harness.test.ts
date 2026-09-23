@@ -41,6 +41,14 @@ async function makeMasqueradeLoop(names: string[]) {
   const { GameLoop } = await import('../src/server/game-loop.js');
   const db = getDb();
   const { campaignId, joinCode } = createRoom(db, { name: `Knowledge ${++seq}`, dmPreset: 'chronicler', systemId: 'fate-core', scenarioId: 'haunted-masquerade' });
+  // Seed the world the way production does — at accept-world-seed, before play.
+  // (GameLoop.start() used to seed a stock scenario itself when the world bible
+  // was empty; that branch was dead in production and has been removed.)
+  const { loadStockScenario, setWorldSeed, markSeedAccepted, seedWorld } = await import('../src/server/world-seed.js');
+  const stock = loadStockScenario('haunted-masquerade')!;
+  setWorldSeed(db, campaignId, stock.seed);
+  markSeedAccepted(db, campaignId);
+  seedWorld(db, campaignId, stock.seed);
   const ids = names.map((n, i) => {
     const id = `ks-${seq}-${i}`;
     db.prepare('INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)')
