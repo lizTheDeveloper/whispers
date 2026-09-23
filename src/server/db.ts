@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, existsSync, copyFileSync, renameSync, rmSync } from 'node:fs';
+import { WorldBible } from './world-bible.js';
+import type { TranscriptMessage } from '../shared/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR ?? join(__dirname, '..', '..', 'data');
@@ -108,7 +110,8 @@ export function getStateDir(): string {
   return STATE_DIR;
 }
 
-function migrate(db: Database.Database): void {
+/** Exported for tests: runs every schema migration against `db`. Idempotent. */
+export function migrate(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id TEXT PRIMARY KEY,
@@ -326,6 +329,75 @@ function migrate(db: Database.Database): void {
   if (!charCols.some(c => c.name === 'revoked_at')) {
     db.exec('ALTER TABLE characters ADD COLUMN revoked_at TEXT');
   }
+
+  migratePartyKnowledge(db);
+}
+
+/**
+ * Party knowledge: which NPCs, places and items the story has revealed to the
+ * characters (see WorldBible.getPlayerKnowledge). Two one-time steps, each
+ * keyed on its column not existing yet, so a later boot never re-runs them:
+ *
+ *  - entities.motivation: seeding used to append "[Motivation: …]" to the
+ *    description, which leaked into character prompts. Existing rows have it
+ *    parsed back out into its own column.
+ *
+ *  - known_to_party on entities/locations/items: new games start at 0 and
+ *    the story marks rows as it reveals them. A game already mid-play would
+ *    lose all its world knowledge at once if every row just defaulted to 0,
+ *    so for campaigns in 'playing' this backfills from what the table has
+ *    actually seen: visited locations, plus anything named in the saved
+ *    story text — the latest checkpoint's transcript and every stored scene's
+ *    transcript and summary — with whisper lines removed, since a whisper is
+ *    private to one character. It deliberately does not try to reconstruct
+ *    more than that (e.g. compacted-away turns that survive only in a recap);
+ *    a thing the table saw but nobody has named since can be re-revealed by
+ *    the DM naming it again. Campaigns not yet playing start from nothing,
+ *    exactly like a fresh seed.
+ */
+function migratePartyKnowledge(db: Database.Database): void {
+  const cols = (table: string) => new Set((db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(c => c.name));
+
+  if (!cols('entities').has('motivation')) {
+    db.exec('ALTER TABLE entities ADD COLUMN motivation TEXT');
+    const rows = db.prepare("SELECT id, description FROM entities WHERE description LIKE '%[Motivation:%'").all() as Array<{ id: string; description: string }>;
+    const update = db.prepare('UPDATE entities SET description = ?, motivation = ? WHERE id = ?');
+    for (const row of rows) {
+      const m = row.description.match(/^([\s\S]*?)\s*\[Motivation:\s*([\s\S]*?)\]\s*$/);
+      if (m) update.run(m[1]!.trim() || null, m[2]!.trim() || null, row.id);
+    }
+  }
+
+  let added = false;
+  for (const table of ['entities', 'locations', 'items']) {
+    if (!cols(table).has('known_to_party')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN known_to_party INTEGER NOT NULL DEFAULT 0`);
+      added = true;
+    }
+  }
+  if (!added) return;
+
+  const playing = db.prepare("SELECT id FROM campaigns WHERE phase = 'playing'").all() as Array<{ id: string }>;
+  if (playing.length === 0) return;
+  const worldBible = new WorldBible(db);
+  const storyText = (json: string | null): string => {
+    if (!json) return '';
+    try {
+      const messages = JSON.parse(json) as TranscriptMessage[];
+      return Array.isArray(messages) ? messages.filter(m => m && m.role !== 'whisper').map(m => m.content).join('\n') : '';
+    } catch { return ''; }
+  };
+  for (const { id } of playing) {
+    db.prepare('UPDATE locations SET known_to_party = 1 WHERE campaign_id = ? AND visited = 1').run(id);
+    const checkpoint = db.prepare('SELECT transcript FROM checkpoints WHERE campaign_id = ? ORDER BY scene_number DESC, turn_number DESC, created_at DESC LIMIT 1').get(id) as { transcript: string | null } | undefined;
+    const scenes = db.prepare('SELECT transcript, summary FROM scenes WHERE campaign_id = ?').all(id) as Array<{ transcript: string; summary: string | null }>;
+    const text = [
+      storyText(checkpoint?.transcript ?? null),
+      ...scenes.map(sc => `${storyText(sc.transcript)}\n${sc.summary ?? ''}`),
+    ].join('\n');
+    worldBible.revealMentioned(id, text);
+  }
+  console.log(`[db] Party knowledge backfilled for ${playing.length} campaign(s) in play.`);
 }
 
 export function closeDb(): void {

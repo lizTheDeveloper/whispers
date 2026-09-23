@@ -62,6 +62,10 @@ export interface Entity {
   alive: boolean;
   locationId: string | null;
   metadata: Record<string, unknown>;
+  /** DM-only: why this NPC does what they do. Never shown to characters. */
+  motivation?: string | null;
+  /** Whether the story has revealed this NPC to the party yet. */
+  knownToParty?: boolean;
 }
 
 export interface Location {

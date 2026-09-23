@@ -12,6 +12,7 @@ import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { recordReplayBroadcast } from './replay-log.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
+import { transcriptVisibleTo, storyLines } from './transcript-visibility.js';
 import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
@@ -359,6 +360,7 @@ export class GameLoop {
       for (const npcName of narration.activeNpcs) {
         this.worldBible.updateEntityLocation(this.campaignId, npcName, loc.id);
         this.worldBible.ensureEntity(this.campaignId, npcName, loc.id);
+        this.worldBible.markEntityKnown(this.campaignId, npcName);
       }
 
       generateSceneImage(this.campaignId, narration.currentLocationName, narration.narration)
@@ -438,7 +440,12 @@ export class GameLoop {
     }
 
     const worldSummary = this.worldBible.getSummary(this.campaignId, this.state.currentLocationId ?? undefined);
-    const charWorldContext = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    // Whatever the story has named so far — narration, resolutions, spoken
+    // actions, the scenario opening, a restored checkpoint — is now known to
+    // the party. Whispers are private and excluded.
+    this.worldBible.revealMentioned(this.campaignId, storyLines(this.transcript).map(m => m.content).join('\n'));
+    // Characters get only what the party knows; the DM keeps worldSummary.
+    const charWorldContext = this.worldBible.getPlayerKnowledge(this.campaignId, this.state.currentLocationId ?? undefined);
     const charRelationships = this.worldBible.getCharacterRelationships(this.campaignId, characterId, character.definition.name);
     const fullCharContext = [charWorldContext, charRelationships].filter(Boolean).join('\n');
     const sessionRecap = this.transcript.find(m => m.role === 'system' && m.content.startsWith('[Session recap]'))?.content ?? '';
@@ -462,7 +469,7 @@ export class GameLoop {
         definition: character.definition,
         state: character.state,
         sceneNarration,
-        transcript: this.transcript,
+        transcript: transcriptVisibleTo(this.transcript, characterId),
         memories,
         worldContext: fullCharContext,
         partyMembers,
@@ -514,7 +521,7 @@ export class GameLoop {
     let decision;
     try {
       decision = await this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: this.transcript, memories, worldContext: fullCharContext, partyMembers },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: transcriptVisibleTo(this.transcript, characterId), memories, worldContext: fullCharContext, partyMembers },
         whisper,
       );
     } catch (e) {
@@ -979,7 +986,7 @@ export class GameLoop {
         .then(facts => {
           const total = facts.newLocations.length + facts.newEntities.length + facts.newItems.length + facts.newEvents.length + facts.newRelationships.length;
           if (total > 0) {
-            this.worldBible.applyDiff(this.campaignId, facts);
+            this.worldBible.applyDiff(this.campaignId, facts, { markKnown: true });
             console.log(`[game-loop] Periodic extraction (turn ${this.state.currentTurn}): ${total} facts (${facts.newEvents.length} events, ${facts.newRelationships.length} rels, ${facts.newEntities.length} entities)`);
           }
         })
@@ -1002,16 +1009,18 @@ export class GameLoop {
 
     try {
       const facts = await this.extractor.extractFacts(toExtract, this.state.currentScene);
-      this.worldBible.applyDiff(this.campaignId, facts);
+      this.worldBible.applyDiff(this.campaignId, facts, { markKnown: true });
     } catch (e) {
       console.error('Mid-scene fact extraction failed:', e);
     }
 
     const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
-    const worldState = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    // The recap replaces these lines in every character's view, so it is
+    // written from the story alone: no whisper text, no DM-only world facts.
+    const worldState = this.worldBible.getPlayerKnowledge(this.campaignId, this.state.currentLocationId ?? undefined);
     let summary: string;
     try {
-      summary = await this.dm.summarizeScene(toExtract, charNames, worldState);
+      summary = await this.dm.summarizeScene(storyLines(toExtract), charNames, worldState);
     } catch (e) {
       console.error('[game-loop] Compaction summary failed, using last DM narration as recap:', e);
       const lastDm = toExtract.filter(m => m.role === 'dm').slice(-1)[0]?.content;
@@ -1028,9 +1037,11 @@ export class GameLoop {
   private async endScene(): Promise<void> {
     let summary: string;
     const charNames = Array.from(this.characters.values()).map(c => c.definition.name);
-    const worldState = this.worldBible.getCompactSummary(this.campaignId, this.state.currentLocationId ?? undefined);
+    // Becomes the next scene's "[Previous scene]" line that every character
+    // reads — so, like compaction, story only: no whispers, no DM secrets.
+    const worldState = this.worldBible.getPlayerKnowledge(this.campaignId, this.state.currentLocationId ?? undefined);
     try {
-      summary = await this.dm.summarizeScene(this.transcript, charNames, worldState);
+      summary = await this.dm.summarizeScene(storyLines(this.transcript), charNames, worldState);
     } catch (e) {
       console.error('[game-loop] Scene summary failed:', e);
       summary = 'The scene draws to a close.';
@@ -1056,7 +1067,7 @@ export class GameLoop {
         events: facts.newEvents.length,
         relationships: facts.newRelationships.length,
       }));
-      this.worldBible.applyDiff(this.campaignId, facts);
+      this.worldBible.applyDiff(this.campaignId, facts, { markKnown: true });
     } catch (e: any) {
       console.error('[game-loop] Fact extraction failed:', e.message?.slice(0, 200));
     }

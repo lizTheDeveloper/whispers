@@ -1323,6 +1323,7 @@ wss.on('connection', (ws) => {
           systemId: campaign.systemId,
           history: currentPlayer.setupChat,
           unmet: before.detail,
+          hostTableRole: campaign.hostTableRole,
         });
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 
