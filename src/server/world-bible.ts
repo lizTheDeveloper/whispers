@@ -4,7 +4,7 @@ import type { Entity, Location, Item, GameEvent, Relationship } from '../shared/
 
 export interface WorldBibleDiff {
   newLocations: Array<{ name: string; description: string | null; terrain: string | null }>;
-  newEntities: Array<{ name: string; type: string; description: string | null; disposition: string | null }>;
+  newEntities: Array<{ name: string; type: string; description: string | null; disposition: string | null; motivation?: string | null }>;
   newItems: Array<{ name: string; description: string | null; properties?: Record<string, unknown>; holderId?: string; locationId?: string }>;
   newEvents: Array<{ sceneNumber: number; description: string; participants: string[]; outcome: string | null }>;
   newRelationships: Array<{ entityAName: string; entityBName: string; type: string; description: string | null }>;
@@ -12,32 +12,116 @@ export interface WorldBibleDiff {
 
 function genId(): string { return randomBytes(16).toString('hex'); }
 
+function escapeRegExp(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/** Whole-word (letter/digit-bounded) occurrence of `needle` in `text`. */
+function mentionsPhrase(text: string, needle: string, caseSensitive = false): boolean {
+  if (!needle.trim()) return false;
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(needle.trim())}(?![\\p{L}\\p{N}])`, caseSensitive ? 'u' : 'iu');
+  return re.test(text);
+}
+
+const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor', 'the', 'a', 'an', 'of']);
+
+/**
+ * Whether narration names this thing. Full name, or the name without a
+ * leading article ("the Wine Cellar" for "The Wine Cellar"), both
+ * case-insensitive. People are also recognised by their given name —
+ * "Vaelora" for "Duchess Vaelora", "Mira" for "Mira the Servant" — matched
+ * case-sensitively so a common word is not mistaken for a name.
+ */
+function isMentioned(text: string, name: string, isPerson: boolean): boolean {
+  if (mentionsPhrase(text, name)) return true;
+  const stripped = name.replace(/^(the|a|an)\s+/i, '');
+  if (stripped !== name && stripped.length >= 4 && mentionsPhrase(text, stripped)) return true;
+  if (isPerson) {
+    const given = name.split(/\s+/)
+      .map(w => w.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, ''))
+      .find(w => w.length > 0 && !NAME_TITLES.has(w.toLowerCase()));
+    if (given && given.length >= 4 && given !== name && mentionsPhrase(text, given, true)) return true;
+  }
+  return false;
+}
+
+/**
+ * Columns a bare test database (one that never went through db.ts migrate)
+ * may be missing. Real databases get these from migrate(), which also does
+ * the one-time backfill for games already in play — this only makes sure the
+ * columns exist.
+ */
+function ensureColumns(db: Database.Database): void {
+  const add = (table: string, column: string, ddl: string) => {
+    const cols = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+    if (cols.length > 0 && !cols.some(c => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  add('locations', 'visited', 'visited INTEGER NOT NULL DEFAULT 0');
+  add('locations', 'known_to_party', 'known_to_party INTEGER NOT NULL DEFAULT 0');
+  add('entities', 'known_to_party', 'known_to_party INTEGER NOT NULL DEFAULT 0');
+  add('entities', 'motivation', 'motivation TEXT');
+  add('items', 'known_to_party', 'known_to_party INTEGER NOT NULL DEFAULT 0');
+}
+
+/**
+ * The world bible holds two audiences' worth of truth. The DM sees all of it
+ * (getSummary): seeded plot hooks, every NPC and their motivation, every
+ * place and item. Characters are LLM agents playing people in the story, and
+ * a person knows only what has happened to them — so their view
+ * (getPlayerKnowledge) is limited to rows marked known_to_party, which only
+ * the story itself sets: the DM naming something in narration or resolution,
+ * the DM putting an NPC on stage, a location being visited, or the fact
+ * extractor pulling it out of the (whisper-free) transcript. Seeding writes
+ * everything as unknown.
+ */
 export class WorldBible {
   constructor(private db: Database.Database) {
-    try {
-      this.db.prepare('SELECT visited FROM locations LIMIT 0').get();
-    } catch {
-      this.db.prepare('ALTER TABLE locations ADD COLUMN visited INTEGER NOT NULL DEFAULT 0').run();
-    }
+    ensureColumns(db);
   }
 
-  addLocation(loc: Location): void {
-    this.db.prepare(`INSERT INTO locations (id, campaign_id, name, description, terrain, connections, coords) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(loc.id, loc.campaignId, loc.name, loc.description, loc.terrain, JSON.stringify(loc.connections), loc.coords ? JSON.stringify(loc.coords) : null);
+  addLocation(loc: Location, knownToParty = false): void {
+    this.db.prepare(`INSERT INTO locations (id, campaign_id, name, description, terrain, connections, coords, known_to_party) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(loc.id, loc.campaignId, loc.name, loc.description, loc.terrain, JSON.stringify(loc.connections), loc.coords ? JSON.stringify(loc.coords) : null, knownToParty ? 1 : 0);
   }
 
   markLocationVisited(campaignId: string, locationId: string): void {
-    this.db.prepare('UPDATE locations SET visited = 1 WHERE id = ? AND campaign_id = ?').run(locationId, campaignId);
+    this.db.prepare('UPDATE locations SET visited = 1, known_to_party = 1 WHERE id = ? AND campaign_id = ?').run(locationId, campaignId);
+  }
+
+  /** The DM put this NPC in the scene — the party can see them now. */
+  markEntityKnown(campaignId: string, name: string): void {
+    this.db.prepare('UPDATE entities SET known_to_party = 1 WHERE campaign_id = ? AND name = ? COLLATE NOCASE').run(campaignId, name);
+  }
+
+  /**
+   * Mark every not-yet-known NPC, location and item that `text` names as
+   * known to the party. Callers pass story text only — narration,
+   * resolutions, character actions, recaps — never whispers, which are
+   * private to one character and are not the story.
+   */
+  revealMentioned(campaignId: string, text: string): void {
+    if (!text.trim()) return;
+    const tables: Array<{ table: 'entities' | 'locations' | 'items'; isPerson: boolean }> = [
+      { table: 'entities', isPerson: true },
+      { table: 'locations', isPerson: false },
+      { table: 'items', isPerson: false },
+    ];
+    for (const { table, isPerson } of tables) {
+      const rows = this.db.prepare(`SELECT id, name FROM ${table} WHERE campaign_id = ? AND known_to_party = 0`).all(campaignId) as Array<{ id: string; name: string }>;
+      for (const row of rows) {
+        if (isMentioned(text, row.name, isPerson)) {
+          this.db.prepare(`UPDATE ${table} SET known_to_party = 1 WHERE id = ?`).run(row.id);
+        }
+      }
+    }
   }
 
   addEntity(ent: Entity): void {
-    this.db.prepare(`INSERT INTO entities (id, campaign_id, type, name, description, disposition, alive, location_id, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(ent.id, ent.campaignId, ent.type, ent.name, ent.description, ent.disposition, ent.alive ? 1 : 0, ent.locationId, JSON.stringify(ent.metadata));
+    this.db.prepare(`INSERT INTO entities (id, campaign_id, type, name, description, disposition, alive, location_id, metadata, motivation, known_to_party) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(ent.id, ent.campaignId, ent.type, ent.name, ent.description, ent.disposition, ent.alive ? 1 : 0, ent.locationId, JSON.stringify(ent.metadata), ent.motivation ?? null, ent.knownToParty ? 1 : 0);
   }
 
-  addItem(item: Item): void {
-    this.db.prepare(`INSERT INTO items (id, campaign_id, name, description, properties, holder_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(item.id, item.campaignId, item.name, item.description, JSON.stringify(item.properties), item.holderId, item.locationId);
+  addItem(item: Item, knownToParty = false): void {
+    this.db.prepare(`INSERT INTO items (id, campaign_id, name, description, properties, holder_id, location_id, known_to_party) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(item.id, item.campaignId, item.name, item.description, JSON.stringify(item.properties), item.holderId, item.locationId, knownToParty ? 1 : 0);
   }
 
   addEvent(evt: GameEvent): void {
@@ -119,11 +203,12 @@ export class WorldBible {
       parts.push(locText);
     }
 
-    const npcs = this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid DESC LIMIT 15').all(campaignId) as any[];
+    const npcs = this.db.prepare('SELECT name, type, disposition, description, motivation FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid DESC LIMIT 15').all(campaignId) as any[];
     if (npcs.length > 0) {
       parts.push('Known NPCs/creatures: ' + npcs.map((n: any) => {
         let label = `${n.name} (${n.type}${n.disposition ? ', ' + n.disposition : ''})`;
         if (n.description) label += ` — ${n.description}`;
+        if (n.motivation) label += ` [Motivation: ${n.motivation}]`;
         return label;
       }).join('; '));
     }
@@ -250,8 +335,86 @@ export class WorldBible {
     return parts.join('\n') || '';
   }
 
+  /**
+   * What a character in the story actually knows about the world: only NPCs,
+   * places and items the story has revealed (known_to_party), never seeded
+   * plot hooks, never motivations. Threads listed here are ones the fact
+   * extractor pulled out of play (scene 1+), not the DM's scene-0 hooks.
+   * The "People nearby:" label is parsed by CharacterAgent.extractNearbyNpcs.
+   */
+  getPlayerKnowledge(campaignId: string, locationId?: string): string {
+    const parts: string[] = [];
+    let currentName: string | null = null;
+    if (locationId) {
+      const loc = this.db.prepare('SELECT name FROM locations WHERE id = ? AND campaign_id = ?').get(locationId, campaignId) as any;
+      if (loc) {
+        currentName = loc.name;
+        parts.push(`You are at: ${loc.name}`);
+      }
+    }
+
+    if (locationId) {
+      const here = this.db.prepare('SELECT name, type, disposition, description FROM entities WHERE campaign_id = ? AND alive = 1 AND known_to_party = 1 AND location_id = ? LIMIT 8').all(campaignId, locationId) as any[];
+      if (here.length > 0) {
+        parts.push('People nearby: ' + here.map((n: any) => {
+          let label = `${n.name} (${n.disposition ?? n.type})`;
+          if (n.description) label += ` — ${n.description.slice(0, 60)}`;
+          return label;
+        }).join('; '));
+      }
+    }
+    const elsewhere = locationId
+      ? this.db.prepare('SELECT name, disposition FROM entities WHERE campaign_id = ? AND alive = 1 AND known_to_party = 1 AND (location_id IS NULL OR location_id != ?) LIMIT 8').all(campaignId, locationId) as any[]
+      : this.db.prepare('SELECT name, disposition FROM entities WHERE campaign_id = ? AND alive = 1 AND known_to_party = 1 LIMIT 8').all(campaignId) as any[];
+    if (elsewhere.length > 0) {
+      parts.push(`People you know of${locationId ? ' (not here)' : ''}: ` + elsewhere.map((n: any) => n.disposition ? `${n.name} (${n.disposition})` : n.name).join(', '));
+    }
+
+    const locs = (this.db.prepare('SELECT name, visited FROM locations WHERE campaign_id = ? AND known_to_party = 1 ORDER BY visited ASC LIMIT 8').all(campaignId) as any[])
+      .filter((l: any) => l.name !== currentName);
+    if (locs.length > 0) {
+      const heardOf = locs.filter((l: any) => !l.visited).map((l: any) => l.name);
+      const visited = locs.filter((l: any) => l.visited).map((l: any) => l.name);
+      const locParts: string[] = [];
+      if (heardOf.length > 0) locParts.push(`heard of, not yet visited: ${heardOf.join(', ')}`);
+      if (visited.length > 0) locParts.push(`visited: ${visited.join(', ')}`);
+      parts.push('Places you know: ' + locParts.join(' | '));
+    }
+
+    const items = locationId
+      ? this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND known_to_party = 1 AND holder_id IS NULL AND (location_id = ? OR location_id IS NULL) LIMIT 5').all(campaignId, locationId) as any[]
+      : this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND known_to_party = 1 AND holder_id IS NULL LIMIT 5').all(campaignId) as any[];
+    if (items.length > 0) {
+      parts.push('Items you have seen: ' + items.map((i: any) => i.name).join(', '));
+    }
+
+    const rels = this.db.prepare(`SELECT r.type,
+        COALESCE(e1.name, json_extract(c1.definition, '$.name')) as a_name,
+        COALESCE(e2.name, json_extract(c2.definition, '$.name')) as b_name
+      FROM relationships r
+      LEFT JOIN entities e1 ON r.entity_a_id = e1.id
+      LEFT JOIN entities e2 ON r.entity_b_id = e2.id
+      LEFT JOIN characters c1 ON r.entity_a_id = c1.id
+      LEFT JOIN characters c2 ON r.entity_b_id = c2.id
+      WHERE r.campaign_id = ? AND (a_name IS NOT NULL AND b_name IS NOT NULL)
+        AND (e1.id IS NULL OR e1.known_to_party = 1) AND (e2.id IS NULL OR e2.known_to_party = 1)
+      ORDER BY r.rowid DESC LIMIT 5`).all(campaignId) as any[];
+    if (rels.length > 0) {
+      parts.push('Relationships: ' + rels.map((r: any) => `${r.a_name} ${r.type} ${r.b_name}`).join(', '));
+    }
+
+    const currentScene = this.db.prepare('SELECT MAX(scene_number) as s FROM events WHERE campaign_id = ?').get(campaignId) as any;
+    const maxScene = currentScene?.s ?? 0;
+    const threads = this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL AND scene_number > 0 AND scene_number > ? ORDER BY scene_number DESC LIMIT 3').all(campaignId, maxScene - 5) as any[];
+    if (threads.length > 0) {
+      parts.push('Unanswered questions from the story so far: ' + threads.map((e: any) => e.description).join('; '));
+    }
+    return parts.join('\n');
+  }
+
   updateItemHolder(campaignId: string, itemName: string, holderId: string | null): void {
-    this.db.prepare('UPDATE items SET holder_id = ? WHERE campaign_id = ? AND name = ? COLLATE NOCASE')
+    // Changing hands happens in a narrated resolution — the party has seen it.
+    this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1 WHERE campaign_id = ? AND name = ? COLLATE NOCASE')
       .run(holderId, campaignId, itemName);
   }
 
@@ -380,15 +543,23 @@ export class WorldBible {
     return reverses[type] ?? `have a ${type} relationship with`;
   }
 
-  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean }): void {
+  /**
+   * `markKnown` is for diffs drawn from the story itself (the fact extractor
+   * reading the whisper-free transcript): everything they name, new or
+   * existing, becomes known to the party. Seeding leaves it off — a seed is
+   * the DM's private notes.
+   */
+  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean; markKnown?: boolean }): void {
     const allowNewLocations = opts?.allowNewLocations ?? false;
+    const markKnown = opts?.markKnown ?? false;
     const tx = this.db.transaction(() => {
       for (const loc of diff.newLocations) {
         const existing = this.getLocationByName(campaignId, loc.name);
         if (existing) {
           if (loc.description) this.db.prepare('UPDATE locations SET description = ? WHERE id = ?').run(loc.description, existing.id);
+          if (markKnown) this.db.prepare('UPDATE locations SET known_to_party = 1 WHERE id = ?').run(existing.id);
         } else if (allowNewLocations) {
-          this.addLocation({ id: genId(), campaignId, name: loc.name, description: loc.description, terrain: loc.terrain, connections: [], coords: null });
+          this.addLocation({ id: genId(), campaignId, name: loc.name, description: loc.description, terrain: loc.terrain, connections: [], coords: null }, markKnown);
         } else {
           console.log(`[world-bible] Dropped extracted location "${loc.name}" — not in scenario`);
         }
@@ -398,16 +569,19 @@ export class WorldBible {
         if (existing) {
           if (ent.description) this.db.prepare('UPDATE entities SET description = ? WHERE id = ?').run(ent.description, existing.id);
           if (ent.disposition) this.db.prepare('UPDATE entities SET disposition = ? WHERE id = ?').run(ent.disposition, existing.id);
+          if (ent.motivation) this.db.prepare('UPDATE entities SET motivation = ? WHERE id = ?').run(ent.motivation, existing.id);
+          if (markKnown) this.db.prepare('UPDATE entities SET known_to_party = 1 WHERE id = ?').run(existing.id);
         } else {
-          this.addEntity({ id: genId(), campaignId, type: ent.type as Entity['type'], name: ent.name, description: ent.description, disposition: ent.disposition, alive: true, locationId: null, metadata: {} });
+          this.addEntity({ id: genId(), campaignId, type: ent.type as Entity['type'], name: ent.name, description: ent.description, disposition: ent.disposition, alive: true, locationId: null, metadata: {}, motivation: ent.motivation ?? null, knownToParty: markKnown });
         }
       }
       for (const item of diff.newItems) {
         const existingItem = this.db.prepare('SELECT id FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, item.name) as any;
         if (existingItem) {
           if (item.description) this.db.prepare('UPDATE items SET description = ? WHERE id = ?').run(item.description, existingItem.id);
+          if (markKnown) this.db.prepare('UPDATE items SET known_to_party = 1 WHERE id = ?').run(existingItem.id);
         } else {
-          this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: item.properties ?? {}, holderId: item.holderId ?? null, locationId: item.locationId ?? null });
+          this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: item.properties ?? {}, holderId: item.holderId ?? null, locationId: item.locationId ?? null }, markKnown);
         }
       }
       for (const evt of diff.newEvents) {

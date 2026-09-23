@@ -5,7 +5,7 @@ import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, Char
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { safeDataFile } from '../data-paths.js';
 import type Database from 'better-sqlite3';
-import type { CharacterDefinition, TranscriptMessage, DiceResult, WorldSeed } from '../../shared/types.js';
+import type { CharacterDefinition, TranscriptMessage, DiceResult, WorldSeed, TableRole } from '../../shared/types.js';
 
 const presetCache = new Map<string, string>();
 function loadPresetText(presetName: string): string | null {
@@ -339,11 +339,21 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     systemId: string;
     history: Array<{ role: string; content: string }>;
     unmet: string[];
+    hostTableRole?: TableRole | null;
   }): Promise<DmSetupReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'setting tone genre campaign');
     const unmetBlock = opts.unmet.length > 0
       ? `\n\nStill missing before this game can open:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nWork these into the conversation naturally. Do not present them as a form.`
       : '';
+    // The host may sit at the table as a player, and anything said in
+    // `reply` has then been said to a player. Secrets belong in
+    // dmCustomPrompt (the DM's private direction), never in the chat.
+    const playingHost = opts.hostTableRole === 'player'
+      ? `\nThe host is PLAYING in this game, not running it. Everything in "reply" is read by a player. Keep every secret out of it without exception.`
+      : `\nThe host may end up playing in this game rather than running it, so treat "reply" as something a player will read.`;
+    const spoilerBlock = `
+
+NO SPOILERS: You are building the DM's secrets, not sharing them. In "reply", never reveal a twist, a culprit, who is responsible for anything, a hidden motive, the answer to a mystery, or how the story will unfold. If the host asks a question the story itself should answer ("whose mistake brought us here?"), treat it as a hook you will plant, not a question to answer now: say it will be discovered in play. If the host says they do not want to know what will happen, honour that for the rest of the conversation. You MAY ask about tone, genre, content limits, influences, and what kind of mystery or danger they enjoy. Put the secret answers you invent in dmCustomPrompt only — that is never shown to players.${playingHost}`;
 
     const systemPrompt = `You are a TTRPG Dungeon Master helping set up a new game. Your base personality is "${opts.preset}".
 
@@ -355,7 +365,7 @@ Have a natural conversation with the game host to build their world with them:
 Be conversational and enthusiastic. Ask one or two questions at a time, never a checklist.
 Accumulate every influence the host names into "influences" — return the full list every time, not just new ones.
 When you have enough to build a world, set "done": true and fill in dmInstructions (a summary of how they want this run) and dmCustomPrompt (your tailored direction for running it).
-Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.
+Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.${spoilerBlock}
 ${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` : ''}${unmetBlock}
 
 Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }`;
@@ -441,13 +451,14 @@ Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","te
    * who they are. Keep the influences in the prose and out of the content.
    */
   async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed }): Promise<string> {
+    // Plot hooks (and NPC motivations) are DM secrets and are deliberately
+    // not given to this prompt: whatever it knows, the player may read.
     const places = opts.seed.locations.slice(0, 4).map(l => `${l.name}: ${l.description}`).join('\n');
     const people = opts.seed.npcs.slice(0, 4).map(n => `${n.name}: ${n.description}`).join('\n');
-    const hooks = opts.seed.plotHooks.slice(0, 4).map(h => `- ${h}`).join('\n');
 
     const systemPrompt = `You are a TTRPG Dungeon Master ("${opts.preset}" style) introducing a player to a world they are about to make a character for.
 
-Write 120-180 words of second-person present tense. Put them somewhere specific and let them look around. Name real places and real people from the world below. End on something unresolved — a question the world is already asking.
+Write 120-180 words of second-person present tense. Put them somewhere specific and let them look around. Name real places and real people from the world below. End on something unresolved — a question the world is already asking — without answering it or hinting at who is behind it.
 
 Do NOT explain the setting, list factions, or describe mechanics. Do not tell them who their character is; that is the next conversation. No headings, no bullet points, no preamble — just the prose.
 
@@ -457,10 +468,7 @@ Places:
 ${places}
 
 People:
-${people}
-
-Unresolved:
-${hooks}`;
+${people}`;
 
     return callLlm({
       messages: [
@@ -491,8 +499,10 @@ ${hooks}`;
     unmet: string[];
   }): Promise<CharInterviewReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'character creation aspects skills stunts');
+    // No plot hooks: whatever this prompt knows can end up in the player's
+    // backstory, and from there in the character agent's prompt every turn.
     const worldBlock = opts.seed
-      ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\nUnresolved: ${opts.seed.plotHooks.slice(0, 4).join(' / ')}\n`
+      ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\n`
       : '';
     const unmetBlock = opts.unmet.length > 0
       ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nAsk for these, but ask the way a person would.\n`

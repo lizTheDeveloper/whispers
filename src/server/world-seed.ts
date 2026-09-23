@@ -42,8 +42,11 @@ export function seedWorld(db: Database.Database, campaignId: string, seed: World
     newEntities: seed.npcs.map(n => ({
       name: n.name,
       type: 'npc' as const,
-      description: n.motivation ? `${n.description} [Motivation: ${n.motivation}]` : n.description,
+      description: n.description,
       disposition: n.disposition ?? null,
+      // Its own column, so the DM's summary can show it and the party's
+      // view (getPlayerKnowledge) never does.
+      motivation: n.motivation ?? null,
     })),
     newItems: seed.items.map(i => ({ name: i.name, description: i.description, properties: {} })),
     newEvents: newHooks.map(hook => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),

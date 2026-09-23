@@ -81,7 +81,7 @@ export class CharacterAgent {
   async proposeActions(ctx: CharacterContext): Promise<ActionProposal> {
     const charPrompt = this.buildCharacterPrompt(ctx);
     const recentTranscript = ctx.transcript.slice(-10).map(m => `[${m.role}] ${m.content}`).join('\n');
-    const worldBlock = ctx.worldContext ? `\n\nWhat you know about the world:\n${ctx.worldContext}` : '';
+    const worldBlock = ctx.worldContext ? `\n\nWhat you know about the world (from what the story has shown you so far — this is ALL you know beyond your own past and memories):\n${ctx.worldContext}` : '';
     const namePrefix = `${ctx.definition.name}: `;
     const nearbyNpcs = this.extractNearbyNpcs(ctx.worldContext);
     const ownActions = ctx.transcript
@@ -297,6 +297,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `Aspects: ${d.aspects.join(', ')}`,
       `Skills: ${skillLine}`,
       `Your best skills are ${topSkills}, but you have a full skill set. Use ALL your skills across the adventure — a thief can also fight, observe, negotiate, or run. Vary which skill drives each action; never use the same approach twice in a row.`,
+      `You know only your own past, your memories, and what has happened in front of you in this story. When you name a person, place, or thing, it must be one you have actually met, seen, or heard of in the story — never invent or guess at names, secrets, or who is behind what.`,
       `Current state: ${ctx.state.stress}/3 stress, ${ctx.state.fatePoints} fate points, trust in the voice: ${ctx.state.whisperTrust.toFixed(2)}`,
       ctx.state.fatePoints > 0
         ? `You have ${ctx.state.fatePoints} fate point${ctx.state.fatePoints > 1 ? 's' : ''}.${ctx.state.fatePoints >= 4 ? ' You are OVERFLOWING with fate points — SPEND them!' : ''} To spend a fate point for a +2 bonus, mention an aspect naturally in a NARRATIVE action (not "spending" or "invoking" — those are game terms). Your aspects: "${d.highConcept}", "${d.trouble}", ${d.aspects.map(a => `"${a}"`).join(', ')}. Example: "I call on my ${d.aspects[0]} and charge into the fray" — describe WHAT YOU DO, weaving the aspect into the story.`

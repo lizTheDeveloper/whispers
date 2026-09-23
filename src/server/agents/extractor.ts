@@ -5,8 +5,11 @@ import type { TranscriptMessage } from '../../shared/types.js';
 
 export class ExtractorAgent {
   async extractFacts(transcript: TranscriptMessage[], sceneNumber: number): Promise<FactExtraction> {
+    // Whispers are deliberately excluded: a whisper is private to one
+    // character, and anything extracted here becomes world knowledge every
+    // character's prompt draws on (and is marked known to the party).
     const narrative = transcript
-      .filter(m => m.role === 'dm' || m.role === 'character' || m.role === 'whisper')
+      .filter(m => m.role === 'dm' || m.role === 'character')
       .slice(-30);
     const text = narrative.map(m => `[${m.role}] ${m.content}`).join('\n');
 
