@@ -39,6 +39,21 @@ services:
       - traefik.http.routers.whispers-play-http.middlewares=whispers-redirect
       - traefik.http.middlewares.whispers-redirect.redirectscheme.scheme=https
       - traefik.http.middlewares.whispers-redirect.redirectscheme.permanent=true
+      # play.multiversegames.ai — every portal/homepage link uses this domain.
+      # Without these routers, /whispers on .ai fell through to Precursors'
+      # speech-to-text websocket (PathPrefix /whisper also matches /whispers)
+      # and players got "426: You cannot access a WebSocket server directly".
+      # priority=200 beats that shorter-rule router, same as on .xyz.
+      - traefik.http.routers.whispers-play-ai.rule=Host(`play.multiversegames.ai`) && PathPrefix(`/whispers`)
+      - traefik.http.routers.whispers-play-ai.entrypoints=https
+      - traefik.http.routers.whispers-play-ai.tls.certresolver=letsencrypt
+      - traefik.http.routers.whispers-play-ai.priority=200
+      - traefik.http.routers.whispers-play-ai.middlewares=whispers-strip
+      - traefik.http.routers.whispers-play-ai.service=whispers
+      - traefik.http.routers.whispers-play-ai-http.rule=Host(`play.multiversegames.ai`) && PathPrefix(`/whispers`)
+      - traefik.http.routers.whispers-play-ai-http.entrypoints=http
+      - traefik.http.routers.whispers-play-ai-http.middlewares=whispers-redirect
+      - traefik.http.routers.whispers-play-ai-http.service=whispers
       - traefik.http.services.whispers.loadbalancer.server.port=3000
 
 networks:
