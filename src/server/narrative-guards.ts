@@ -1622,6 +1622,48 @@ function caughtIt(sentence: string, member: string, item: string, mentions: (t: 
   return named.length === 1 && sameItem(named[0]!, item);
 }
 
+/** Verbs of picking something up off the floor, a counter, the air. */
+const PICK_UP = String.raw`(?:catch(?:es|ing)?|caught|scoop(?:s|ed|ing)?(?:\s+up)?|pick(?:s|ed|ing)?\s+up|gather(?:s|ed|ing)?(?:\s+up)?|collect(?:s|ed|ing)?|grab(?:s|bed|bing)?|snag(?:s|ged|ging)?|snatch(?:es|ed|ing)?(?:\s+up)?|retriev(?:e|es|ed|ing)|recover(?:s|ed|ing)?|sweep(?:s|ing)?\s+up|swept\s+up|pocket(?:s|ed|ing)?|tak(?:e|es|ing)\s+up|took\s+up)`;
+/** A pick-up that did not happen: tried, missed, nearly, not. */
+const NO_PICK_UP = /\b(?:tr(?:y|ies|ied|ying)\s+to|attempt(?:s|ed|ing)?|fail(?:s|ed|ing)?|miss(?:es|ed|ing)?|almost|nearly|reach(?:es|ed|ing)?\s+for|can['’]t|cannot|couldn['’]t|doesn['’]t|didn['’]t|not|never|out\s+of\s+reach|slips?\s+(?:away|free|through))\b/i;
+
+/**
+ * The things lying about (`items`: world items at this place that nobody
+ * holds) that a ruling shows its ACTOR picking up. Round 18 (39PF4D): "Liz
+ * lunges… while the other sweeps a frantic arc across the tilting glass,
+ * catching the scattered bottle caps" — Biz's cap lay in the world, the DM
+ * sent no itemMove, and Liz already held "Bottle caps ×2", so every other
+ * path read it as a thing she had already. A sentence counts when it names
+ * the actor before a pick-up verb, nobody else is named between them (so
+ * "Liz watches as Mabel scoops up…" is Mabel's), the verb's object is the
+ * thing (singular or plural: "caps" is a Bottle cap), outside speech, and
+ * nothing says it failed ("tries to catch", "misses", "nearly").
+ */
+export function actorPicksUp(prose: string, actor: string, items: string[]): string[] {
+  if (!prose || !actor || items.length === 0) return [];
+  const A = esc(firstName(actor));
+  const found: string[] = [];
+  for (const sentence of prose.split(SENTENCES)) {
+    const unquoted = quoteRuns(sentence).filter(r => !r.quoted).map(r => r.text).join(' ');
+    const at = unquoted.search(new RegExp(`\\b${A}\\b`));
+    if (at < 0 || NO_PICK_UP.test(unquoted)) continue;
+    const rest = unquoted.slice(at);
+    for (const item of items) {
+      if (found.some(f => sameItem(f, item))) continue;
+      const nouns = itemNouns(item);
+      if (nouns.length === 0) continue;
+      const re = new RegExp(`\\b${PICK_UP}\\s+(?:(?:the|a|an|her|his|their|its|one|two|both|all|every|each|some|those|these)\\s+)?${ADJS}${nounAlt(nouns)}\\b`, 'i');
+      const m = rest.match(re);
+      if (!m || m.index === undefined) continue;
+      // Between the actor's name and the verb: nobody else named (a capital mid-clause).
+      const between = rest.slice(firstName(actor).length, m.index);
+      if (/(?<![.!?]\s)(?<!^)\b[A-Z][a-z'’-]+/.test(between.replace(/^['’]s\b/, ''))) continue;
+      found.push(item);
+    }
+  }
+  return found;
+}
+
 // ─── A ruling's item changes, reconciled ───────────────────────────────────
 
 export interface ItemChange { characterId?: string; field?: string; action?: string; value?: unknown }
@@ -2498,6 +2540,30 @@ function closeOpenQuotes(p: string, kind: 'straight' | 'curly'): string {
 }
 
 /**
+ * A paragraph that opens inside someone's speech — its first quote mark
+ * closes a quotation that never opened — loses that fragment: everything up
+ * to the closing mark is speech with its speaker and its first words cut
+ * off. Round 18 (39PF4D): a ruling opened `Liz, hold the form flat so it
+ * doesn't turn into a bird again." Liz's hand tightens…` — the echo
+ * stripper had taken the front of Biz's line, and the kin fix then made
+ * "Mom" into "Liz" in what had been speech. A whole quotation is kept.
+ */
+function withoutLeadingHalfQuote(p: string): string {
+  const firstStraight = p.indexOf('"');
+  const firstOpenCurly = p.indexOf('“');
+  const firstCloseCurly = p.indexOf('”');
+  let cut = -1;
+  if (firstStraight >= 0 && (p.match(/"/g) ?? []).length % 2 === 1 && !opensAt(p, firstStraight) && (firstOpenCurly < 0 || firstStraight < firstOpenCurly)) cut = firstStraight;
+  else if (firstCloseCurly >= 0 && (firstOpenCurly < 0 || firstCloseCurly < firstOpenCurly) && (firstStraight < 0 || firstCloseCurly < firstStraight)) cut = firstCloseCurly;
+  if (cut < 0) return p;
+  const lead = p.match(/^\s*/)![0];
+  const rest = p.slice(cut + 1).replace(/^\s+/, '');
+  if (!rest.trim()) return p; // nothing after it: leave the paragraph as written
+  console.log(`[guard] half a quotation dropped: "${p.slice(0, cut + 1).slice(0, 80)}"`);
+  return lead + rest;
+}
+
+/**
  * Quote marks the model left unbalanced in the public text, tidied
  * (round 15, RZBU7G). qwen writes speech in single quotes inside its JSON
  * and loses track of a quote nested in one: `…the word "taxation.'`, and
@@ -2512,12 +2578,147 @@ export function tidyQuotes(text: string): string {
   const out = text.split(/(\n+)/).map(p => {
     if (/^\n+$/.test(p) || !p.trim()) return p;
     let q = p.replace(/([.!?…])(['’"”]),\s+(?=[A-Z])/g, '$1$2 ');
+    q = withoutLeadingHalfQuote(q);
     if ((q.match(/"/g) ?? []).length % 2 === 1) q = closeOpenQuotes(q, 'straight');
     if ((q.match(/“/g) ?? []).length > (q.match(/”/g) ?? []).length) q = closeOpenQuotes(q, 'curly');
     return q;
   }).join('');
   if (out !== text) console.log(`[guard] quotes tidied: ${changedSpan(text, out)}`);
   return out;
+}
+
+/**
+ * Sentences, with a quotation kept whole: a sentence break inside someone's
+ * speech ("…the right one? Mom, hold the form…") does not split it.
+ */
+export function quoteAwareSentences(text: string): string[] {
+  const parts = text.split(SENTENCES);
+  const out: string[] = [];
+  let open = '';
+  const unbalanced = (t: string) => (t.match(/"/g) ?? []).length % 2 === 1 || (t.match(/“/g) ?? []).length > (t.match(/”/g) ?? []).length;
+  for (const part of parts) {
+    open = open ? `${open} ${part}` : part;
+    if (!unbalanced(open)) { out.push(open); open = ''; }
+  }
+  if (open) out.push(open);
+  return out;
+}
+
+/**
+ * A ruling that opens by restating the actor's action ("Biz slips a second
+ * bottle cap into the tote bag pocket and asks, '…'") loses that opening —
+ * the table has just read the action. The opening is a whole sentence, and
+ * a quotation in it is dropped whole: round 18 (39PF4D), splitting at the
+ * "?" inside Biz's line left the ruling opening mid-quote. Needs at least
+ * min(4, 60% of the action's words) of the action's longer words, and
+ * something left after it.
+ */
+export function withoutEchoedAction(narration: string, action: string): string {
+  const actionWords = new Set(action.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3));
+  if (!narration || actionWords.size === 0) return narration;
+  const sentences = quoteAwareSentences(narration);
+  if (sentences.length <= 1) return narration;
+  const firstWords = sentences[0]!.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3);
+  const overlap = firstWords.filter(w => actionWords.has(w)).length;
+  if (overlap < Math.min(4, actionWords.size * 0.6)) return narration;
+  console.log(`[game-loop] Stripped echo sentence (${overlap} overlapping words)`);
+  return sentences.slice(1).join(' ');
+}
+
+/** Words that read as describing something ("small", "velvety", "grumpy") — never a verb ("watches") or a plain noun ("clerk"). */
+const ADJECTIVE_WORDS = new Set(['small', 'little', 'tiny', 'big', 'large', 'huge', 'old', 'young', 'soft', 'grey', 'gray', 'brown', 'red', 'blue', 'green', 'white', 'black', 'pink', 'fat', 'round', 'new', 'odd', 'shy', 'sly', 'wee', 'damp', 'plump', 'proud', 'prim', 'stern', 'calm', 'kind', 'wise', 'pale', 'dark', 'bright', 'warm', 'cold', 'quiet', 'loud', 'brave', 'polite', 'gentle', 'grand', 'tall', 'short', 'long', 'thin', 'sleek', 'prickly', 'same', 'very', 'ever-so']);
+function describes(word: string): boolean {
+  const w = word.toLowerCase().replace(/,$/, '');
+  if (ADJECTIVE_WORDS.has(w)) return true;
+  if (/(?:ous|less)$/.test(w)) return true;
+  if (/s$/.test(w)) return false;
+  return /(?:[^aeiou]y|ful|ive|ic|al|ish|able|ible|ent|ant|ed|en|ing|est)$/.test(w) && w.length > 3;
+}
+
+/**
+ * "A small, velvety The Dust Bunny" → "A small, velvety Dust Bunny" (round
+ * 18, 39PF4D): an NPC name that starts with "The" dropped in after an
+ * article, or an article and describing words. Directly after an article
+ * ("the The Pigeon") always; after "a"/"an" and describing words; after
+ * "the" only with two or more describing words ("the small, grumpy The
+ * Pigeon") — "the lobby The Pigeon…" is left as written.
+ */
+export function withoutTheAfterArticle(text: string): string {
+  if (!text || !/\sThe\s+[A-Z]/.test(text)) return text;
+  const out = text.replace(/\b([Aa]n?|[Tt]he|[Tt]his|[Tt]hat|[Ii]ts|[Hh]is|[Tt]heir|[Mm]y|[Yy]our|[Oo]ur)(\s+(?:[a-z][\w'’-]*,?\s+){0,3}?)The\s+(?=[A-Z])/g, (whole, article: string, mid: string) => {
+    const words = mid.trim() ? mid.trim().split(/\s+/) : [];
+    if (words.length === 0) return `${article}${mid}`;
+    if (/,$/.test(words[words.length - 1]!) || !words.every(describes)) return whole;
+    const indefinite = /^an?$/i.test(article);
+    if (!indefinite && words.length < 2) return whole;
+    return `${article}${mid}`;
+  });
+  if (out !== text) console.log(`[guard] "The" after an article: ${changedSpan(text, out)}`);
+  return out;
+}
+
+// ─── Options in the present ─────────────────────────────────────────────────
+
+const PAST_IRREGULAR: Record<string, string> = {
+  took: 'take', went: 'go', ran: 'run', gave: 'give', held: 'hold', told: 'tell', said: 'say', found: 'find', caught: 'catch', brought: 'bring',
+  made: 'make', sat: 'sit', stood: 'stand', wrote: 'write', drew: 'draw', threw: 'throw', knelt: 'kneel', slid: 'slide', hid: 'hide', spoke: 'speak',
+  kept: 'keep', swept: 'sweep', crept: 'creep', began: 'begin', chose: 'choose', got: 'get', felt: 'feel', saw: 'see', thought: 'think', sought: 'seek', taught: 'teach',
+};
+/** Words ending in -ed that are not a past tense. */
+const NOT_PAST = new Set(['red', 'bed', 'shed', 'sled', 'wed', 'need', 'seed', 'feed', 'speed', 'weed', 'reed', 'deed', 'breed', 'greed', 'heed', 'bleed', 'proceed', 'succeed', 'exceed', 'naked', 'sacred', 'wicked', 'rugged', 'ragged', 'beloved', 'crooked', 'jagged', 'hundred', 'kindred', 'embed', 'unwed', 'bred', 'fled', 'led', 'fed', 'sped', 'shred', 'bled']);
+
+/** A regular past tense's present form, or null when it cannot be told ("hoped": hop or hope?). */
+function presentOf(past: string): string | null {
+  const w = past.toLowerCase();
+  if (PAST_IRREGULAR[w]) return PAST_IRREGULAR[w]!;
+  if (!/ed$/.test(w) || w.length < 4 || NOT_PAST.has(w)) return null;
+  if (/[^aeiou]ied$/.test(w)) return w.slice(0, -3) + 'y';
+  const stem = w.slice(0, -2);
+  if (/(bb|dd|gg|mm|nn|pp|rr|tt)$/.test(stem)) return stem.slice(0, -1);
+  if (/[^aeiou]l$/.test(stem) && !/ll$/.test(stem)) return stem + 'e';
+  if (/(?:[cvzu]|dg)$/.test(stem)) return stem + 'e';
+  if (/[^su]s$/.test(stem) && !/ss$/.test(stem)) return stem + 'e';
+  if (/(?:[wxy]|sh|ch|ck|ll|ss|ff|th|[^aeiou][^aeiou])$/.test(stem)) return stem;
+  if (/[aeiou]{2}[^aeiou]$/.test(stem)) return stem;
+  if (stem.length >= 4 && /(?:en|on|er|or|it|et|om|ow|el|al)$/.test(stem)) return stem;
+  return null;
+}
+const matchFirstCase = (model: string, word: string) => (/^[A-Z]/.test(model) ? word.charAt(0).toUpperCase() + word.slice(1) : word);
+
+/**
+ * Options are first-person present or imperative ("Circle the exit code",
+ * "I grab the clip"). Round 18 (39PF4D): Liz was offered "Circled the exit
+ * code in blue ink…". An option that opens on a past tense (or "I" and a
+ * past tense) is put in the present when the verb's present is certain;
+ * one whose present cannot be told is dropped while others remain. Never
+ * empties the list.
+ */
+export function optionsInPresent<T extends { description: string }>(options: T[]): T[] {
+  const cut: string[] = [];
+  const out: T[] = [];
+  const unsure: T[] = [];
+  for (const o of options) {
+    const m = o.description.match(/^(\s*(?:I\s+)?)([A-Za-z]+)\b/);
+    const verb = m?.[2] ?? '';
+    const lower = verb.toLowerCase();
+    const past = !!m && lower !== 'i' && (/ed$/.test(lower) && !NOT_PAST.has(lower) || !!PAST_IRREGULAR[lower]);
+    if (!past) { out.push(o); continue; }
+    const present = presentOf(verb);
+    if (present) {
+      const fixed = `${m![1]}${matchFirstCase(verb, present)}${o.description.slice(m![0].length)}`;
+      console.log(`[options] past tense put in the present: "${o.description.slice(0, 60)}" → "${fixed.slice(0, 60)}"`);
+      out.push({ ...o, description: fixed });
+    } else {
+      unsure.push(o);
+    }
+  }
+  if (unsure.length === 0) return out;
+  if (out.length >= 1) {
+    cut.push(...unsure.map(o => o.description));
+    console.log(`[options] dropped option(s) in the past tense: ${cut.map(c => `"${c}"`).join(', ')}`);
+    return out;
+  }
+  return options;
 }
 
 // ─── Repetition ─────────────────────────────────────────────────────────────
@@ -2721,7 +2922,11 @@ export function narratesGoneItemInHand(prose: string, items: string[]): string[]
 }
 
 /** Head nouns of things, never people. */
-const THING_NOUNS = new Set(['manual', 'form', 'ticket', 'key', 'stamp', 'book', 'ledger', 'letter', 'note', 'map', 'card', 'pen', 'pencil', 'button', 'coin', 'badge', 'token', 'file', 'folder', 'document', 'paper', 'scroll', 'envelope', 'receipt', 'clipboard', 'lanyard', 'compass', 'lantern', 'bottle', 'cap', 'box', 'bag', 'tote', 'umbrella', 'notebook', 'pamphlet', 'brochure', 'certificate', 'permit', 'license', 'licence', 'pass', 'voucher', 'seal', 'ribbon', 'memo', 'report', 'record', 'register', 'index', 'catalogue', 'catalog', 'directory', 'guide', 'handbook', 'rulebook', 'instructions', 'slip', 'stub', 'tag', 'label', 'sticker', 'wrapper', 'bar', 'snack', 'cup', 'mug', 'teacup', 'spoon', 'fork', 'plate', 'jar', 'tin', 'crate', 'chest', 'trunk', 'basket', 'purse', 'wallet', 'coat', 'hat', 'scarf', 'glove', 'shoe', 'boot', 'ring', 'necklace', 'locket', 'watch', 'glasses', 'spectacles', 'lens', 'magnifier', 'stapler', 'staple', 'paperclip', 'ink', 'inkwell', 'quill', 'eraser', 'ruler', 'rubber', 'whistle', 'bell', 'candle', 'torch', 'flashlight', 'battery', 'rope', 'chain', 'lock', 'padlock', 'hinge', 'screw', 'bolt', 'nail']);
+const THING_NOUNS = new Set(['manual', 'form', 'ticket', 'key', 'stamp', 'book', 'ledger', 'letter', 'note', 'map', 'card', 'pen', 'pencil', 'button', 'coin', 'badge', 'token', 'file', 'folder', 'document', 'paper', 'scroll', 'envelope', 'receipt', 'clipboard', 'lanyard', 'compass', 'lantern', 'bottle', 'cap', 'box', 'bag', 'tote', 'umbrella', 'notebook', 'pamphlet', 'brochure', 'certificate', 'permit', 'license', 'licence', 'pass', 'voucher', 'seal', 'ribbon', 'memo', 'report', 'record', 'register', 'index', 'catalogue', 'catalog', 'directory', 'guide', 'handbook', 'rulebook', 'instructions', 'slip', 'stub', 'tag', 'label', 'sticker', 'wrapper', 'bar', 'snack', 'cup', 'mug', 'teacup', 'spoon', 'fork', 'plate', 'jar', 'tin', 'crate', 'chest', 'trunk', 'basket', 'purse', 'wallet', 'coat', 'hat', 'scarf', 'glove', 'shoe', 'boot', 'ring', 'necklace', 'locket', 'watch', 'glasses', 'spectacles', 'lens', 'magnifier', 'stapler', 'staple', 'paperclip', 'ink', 'inkwell', 'quill', 'eraser', 'ruler', 'rubber', 'whistle', 'bell', 'candle', 'torch', 'flashlight', 'battery', 'rope', 'chain', 'lock', 'padlock', 'hinge', 'screw', 'bolt', 'nail',
+  // Furniture and fixtures (round 18, 39PF4D: "Card Door" and "Filing Cabinets" were filed as NPCs).
+  'door', 'doorway', 'gate', 'hatch', 'cabinet', 'drawer', 'desk', 'chair', 'stool', 'bench', 'table', 'counter', 'window', 'mirror',
+  'shelf', 'shelve', 'bookcase', 'bookshelf', 'cupboard', 'wardrobe', 'closet', 'locker', 'dresser', 'sofa', 'couch', 'bed', 'lamp',
+  'curtain', 'rug', 'carpet', 'staircase', 'stair', 'elevator', 'vent', 'grate', 'kiosk', 'booth', 'turnstile', 'typewriter', 'printer']);
 /** A title before a name: a person, whatever their name's last word. */
 const PERSON_TITLE = /^(?:mr|mrs|ms|mx|dr|sir|dame|lady|lord|madame|madam|mistress|miss|master|clerk|captain|officer|agent|auntie|aunt|uncle|mama|papa|granny|grandma|grandpa|old|little|saint|st|professor|prof|keeper|warden|inspector|sergeant|judge|mayor|chief)\.?\s/i;
 
@@ -2729,7 +2934,8 @@ const PERSON_TITLE = /^(?:mr|mrs|ms|mx|dr|sir|dame|lady|lord|madame|madam|mistre
 export function isItemLikeName(name: string): boolean {
   const bare = name.trim().replace(/^(?:the|a|an)\s+/i, '');
   if (!bare || PERSON_TITLE.test(bare)) return false;
-  const head = itemHead(bare);
+  // "Window Four", "Drawer Seven": a number after the noun is its label.
+  const head = itemHead(bare.replace(/\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|[ivx]+)$/i, ''));
   return !!head && THING_NOUNS.has(head);
 }
 

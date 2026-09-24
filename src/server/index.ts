@@ -896,7 +896,11 @@ wss.on('connection', (ws) => {
 
       let validation;
       try {
-        validation = await dm.validateCharacter(msg.definition, campaign.systemId);
+        // Round 18 (39PF4D): the approval is written in the table's register,
+        // against the world this table is running.
+        let premise: string | null = null;
+        try { premise = getWorldSeed(db, campaign.id)?.premise ?? null; } catch { premise = null; }
+        validation = await dm.validateCharacter(msg.definition, campaign.systemId, { gentlePeril: tableWantsGentlePeril(db, campaign.id), premise });
       } catch (e) {
         console.error('[submit-character] validation failed:', e);
         send(ws, { type: 'character-validated', characterId: charId, approved: false, feedback: 'Character validation failed — please try again.' });
@@ -1359,6 +1363,7 @@ wss.on('connection', (ws) => {
           unmet: before.detail,
           tableCharacters,
           statedPronouns,
+          gentlePeril: tableWantsGentlePeril(db, campaign.id),
         };
         let reply = await dm.interviewForCharacter(interviewOpts);
         // Live (WXKC2C): Liz's second reply was her first, word for word,

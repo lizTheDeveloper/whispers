@@ -376,7 +376,11 @@ export function listTableCharacters(db: Database.Database, campaignId: string, e
   for (const row of db.prepare('SELECT definition FROM pending_characters WHERE campaign_id = ? AND session_token != ? ORDER BY created_at').all(campaignId, excludeSessionToken) as Array<{ definition: string }>) {
     add(row.definition);
   }
-  for (const row of db.prepare("SELECT definition FROM character_interviews WHERE campaign_id = ? AND session_token != ? AND definition IS NOT NULL AND status != 'revoked' ORDER BY created_at").all(campaignId, excludeSessionToken) as Array<{ definition: string }>) {
+  // The running draft too, not only a finished sheet (round 18, 39PF4D):
+  // Biz had said "they/them" in their first message, but their sheet was
+  // not finished yet, so Liz's interview wrote "her son's needs" knowing
+  // nothing of Biz. The draft is the sheet as it stands.
+  for (const row of db.prepare("SELECT COALESCE(draft, definition) AS definition FROM character_interviews WHERE campaign_id = ? AND session_token != ? AND (definition IS NOT NULL OR draft IS NOT NULL) AND status != 'revoked' ORDER BY created_at").all(campaignId, excludeSessionToken) as Array<{ definition: string }>) {
     add(row.definition);
   }
   return out;

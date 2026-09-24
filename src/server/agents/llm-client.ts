@@ -1,3 +1,4 @@
+import { englishOnly } from '../stray-script.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { z } from 'zod';
 import { endsInTitle } from '../sentences.js';
@@ -243,6 +244,9 @@ function cleanReplyText(raw: string): string {
   // Strip Qwen3 thinking tags (closed or unclosed at end of output)
   text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
   if (text.startsWith('<think>')) return '';
+  // Round 18 (39PF4D): "Sharply瞪 The Pigeon" in an option. Every reply —
+  // JSON or prose — is English; a stray letter of another script goes.
+  text = englishOnly(text);
 
   // Strip roleplay markers that may wrap the response — leading and
   // trailing checked independently (not gated on one another), and NOT

@@ -426,6 +426,29 @@ export function childToneRule(party: PartyMember[], opts: { gentlePeril?: boolea
  * table. Only the host's own words count — the DM asking "do you want
  * gentle peril?" is not the host asking for it. '' when the host has not.
  */
+/** Words that call a game horror — never how a gentle table's game is described. */
+const HORROR_WORDS = /\b(?:horror|horrors|horrific|horrifying|nightmares?|nightmarish|terror|terrifying|dread|dreadful|creepy|sinister|macabre|grim|grimdark|uncanny|eerie|chilling|disturbing|dark)\b/i;
+/** A player character called an NPC or someone's companion. */
+const NPC_WORDS = /\bNPCs?\b|\bnon-?player\b|\bcompanion\s+(?:character|NPC)\b|\b(?:child|kid)\s+companion\b|\bsidekick\b/i;
+const PLAIN_APPROVAL = 'Your character fits this world and this table.';
+
+/**
+ * The approval feedback as a player sees it (round 18, 39PF4D): a sentence
+ * that calls their player character an NPC or a companion goes, and at a
+ * gentle table so does one that calls the game horror ("a grounded,
+ * bureaucratic horror campaign… an uncanny administrative nightmare").
+ * Nothing left: one plain line.
+ */
+export function validationFeedbackAsShown(feedback: string, opts: { gentlePeril?: boolean } = {}): string {
+  if (!feedback?.trim()) return feedback;
+  const sentences = feedback.split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter(sentence => !NPC_WORDS.test(sentence) && !(opts.gentlePeril && HORROR_WORDS.test(sentence)));
+  if (kept.length === sentences.length) return feedback;
+  const out = kept.join(' ').trim() || PLAIN_APPROVAL;
+  console.log(`[validation] feedback tidied: "${feedback.slice(0, 100)}" → "${out.slice(0, 100)}"`);
+  return out;
+}
+
 export function setupToneRule(history: Array<{ role: string; content: string }>): string {
   if (!wantsGentlePeril(history.filter(m => m.role === 'user').map(m => m.content))) return '';
   return `\n\nGENTLE PERIL: the host asked for gentle peril. Everything you write — "reply", dmInstructions and dmCustomPrompt, and every example dangers you offer the host to choose from — stays in the ${GENTLE_PERIL_REGISTER}`;
@@ -1239,19 +1262,26 @@ ${people}${pronounRule ? `\n\n${pronounRule}` : ''}${partyRule}${toneRule}${feed
     tableCharacters?: Array<{ name: string; highConcept: string; pronouns?: string | null }>;
     /** Pronouns the player already stated for this character (pronounsStatedIn). */
     statedPronouns?: string | null;
+    /** The host asked for gentle peril: every example scenario the interview pictures is gentle. */
+    gentlePeril?: boolean;
   }): Promise<CharInterviewReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'character creation aspects skills stunts');
     // No plot hooks: whatever this prompt knows can end up in the player's
     // backstory, and from there in the character agent's prompt every turn.
     const tableCharacters = (opts.tableCharacters ?? []).filter(c => c.name.trim());
     const tableBlock = tableCharacters.length > 0
-      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}${neutralPronouns(c.pronouns) ? ` — ${neutralNounRule(c.name, c.pronouns)}` : ''}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). The same holds in the sheet you write — the personality, backstory, aspects and trouble: a person listed here keeps their own pronouns there too, whatever this character's are (Liz listed as she/her: a they/them kid is "afraid of losing her", never "afraid of losing them"). Use the relation word the player used ("kid" stays "kid").\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
+      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}${neutralPronouns(c.pronouns) ? ` — ${neutralNounRule(c.name, c.pronouns)}` : ''}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). The same holds in the sheet you write — the personality, backstory, aspects and trouble: a person listed here keeps their own pronouns there too, whatever this character's are (Liz listed as she/her: a they/them kid is "afraid of losing her", never "afraid of losing them"). Use the relation word the player used ("kid" stays "kid"). A person listed here as never "son", "daughter", "boy" or "girl" is never one anywhere in the sheet either, even unnamed: a they/them kid is "her kid's needs", never "her son's needs".\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
       : '';
     const worldBlock = opts.seed
       ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => { const p = seedNpcPronouns([n])[0]?.pronouns; return `${n.name} (${[p, publicDisposition(n.disposition) ?? 'unknown'].filter(Boolean).join(', ')})`; }).join(', ')}\n${npcPronounBlock(seedNpcPronouns(opts.seed.npcs.slice(0, 5)))}\n`
       : '';
     const unmetBlock = opts.unmet.length > 0
       ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nEvery reply asks about at least one of these — the way a person would, one or two at a time.\n`
+      : '';
+    // Round 18 (39PF4D, gentle peril): Liz was asked "If a vine starts
+    // coiling around Biz's ankle…".
+    const gentleBlock = opts.gentlePeril
+      ? `\nGENTLE TABLE: the host asked for gentle peril. Every place and moment you picture in a question — every "picture your character…" and "what would they do if…" — stays in the ${GENTLE_PERIL_REGISTER} Picture a lost form, a muddled queue, a grumpy clerk, a door that will not open, a snack gone missing — never anything that grabs, coils around, traps, chases, bites or hurts anyone ("a vine starts coiling around Biz's ankle" is out), and never a child in danger. When you describe the game or the world, use that register too: never "horror", "nightmare" or "dread".\n`
       : '';
     const pronounsBlock = opts.statedPronouns?.trim()
       ? `\nPRONOUNS ALREADY GIVEN: the player said this character uses ${opts.statedPronouns.trim()}. Put "${opts.statedPronouns.trim()}" in "pronouns", use them, and never ask about pronouns or how to refer to them again.\n`
@@ -1274,7 +1304,7 @@ Open indirect. Use direct questions only to close the gaps listed below. Never p
 Aim them at characters with INTERNAL TENSION: a clear strength and a clear vulnerability. The trouble should create genuine dilemmas, not minor inconveniences, and it should have somewhere to bite in THIS world.
 
 If age matters to who they are — especially if they are a child or elderly — find out roughly how old they are.
-${worldBlock}${tableBlock}${unmetBlock}${pronounsBlock}${ruleContext ? `\nRules reference:\n${ruleContext}\n` : ''}
+${worldBlock}${tableBlock}${gentleBlock}${unmetBlock}${pronounsBlock}${ruleContext ? `\nRules reference:\n${ruleContext}\n` : ''}
 
 CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON.
 
@@ -1315,17 +1345,31 @@ SOMEONE ELSE IN THE SHEET: the personality, backstory, aspects and trouble are a
    * world and rules system this table is running — plus the feedback
    * sentence and any modifications it wants to propose.
    */
-  async validateCharacter(definition: CharacterDefinition, systemId: string): Promise<CharacterValidation> {
+  async validateCharacter(definition: CharacterDefinition, systemId: string, opts: {
+    /** The host asked for gentle peril: the feedback speaks in the table's register. */
+    gentlePeril?: boolean;
+    /** The world's premise, so "fits the world" is judged against the world this table is running. */
+    premise?: string | null;
+  } = {}): Promise<CharacterValidation> {
     const ruleContext = this.lookupRules(systemId, 'character creation skills aspects');
+    const world = opts.premise?.trim() ? `\n\nThe world this table is running: ${opts.premise.trim()}` : '';
+    // Round 18 (39PF4D): Liz, at a gentle table, was told her character "fits
+    // the tone of a grounded, bureaucratic horror campaign… an uncanny
+    // administrative nightmare"; Biz that theirs fits "as a child companion or NPC".
+    const register = opts.gentlePeril
+      ? `\n\nGENTLE TABLE: the host asked for gentle peril, and the feedback speaks in that register — warm, cosy, gently funny. Describe the game only as the table runs it, in the ${GENTLE_PERIL_REGISTER} Never call the game, the world or its tone horror, a nightmare, dread, uncanny, sinister, grim, creepy or dark.`
+      : '';
+    const pc = `\n\nPLAYER CHARACTER: this sheet is a player character, played by a person at this table. It is never an NPC, a companion NPC, a sidekick or someone else's companion — even a child who travels with a parent is that player's own character. The feedback speaks to the player about their own character.`;
 
-    return callLlm({
+    const result = await callLlm({
       messages: [
-        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.${ruleContext ? `\n\nRules reference:\n${ruleContext}` : ''}\n\nThis sheet has already passed the game's own required-fields check AND its mechanical/structural validation — every field is present, and every numeric or structural rule this system defines (skill ranks, point totals, refresh, pyramid shape, or anything else along those lines) has already been checked and enforced by the server before this ever reached you. Do NOT re-check, re-litigate, or invent any mechanical or structural rule of your own — including ones that sound plausible but appear nowhere above, like a "refresh" field or a "standard" skill-point limit. If a rule is not stated in the reference above, it is not yours to enforce. Your ONLY job is a judgment call the server cannot make: does this character actually FIT the world this campaign is running and its tone — do the concept, trouble, personality, and backstory read as belonging at this table, or as dropped in from somewhere else entirely? Reject only for a genuine world-fit or tone problem, never a mechanical one and never a matter of taste. If a small tweak would fix it, propose that in modifications instead of rejecting outright.` },
+        { role: 'system', content: `You are a character sheet validation API. You output ONLY JSON. No roleplay, no asterisks, no prose.${ruleContext ? `\n\nRules reference:\n${ruleContext}` : ''}${world}${pc}${register}\n\nThis sheet has already passed the game's own required-fields check AND its mechanical/structural validation — every field is present, and every numeric or structural rule this system defines (skill ranks, point totals, refresh, pyramid shape, or anything else along those lines) has already been checked and enforced by the server before this ever reached you. Do NOT re-check, re-litigate, or invent any mechanical or structural rule of your own — including ones that sound plausible but appear nowhere above, like a "refresh" field or a "standard" skill-point limit. If a rule is not stated in the reference above, it is not yours to enforce. Your ONLY job is a judgment call the server cannot make: does this character actually FIT the world this campaign is running and its tone — do the concept, trouble, personality, and backstory read as belonging at this table, or as dropped in from somewhere else entirely? Reject only for a genuine world-fit or tone problem, never a mechanical one and never a matter of taste. If a small tweak would fix it, propose that in modifications instead of rejecting outright.` },
         { role: 'user', content: `Validate:\n${JSON.stringify(definition, null, 2)}\n\nRespond as JSON: {"approved": <your judgement, true or false>, "feedback": "one sentence explaining it", "modifications": null, or an object with only the fields you want changed}` },
       ],
       schema: CharacterValidationSchema,
       temperature: 0.2,
     });
+    return { ...result, feedback: validationFeedbackAsShown(result.feedback, { gentlePeril: opts.gentlePeril }) };
   }
 
   /** `pronounNote`: everyone's pronouns (castPronounLine) — a summary is read back into every later prompt. */

@@ -300,6 +300,8 @@ export class CharacterAgent {
       `\n<events>\n${recentTranscript}\n</events>`,
       `\n<task>`,
       `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action MUST involve them directly — ${ADDRESS_DIRECTIVE}: "I tell ${companionNames || 'my companion'} to watch the door" or "I ask ${companionNames || 'my companion'} for their opinion on..." — parties are parties because members interact.`,
+      // Round 18 (39PF4D): "Circled the exit code in blue ink…" was offered.
+      `Write every action as something you are about to do, in the present tense: first person ("I circle the exit code") or an instruction to yourself ("Circle the exit code") — never the past tense ("Circled the exit code", "I circled…"). Plain English words only.`,
       `AVOID repeating actions from recent events. If you recently smiled, try confronting instead. If you recently fought, try investigating. Vary your approach.`,
       `Respond as JSON: { "actions": [{ "description": "short action", "reasoning": "brief why" }, ...] }`,
       `</task>`,

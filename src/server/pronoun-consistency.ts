@@ -401,6 +401,40 @@ function isNeutral(m: PronounMember): boolean {
 export interface ChildNounOptions {
   /** NPCs by name: a sentence naming one could mean their son, their boy, their "its". */
   npcNames?: string[];
+  /**
+   * The sheet this text is from: its owner is who "her son" / "my son" means
+   * when no one else the possessive fits is named (round 18, 39PF4D: Liz's
+   * backstory, "balancing books and her son's needs", Biz they/them). A
+   * place ("from Ohio", "of Unfinished Business") is not someone else.
+   */
+  owner?: PronounMember;
+}
+
+/** A capitalised word right after one of these is a place or a thing, not a person: "from Ohio", "in the District of Unfinished Business". */
+const PLACE_BEFORE = /\b(?:from|in|of|at|to|into|near|outside|inside|across|through|toward|towards)\s+(?:the\s+)?$/i;
+
+/**
+ * Someone the party does not know is named here — sheet text, which is
+ * about its owner: a place after "from", "in", "of"… is not a person, and
+ * neither is the word a sheet line opens on ("Calm and protective of her
+ * son", "Unflappable under pressure").
+ */
+function namesSomeoneElseInSheet(sentence: string, members: PronounMember[]): boolean {
+  const party = new Set(members.map(m => firstName(m.name).toLowerCase()));
+  const opening = sentence.search(/\S/);
+  for (const run of quoteRuns(sentence)) {
+    if (run.quoted) continue;
+    for (const m of run.text.matchAll(/(?<![\w'’-])([A-Z][a-z'’-]+)/g)) {
+      const lower = m[1]!.replace(/['’]s$/, '').toLowerCase();
+      if (party.has(lower) || COMMON_CAPITALISED.has(lower)) continue;
+      if (run.text === sentence && m.index === opening) continue;
+      const before = run.text.slice(0, m.index);
+      if (/\b(?:the|The)\s+(?:[A-Z][\w'’-]*\s+)*$/.test(before)) continue;
+      if (PLACE_BEFORE.test(before) || /\b(?:from|in|of|at|to)\s+(?:the\s+)?(?:[A-Z][\w'’-]*\s+)+$/.test(before)) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -431,11 +465,12 @@ export function repairChildNouns(text: string, members: PronounMember[], opts: C
   const kinTest = /\b(?:son|daughter|boy|girl|its)\b/i;
   if (!kinTest.test(text)) return text;
   const namesNpc = npcMatcher(members, opts.npcNames ?? []);
+  const owner = opts.owner ? members.find(m => firstName(m.name).toLowerCase() === firstName(opts.owner!.name).toLowerCase()) ?? opts.owner : undefined;
   const { lead, list } = pieces(text);
   let changed = false;
   const out = list.map(p => {
     const sentence = p.text;
-    if (!kinTest.test(sentence) || namesNpc(sentence) || namesSomeoneElse(sentence, members)) return p.text + p.sep;
+    if (!kinTest.test(sentence) || namesNpc(sentence) || (owner ? namesSomeoneElseInSheet(sentence, members) : namesSomeoneElse(sentence, members))) return p.text + p.sep;
     const named = members.filter(m => mentions(sentence, m));
     const namedTargets = targets.filter(t => named.includes(t));
     let pos = 0;
@@ -445,13 +480,17 @@ export function repairChildNouns(text: string, members: PronounMember[], opts: C
       if (run.quoted) return run.text;
       let t = run.text;
       // "her son", "Liz's little boy".
-      t = t.replace(new RegExp(String.raw`\b(her|his|their|([A-Z][\w-]*)['’]s)(\s+${CHILD_ADJ})(son|daughter|boy|girl)\b(?!['’]?\s*[A-Z])`, 'g'), (whole, poss: string, owner: string | undefined, mid: string, noun: string) => {
+      t = t.replace(new RegExp(String.raw`\b([Hh]er|[Hh]is|[Tt]heir|[Mm]y|([A-Z][\w-]*)['’]s)(\s+${CHILD_ADJ})(son|daughter|boy|girl)\b(?!['’]?\s*[A-Z])`, 'g'), (whole, poss: string, possessor: string | undefined, mid: string, noun: string) => {
         let parent: PronounMember | undefined;
-        if (owner) parent = members.find(m => firstName(m.name) === owner);
+        const p = poss.toLowerCase();
+        if (possessor) parent = members.find(m => firstName(m.name) === possessor);
+        else if (p === 'my') parent = owner;
         else {
-          const want: Key = poss === 'her' ? 'she' : poss === 'his' ? 'he' : 'they';
+          const want: Key = p === 'her' ? 'she' : p === 'his' ? 'he' : 'they';
           const fits = named.filter(m => keyOf(m.pronouns) === want);
           parent = fits.length === 1 ? fits[0] : undefined;
+          // A sheet's "her son", nobody else it could be named: the owner's.
+          if (!parent && owner && fits.length === 0 && keyOf(owner.pronouns) === want) parent = owner;
         }
         if (!parent) return whole;
         const child = onlyChildInParty(parent, members);
@@ -558,8 +597,10 @@ export function neutralSetupNouns(text: string, hostMessages: string[]): string 
 type SheetText = Pick<CharacterDefinition, 'highConcept' | 'trouble' | 'aspects' | 'personality' | 'backstory' | 'stunts'>;
 
 /** A sheet's prose fields with repairGenderedNouns applied (unknown pronouns read as they/them: nobody has said otherwise). */
-export function sheetWithNeutralNouns<T extends Partial<SheetText>>(sheet: T, members: PronounMember[]): T {
-  const fix = (s: string) => repairGenderedNouns(s, members, { neutralWhenUnknown: true });
+export function sheetWithNeutralNouns<T extends Partial<SheetText> & { name?: string | null }>(sheet: T, members: PronounMember[]): T {
+  // The sheet's owner is who its "her son" means (round 18, 39PF4D).
+  const owner = sheet.name?.trim() ? members.find(m => firstName(m.name).toLowerCase() === firstName(sheet.name!).toLowerCase()) : undefined;
+  const fix = (s: string) => repairChildNouns(repairGenderedNouns(s, members, { neutralWhenUnknown: true }), members, { owner });
   let changed = false;
   const out: Partial<SheetText> = {};
   for (const k of ['highConcept', 'trouble', 'personality', 'backstory'] as const) {

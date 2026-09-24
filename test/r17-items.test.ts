@@ -13,7 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { planItemMoves } from '../src/server/item-moves.js';
 import {
-  moveShownInProse, narratesGoneItemInHand, isItemLikeName, withoutItemLikeEntities, optionsWithoutUnheldHolds,
+  moveShownInProse, narratesGoneItemInHand, isItemLikeName, isSilentThing, withoutItemLikeEntities, optionsWithoutUnheldHolds,
   proseItemName,
 } from '../src/server/narrative-guards.js';
 import { itemsNotOnHandBlock, itemsOnHandBlock } from '../src/server/agents/dm.js';
@@ -76,7 +76,11 @@ describe('3. the ruling told a thing is gone', () => {
 describe('4. things are not people', () => {
   it('item-like names', () => {
     for (const n of ['Missing Manual', 'Correction Form 7-B', 'Blue Ticket', 'Brass Key', 'The Rubber Stamp']) expect(isItemLikeName(n)).toBe(true);
-    for (const n of ['Mistress Prune', 'Clerk Bumble', 'Mr. Whisk', 'The Humming Oak Door']) expect(isItemLikeName(n)).toBe(false);
+    for (const n of ['Mistress Prune', 'Clerk Bumble', 'Mr. Whisk']) expect(isItemLikeName(n)).toBe(false);
+    // Round 18 (39PF4D): a door is a thing's name ("Card Door" was filed as an
+    // NPC) — kept as someone only where the text shows it speaking or acting.
+    expect(isItemLikeName('The Humming Oak Door')).toBe(true);
+    expect(isSilentThing('The Humming Oak Door', '"Apology accepted," says the Humming Oak Door.')).toBe(false);
   });
   it('an extracted "Missing Manual" is not filed as an NPC unless it speaks or acts', () => {
     const facts = { newEntities: [{ name: 'Missing Manual' }, { name: 'Mistress Prune' }] };

@@ -32,7 +32,7 @@ import {
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
   withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames, withoutCount, itemCount, lessOne,
   withoutItemLikeEntities, isSilentThing, optionsWithoutUnheldHolds, narratesGoneItemInHand,
-  withoutMechanics, withoutStrayPronounAfterName, fixIndefiniteArticles, troubleShown, repairKinWordAsVerb, withoutCharacterReading, type MechanicSheet,
+  withoutMechanics, withoutStrayPronounAfterName, fixIndefiniteArticles, withoutTheAfterArticle, optionsInPresent, withoutEchoedAction, actorPicksUp, mergeCount, troubleShown, repairKinWordAsVerb, withoutCharacterReading, type MechanicSheet,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -701,6 +701,8 @@ export class GameLoop {
       fixed = tidyQuotes(fixed);
       // "a engine" (NUMMRL) — the model's, or a substitution's above.
       fixed = fixIndefiniteArticles(fixed);
+      // "A small, velvety The Dust Bunny" (39PF4D).
+      fixed = withoutTheAfterArticle(fixed);
       return fixed;
     } catch (e) {
       console.error('[guard] narration name guard failed, text left as written:', e);
@@ -988,6 +990,26 @@ export class GameLoop {
           this.noteItemLeft(e.item);
           this.worldBible.updateItemHolder(this.campaignId, e.item, null);
           console.log(`[items] ${e.from} no longer holds "${e.item}": the DM's prose shows it gone`);
+        }
+      }
+      // The actor picking up a thing lying here, with no itemMove for it
+      // (round 18, 39PF4D): "catching the scattered bottle caps" while Biz's
+      // cap lay in the world — and Liz, already holding "Bottle caps ×2",
+      // read everywhere else as having it already. One more on her stack.
+      const actor = actorId ? this.characters.get(actorId) : undefined;
+      if (actor) {
+        const here = this.state.currentLocationId ?? null;
+        const lying = this.worldBible.getItemPlaces(this.campaignId)
+          .filter(p => !p.heldBy && !p.heldByPc && !p.gone && (p.locationId === null || p.locationId === here))
+          .map(p => p.name)
+          .filter(n => moved(n).length === 0 && !goneBefore.some(g => sameItem(g, n)));
+        for (const item of actorPicksUp(prose, actor.definition.name, lying)) {
+          const inv = actor.state.inventory ?? [];
+          const held = inv.find(i => sameItem(i, item));
+          actor.state.inventory = held ? inv.map(i => (i === held ? mergeCount(held, item) : i)) : [...inv, item];
+          changed.add(actor.id);
+          this.worldBible.updateItemHolder(this.campaignId, item, actor.id);
+          console.log(`[items] ${moves ? 'cross-check: the DM\'s itemMoves left out a pick-up; ' : ''}${actor.definition.name} picks up "${item}" lying here: the DM's prose shows it${held ? ` (${held} → ${mergeCount(held, item)})` : ''}`);
         }
       }
       // A player's own declared pick-up, once this prose shows it in their hands.
@@ -1868,7 +1890,9 @@ export class GameLoop {
       const cut = before.filter(d => !proposals.actions.some(a => a.description === d));
       if (cut.length > 0) console.log(`[items] ${character.definition.name}: dropped option(s) that reach for a gone thing or mouth a thing: ${cut.map(d => `"${d}"`).join(', ')}`);
     }
-    for (const a of proposals.actions) a.description = fixIndefiniteArticles(a.description);
+    for (const a of proposals.actions) a.description = withoutTheAfterArticle(fixIndefiniteArticles(a.description));
+    // Round 18 (39PF4D): "Circled the exit code…" — options are in the present.
+    proposals.actions = optionsInPresent(proposals.actions);
     // Round 17 (5YHBZS): "I use my Fine Print to find the clause…" — no sheet term as a game term in an option.
     {
       const sheet = this.mechanicSheet(character);
@@ -2584,18 +2608,9 @@ export class GameLoop {
       }
     }
 
-    const actionWords = new Set(decision.chosenAction.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3));
-    if (actionWords.size > 0) {
-      const sentences = resolution.narration.split(SENTENCE_SPLIT);
-      if (sentences.length > 1) {
-        const firstWords = sentences[0]!.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(w => w.length > 3);
-        const overlap = firstWords.filter(w => actionWords.has(w)).length;
-        if (overlap >= Math.min(4, actionWords.size * 0.6)) {
-          resolution.narration = sentences.slice(1).join(' ');
-          console.log(`[game-loop] Stripped echo sentence (${overlap} overlapping words)`);
-        }
-      }
-    }
+    // The opening that restates the action goes — a quotation in it whole
+    // (round 18, 39PF4D: the ruling opened mid-quote).
+    resolution.narration = withoutEchoedAction(resolution.narration, decision.chosenAction);
 
     // A ruling is about its actor even where it never names them ("The ink's glow dims before her eyes…").
     const checkedResolution = await this.checkedProse(resolution.narration, character.definition.name);
@@ -2707,6 +2722,8 @@ export class GameLoop {
     }
     if (this.stopped || this.pauseReason) return;
 
+    // A recap is story: no fate points or aspects (round 18, 39PF4D).
+    summary = withoutMechanics(summary) || summary;
     try {
       summary = await this.consistentProse(summary);
     } catch {
@@ -2732,7 +2749,9 @@ export class GameLoop {
     if (rawSummary === null) return;
     // Guarded once here, so the broadcast, the stored scene and the next
     // scene's "[Previous scene]" line all carry the same repaired text.
-    const summary = await this.checkedProse(rawSummary);
+    // Round 18 (39PF4D): "…earning a fate point and Mabel's approval" — a
+    // summary every seat reads, and the next scene's "[Previous scene]", is story only.
+    const summary = await this.checkedProse(withoutMechanics(rawSummary) || rawSummary);
     if (summary === null) return;
     if (!(await this.pace())) return;
     // The summary is public; each character's whisper record (how often they

@@ -264,15 +264,22 @@ Quick Fingers: +2 to Stealth when picking locks
   const readinessPanel = root.querySelector('#chat-readiness') as HTMLElement;
   const readinessList = root.querySelector('#readiness-list') as HTMLElement;
 
-  function renderReadiness(detail: string[]) {
+  const readinessHeading = root.querySelector('#chat-readiness .readiness-heading') as HTMLElement;
+
+  // Round 18 (39PF4D): "Still shaping this character:" over an empty list
+  // once the sheet was complete. The heading only ever shows over lines
+  // that say something; a ready sheet has nothing left to shape.
+  function renderReadiness(detail: string[], ready = false) {
+    const lines = ready ? [] : detail.map(l => (typeof l === 'string' ? l.trim() : '')).filter(Boolean);
     readinessList.replaceChildren();
-    for (const line of detail) {
+    for (const line of lines) {
       const li = document.createElement('li');
       li.className = 'readiness-item';
       li.textContent = line;
       readinessList.appendChild(li);
     }
-    readinessPanel.classList.toggle('hidden', detail.length === 0);
+    readinessHeading.classList.toggle('hidden', lines.length === 0);
+    readinessPanel.classList.toggle('hidden', lines.length === 0);
   }
 
   // The proposed sheet: name, high concept, trouble, aspects, skills, stunts.
@@ -335,7 +342,7 @@ Quick Fingers: +2 to Stealth when picking locks
     // Every update refreshes the checklist from what the server says now —
     // live (WXKC2C) it kept listing "a high concept, a skill, a stunt" after
     // the preview came back complete. Empty (and hidden) when nothing is left.
-    renderReadiness(readiness?.detail ?? []);
+    renderReadiness(readiness?.detail ?? [], readiness?.ready ?? false);
 
     if (confirmed) {
       previewConfirmBtn.classList.add('hidden');
@@ -388,7 +395,7 @@ Quick Fingers: +2 to Stealth when picking locks
     // resubmits its own stored definition either way); this is purely about
     // not telling the player two things at once.
     chatSubmitBtn.classList.add('hidden');
-    renderReadiness(msg.readiness.detail);
+    renderReadiness(msg.readiness.detail, msg.readiness.ready);
   });
 
   ws.on('interview-replay', (msg) => {

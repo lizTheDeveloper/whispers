@@ -163,3 +163,16 @@ describe('callLlm always sends max_tokens, even when the caller omits it', () =>
     expect(lastRequestBody.max_tokens).toBeGreaterThan(0);
   });
 });
+
+describe('round 18 (39PF4D): stray non-Latin script never leaves the client', () => {
+  it('a JSON reply loses "瞪" from an option, spacing tidied', async () => {
+    nextText = '{"actions":[{"description":"Sharply瞪 The Pigeon, demanding it explain why the code is failing.","reasoning":"r"}]}';
+    const out = await callLlm({ messages: [{ role: 'user', content: 'x' }], schema: z.object({ actions: z.array(z.object({ description: z.string(), reasoning: z.string() })) }) });
+    expect(out.actions[0]!.description).toBe('Sharply The Pigeon, demanding it explain why the code is failing.');
+  });
+  it('a prose reply too', async () => {
+    nextText = 'The clerk 看着 the form。';
+    const out = await callLlm({ messages: [{ role: 'user', content: 'x' }] });
+    expect(out).toBe('The clerk the form.');
+  });
+});
