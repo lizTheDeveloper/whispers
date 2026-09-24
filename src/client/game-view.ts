@@ -319,6 +319,25 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     whisperBtn.textContent = 'Whisper';
     whisperInput.placeholder = 'Whisper to your character… (saved until their next choice)';
   }
+  // The open window's panel: mood line, goals, chips and the trust readout.
+  function clearGuidance(): void {
+    whisperArea.querySelector('.whisper-context')?.remove();
+    whisperArea.querySelector('.whisper-goals')?.remove();
+    whisperArea.querySelector('.whisper-suggestions')?.remove();
+    trustDisplay.textContent = '';
+  }
+  // A whisper window of this tab's ended — whispered, ran out, or the action
+  // was taken. Live, its chips and "Trust: 64%" stayed up through the other
+  // player's turn. The panel goes; a seated player keeps the box itself in
+  // queue mode (their next words wait for the next choice, MUL-73), the
+  // world author driving with no seat of their own loses it until the next
+  // window.
+  function closeWindow(): void {
+    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+    clearGuidance();
+    if (!hasOwnCharacter) whisperArea.style.display = 'none';
+    setWhisperQueueMode();
+  }
   ws.on('whisper-prompt', (msg) => {
     if (msg.type !== 'whisper-prompt' || gameOver) return;
     // The prompt is a room broadcast so everyone sees WHO is deciding; the
@@ -326,7 +345,12 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     // a player must not countdown (or falsely log "[You stayed silent.]")
     // for someone else's moment. The world author with no seat-character of
     // their own keeps watching every window — that is the driver path.
-    if (hasOwnCharacter && msg.characterId !== myCharacterId) return;
+    // Someone else deciding also means no window of mine is open: a panel
+    // left over from my last one goes.
+    if (hasOwnCharacter && msg.characterId !== myCharacterId) {
+      if (windowCharId !== null || whisperArea.querySelector('.suggestion-btn, .whisper-context, .whisper-goals') || trustDisplay.textContent) closeWindow();
+      return;
+    }
     if (msg.carryingQueued && msg.carryingQueued > 0) {
       // The server is spending this character's saved whispers on the
       // decision happening right now; there is no window to win a race
@@ -334,6 +358,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       // choice after this one.
       appendLog(`[${msg.characterName} carries your saved ${msg.carryingQueued === 1 ? 'whisper' : msg.carryingQueued + ' whispers'} into this choice.]`, 'system');
       if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+      clearGuidance();
       if (hasOwnCharacter) {
         whisperArea.style.display = 'flex';
         setWhisperQueueMode();
@@ -368,17 +393,12 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       if (remaining <= 0) {
         if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
         appendLog('[You stayed silent.]', 'system');
-        if (hasOwnCharacter) {
-          // The moment passed, not the voice: the box stays so the next
-          // words can wait for the next decision instead of evaporating.
-          // A typed draft survives too — silence was a choice, the words
-          // were not.
-          setWhisperQueueMode();
-        } else {
-          whisperArea.style.display = 'none';
-          setWhisperQueueMode();
-          whisperInput.value = '';
-        }
+        // The moment passed, not the voice: a seated player's box stays so
+        // the next words can wait for the next decision instead of
+        // evaporating, and a typed draft survives too — silence was a
+        // choice, the words were not. The window's panel goes.
+        closeWindow();
+        if (!hasOwnCharacter) whisperInput.value = '';
         return;
       }
       whisperBtn.textContent = `Whisper (${remaining}s)`;
@@ -439,6 +459,9 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
   ws.on('whisper-guidance', (msg) => {
     if (msg.type !== 'whisper-guidance' || gameOver) return;
     if (hasOwnCharacter && msg.characterId !== myCharacterId) return;
+    // Guidance always follows its window's prompt; with no such window open
+    // here (it closed, or this tab never saw it open), it is stale.
+    if (windowCharId !== msg.characterId) return;
     renderGuidance(msg);
   });
 
@@ -473,20 +496,17 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     // whisper box was doing at the moment the page died. The whisper box
     // only resets for the character whose window just closed; another
     // player's turn must not tear down my queue-mode box.
-    if (windowCharId === msg.characterId) {
-      if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
-      if (hasOwnCharacter) setWhisperQueueMode();
-      else {
-        whisperArea.style.display = 'none';
-        setWhisperQueueMode();
-      }
-    }
+    if (windowCharId === msg.characterId || (hasOwnCharacter && msg.characterId === myCharacterId)) closeWindow();
     actionArea.innerHTML = '';
     renderActionTaken(msg);
   });
 
+  // The status line is this tab's own character's, always — trust in the
+  // voice, stress and fate points are the player's own meta state. The
+  // server sends each seat only its own; anything else is not drawn.
   ws.on('character-state-update', (msg) => {
     if (msg.type !== 'character-state-update' || gameOver) return;
+    if (!hasOwnCharacter || msg.characterId !== myCharacterId) return;
     const s = msg.state as { stress: number; consequences: string[]; fatePoints: number; whisperTrust: number; inventory?: string[] };
     const trustPct = Math.round(s.whisperTrust * 100);
     const trustLabel = trustPct >= 70 ? 'trusting' : trustPct >= 40 ? 'uncertain' : 'wary';
@@ -694,8 +714,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     if (msg.status === 'queued') {
       appendLog(`[${msg.message}]`, 'system');
     }
-    if (hasOwnCharacter) setWhisperQueueMode();
-    else whisperArea.style.display = 'none';
+    closeWindow();
   });
 
   ws.on('whisper-dropped', (msg) => {
