@@ -194,4 +194,6 @@ export interface RoomState {
   awaitingDmAnswer: boolean;
   currentLocationId: string | null;
   sceneTurnCount?: number;
+  /** Server-side: the stock-line variants said this game, per family (LineRotation.snapshot), so a resume keeps them. */
+  stockLines?: Record<string, number[]>;
 }

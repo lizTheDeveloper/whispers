@@ -582,6 +582,16 @@ interface DmContext {
   party?: PartyMember[];
   /** The host asked for gentle or cozy peril: the tone rule goes into every turn's prompt, not only the system prompt. */
   gentlePeril?: boolean;
+  /**
+   * The tone gate flagged the last draft (tone-gate.ts): the phrases,
+   * quoted, for this one fresh try. Never the draft itself.
+   */
+  toneFeedback?: string;
+  /**
+   * NPCs the party has already met (round 14, 7RAAQ7: "I am Clerk
+   * Ozymandias," he announced in scene 3, long after they had met).
+   */
+  metNpcs?: string[];
 }
 
 /**
@@ -591,7 +601,19 @@ interface DmContext {
  */
 function turnToneBlock(ctx: DmContext): string {
   const rule = childToneRule(ctx.party ?? [], { gentlePeril: ctx.gentlePeril });
-  return rule ? `\n<tone>\n${rule}\n</tone>` : '';
+  const feedback = ctx.toneFeedback?.trim() ? `\n<tone_feedback>\n${ctx.toneFeedback.trim()}\n</tone_feedback>` : '';
+  return (rule ? `\n<tone>\n${rule}\n</tone>` : '') + feedback;
+}
+
+/**
+ * The NPCs the party already knows, so nobody introduces themselves twice
+ * (7RAAQ7: "I am Clerk Ozymandias," in scene 3, met in scene 1). '' when
+ * the party has met no one yet.
+ */
+export function metNpcsBlock(names: string[] | undefined): string {
+  const met = [...new Set((names ?? []).map(n => n.trim()).filter(Boolean))];
+  if (met.length === 0) return '';
+  return `\n<already_met>\nThe party has already met: ${met.join(', ')}. These people know the party and the party knows them: none of them introduces themselves again ("I am ${met[0]}", "my name is…", "allow me to introduce myself") or is described as if seen for the first time. They pick up where they left off.\n</already_met>`;
 }
 
 export class DmAgent {
@@ -713,6 +735,7 @@ export class DmAgent {
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
       repetition ? `\n<already_said>\n${repetition}\n</already_said>` : '',
+      metNpcsBlock(ctx.metNpcs),
       turnToneBlock(ctx),
       pacing?.repeatedBeat ? `\n<repeated>\nYour last draft repeated this earlier beat almost word for word — the table has already read it:\n"${pacing.repeatedBeat}"\nDo NOT reuse its sentences, its NPC lines or its images. Write what happens NEXT, after it.\n</repeated>` : '',
       `\n<task>`,
@@ -860,6 +883,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',
       `\n<context>\n${recentTranscript}\n</context>`,
       repetition ? `\n<already_said>\n${repetition}\n</already_said>` : '',
+      metNpcsBlock(ctx.metNpcs),
       ruleContext ? `\n<rules>\n${ruleContext}\n</rules>` : '',
       turnToneBlock(ctx),
       `\n<task>`,
@@ -1009,8 +1033,15 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
     existing: WorldSeed | null;
   }): Promise<WorldSeed> {
     const transcript = opts.history.map(m => `[${m.role}] ${m.content}`).join('\n');
+    // Round 14 (7RAAQ7): Button's pronouns were it/its and its description
+    // said "no one remembers hiring them". A redraft keeps each NPC's
+    // pronouns, stated as fixed.
+    const locked = opts.existing ? seedNpcPronouns(opts.existing.npcs ?? []) : [];
+    const lockedBlock = locked.length > 0
+      ? `\n\nNPC pronouns — fixed (keep them for any NPC you keep, and write their descriptions in them):\n${locked.map(n => `- ${n.name}: ${n.pronouns}`).join('\n')}`
+      : '';
     const existingBlock = opts.existing
-      ? `\n\nYou previously drafted this world. Revise it — keep what works, change what the conversation asks for:\n${JSON.stringify(opts.existing, null, 2)}`
+      ? `\n\nYou previously drafted this world. Revise it — keep what works, change what the conversation asks for:\n${JSON.stringify(opts.existing, null, 2)}${lockedBlock}`
       : '';
 
     const systemPrompt = `You are a world builder for a TTRPG. You output ONLY JSON. No prose, no roleplay, no markdown.
@@ -1022,7 +1053,7 @@ Stylistic influences to honour (these shape VOICE and texture, not plot): ${opts
 Requirements:
 - premise: one or two sentences naming the situation the players arrive into
 - locations: at least 3, each with a name, a concrete description, and a terrain word
-- npcs: at least 3, each with a name, a description, a disposition, and a motivation that could put them in someone's way; and "pronouns" — how the story refers to them ("she/her", "he/him", "they/them", "it/its"), used for the whole game. The description uses those same pronouns.
+- npcs: at least 3, each with a name, a description, a disposition, and a motivation that could put them in someone's way; and "pronouns" — how the story refers to them ("she/her", "he/him", "they/them", "it/its"), used for the whole game. Every sentence of the description, disposition and motivation refers to that NPC with exactly those pronouns: an it/its NPC is "it" and "its" throughout ("no one remembers hiring it", never "hiring them"); a she/her NPC is never "it".
 - plotHooks: at least 3 unresolved situations, phrased as things that are already happening
 - items: 0 or more notable objects
 
@@ -1061,7 +1092,7 @@ Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","te
    * briefing — they should want to be somewhere in it before they are asked
    * who they are. Keep the influences in the prose and out of the content.
    */
-  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed; /** The host asked for gentle peril: the register holds from the first sight of the world. */ gentlePeril?: boolean }): Promise<string> {
+  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed; /** The host asked for gentle peril: the register holds from the first sight of the world. */ gentlePeril?: boolean; /** The tone gate's feedback on the last draft (tone-gate.ts). */ toneFeedback?: string }): Promise<string> {
     // Plot hooks (and NPC motivations) are DM secrets and are deliberately
     // not given to this prompt: whatever it knows, the player may read.
     const places = opts.seed.locations.slice(0, 4).map(l => `${l.name}: ${l.description}`).join('\n');
@@ -1075,6 +1106,7 @@ Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","te
     // sight of the world said "his oversized briefcase… He looks you in the eye".
     const pronounRule = npcPronounBlock(pronouns);
     const toneRule = opts.gentlePeril ? `\n\n${childToneRule([], { gentlePeril: true })}` : '';
+    const feedback = opts.toneFeedback?.trim() ? `\n\n${opts.toneFeedback.trim()}` : '';
 
     const systemPrompt = `You are a TTRPG Dungeon Master ("${opts.preset}" style) introducing a player to a world they are about to make a character for.
 
@@ -1082,7 +1114,7 @@ Write 120-180 words of second-person present tense. Put them somewhere specific 
 
 NO SPOILERS: the reader may be the one who has to solve this world's mystery. Never reveal or hint at a twist, a culprit, who is responsible, who is behind anything, a hidden motive, or the answer to any mystery — not even as rumors that hint at a cover-up, a conspiracy or a deliberate act. The open question stays an open question.
 
-Do NOT explain the setting, list factions, or describe mechanics. Do not tell them who their character is; that is the next conversation. No headings, no bullet points, no preamble — just the prose.
+Do NOT explain the setting, list factions, or describe mechanics. Do not tell them who their character is; that is the next conversation. Never describe the reader's body or their companion's — no bare skin, no state of dress (7RAAQ7: "You and your companion stand bare-chested"): a missing lanyard is a missing lanyard. No headings, no bullet points, no preamble — just the prose.
 
 ${opts.influences.length > 0 ? `Stylistic influences to honour in voice and texture only: ${opts.influences.join(' × ')}\n\n` : ''}Premise: ${opts.seed.premise}
 
@@ -1090,7 +1122,7 @@ Places:
 ${places}
 
 People:
-${people}${pronounRule ? `\n\n${pronounRule}` : ''}${toneRule}`;
+${people}${pronounRule ? `\n\n${pronounRule}` : ''}${toneRule}${feedback}`;
 
     return callProse({
       messages: [
@@ -1126,7 +1158,7 @@ ${people}${pronounRule ? `\n\n${pronounRule}` : ''}${toneRule}`;
     // backstory, and from there in the character agent's prompt every turn.
     const tableCharacters = (opts.tableCharacters ?? []).filter(c => c.name.trim());
     const tableBlock = tableCharacters.length > 0
-      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}${neutralPronouns(c.pronouns) ? ` — ${neutralNounRule(c.name, c.pronouns)}` : ''}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). Use the relation word the player used ("kid" stays "kid").\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
+      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}${neutralPronouns(c.pronouns) ? ` — ${neutralNounRule(c.name, c.pronouns)}` : ''}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). The same holds in the sheet you write — the personality, backstory, aspects and trouble: a person listed here keeps their own pronouns there too, whatever this character's are (Liz listed as she/her: a they/them kid is "afraid of losing her", never "afraid of losing them"). Use the relation word the player used ("kid" stays "kid").\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
       : '';
     const worldBlock = opts.seed
       ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => { const p = seedNpcPronouns([n])[0]?.pronouns; return `${n.name} (${[p, publicDisposition(n.disposition) ?? 'unknown'].filter(Boolean).join(', ')})`; }).join(', ')}\n${npcPronounBlock(seedNpcPronouns(opts.seed.npcs.slice(0, 5)))}\n`

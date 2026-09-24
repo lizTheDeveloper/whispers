@@ -167,13 +167,18 @@ describe('1c. the pronouns reach everyone who could mention the NPC', () => {
   beforeEach(() => { db = worldDb(); llmCalls.length = 0; proseCalls.length = 0; });
   afterEach(() => { db.close(); });
 
-  it('a short name the extractor files later ("Barnaby") inherits the seed\'s pronouns', () => {
+  // Round 14: a short name is no longer filed as an NPC of its own at all —
+  // it IS the seed's NPC (WorldBible.findSameNpc), pronouns and all.
+  it('a short name the extractor files later ("Barnaby") is the seed\'s NPC, with the seed\'s pronouns', () => {
     seedWorld(db, 'c1', SEED);
     const wb = new WorldBible(db);
     wb.applyDiff('c1', { newLocations: [], newEntities: [{ name: 'Barnaby', type: 'npc', description: 'A goose.', disposition: null }, { name: 'Pudding', type: 'npc', description: null, disposition: null }], newItems: [], newEvents: [], newRelationships: [] });
     const all = wb.getNpcPronouns('c1');
-    expect(all).toContainEqual({ name: 'Barnaby', pronouns: 'it/its' });
-    expect(all).toContainEqual({ name: 'Pudding', pronouns: 'they/them' });
+    expect(all.map(n => n.name)).not.toContain('Barnaby');
+    expect(all.map(n => n.name)).not.toContain('Pudding');
+    expect(all).toContainEqual({ name: 'Barnaby the Bureaucratic Goose', pronouns: 'it/its' });
+    expect(all).toContainEqual({ name: 'Archivist Pudding', pronouns: 'they/them' });
+    expect(wb.findSameNpc('c1', 'Barnaby')?.name).toBe('Barnaby the Bureaucratic Goose');
     expect(namesSameNpc('Barnaby', 'Barnaby the Bureaucratic Goose')).toBe(true);
     expect(namesSameNpc('Pudding', 'Officer Tick-Tock')).toBe(false);
   });

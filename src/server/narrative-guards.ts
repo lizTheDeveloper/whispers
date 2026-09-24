@@ -264,6 +264,37 @@ export function repairAddress(text: string, terms: AddressTerm[], opts: { vocati
   return out;
 }
 
+/**
+ * In a character's OWN words about a companion — their closing reflection —
+ * the companion is called what this character calls them, not only when
+ * spoken to. Round 14 (7RAAQ7): Biz's last thought was "I am safe in Liz's
+ * grip"; Biz calls Liz "Mom". Only a term that works as a name (one
+ * capitalised word: "Mom", "Dad", "Grandma", "Odo") replaces the bare name
+ * — "my kid" never does — and a sentence that states the name ("calls her
+ * Liz") is left as written. A sheet's own term wins over one read off a
+ * relation. Run repairAddress first, so "Mom, Liz" is already "Mom".
+ */
+export function ownWordsForCompanions(text: string, terms: AddressTerm[]): string {
+  if (!text) return text;
+  const byName = new Map<string, AddressTerm>();
+  for (const t of terms) {
+    const address = t.address?.trim() ?? '';
+    if (!/^\p{Lu}[\p{L}'’-]*$/u.test(address)) continue;
+    const key = t.name.trim().toLowerCase();
+    const had = byName.get(key);
+    if (!had || (had.derived && !t.derived)) byName.set(key, t);
+  }
+  let out = text;
+  for (const t of byName.values()) {
+    const first = firstName(t.name);
+    const address = t.address.trim();
+    if (address.toLowerCase() === first.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase()) continue;
+    const name = `(?:${esc(t.name.trim())}|${esc(first)})`;
+    out = out.replace(new RegExp(`(?<![\\p{L}'’-])${name}(?![\\p{L}-])`, 'gu'), (m: string, offset: number, whole: string) => (statesAddress(whole.slice(0, offset)) ? m : address));
+  }
+  return out;
+}
+
 /** Words before an address term that make it a common noun, not a name: "her Mom", "the Mom Voice", "Biz's Mom". */
 const NOT_A_NAME_BEFORE = /(?:\b(?:her|his|their|my|your|our|its|the|a|an|this|that|whose|every|some|any)|['’]s)\s+$/i;
 
@@ -592,21 +623,35 @@ export function outcomeLines(name: string, pronouns: string | null | undefined):
   const didnt = `${r.subject} didn't`;
   return {
     success: `${name} acts decisively, and the moment shifts in ${r.possessive} favor.`,
+    // Round 14 (7RAAQ7): "But the victory isn't clean — something slips,
+    // cracks, or shifts in the process." read as a template (a list of
+    // options) and "the kind that leaves bruises" was read at a table with
+    // a ten-year-old. Six of each, rotated per game (LineRotation), none
+    // sharing a four-word phrase.
     correction: {
       tie: [
-        `But the victory isn't clean — something slips, cracks, or shifts in the process.`,
+        `It works — though not cleanly, and one small thing goes sideways.`,
         `Yet something catches — a snag, a cost, a complication ${didnt} foresee.`,
         `The moment teeters between triumph and consequence.`,
+        `${S} ${agree(r, 'gets', 'get')} there, with a wobble along the way.`,
+        `A win, just barely, with a small price attached.`,
+        `Almost clean — almost. A little something goes astray.`,
       ],
       'success-with-cost': [
         `But the price is steep — the effort leaves its mark.`,
-        `Success, yes — but the kind that leaves bruises.`,
+        `Success, yes — but it costs more than ${r.subject} hoped.`,
         `${S} ${agree(r, 'pushes', 'push')} through, but the strain shows.`,
+        `It happens, though something has to give to make it so.`,
+        `The goal is reached, with a toll paid on the way.`,
+        `It comes together — at a price.`,
       ],
       failure: [
         `But the numbers don't lie — the attempt falls short, and the situation shifts against ${r.object}.`,
         `Yet despite the effort, circumstances conspire — and the moment slips away.`,
         `But fate has other plans — the attempt crumbles under scrutiny.`,
+        `Not this time — the plan comes apart before it can work.`,
+        `It doesn't land, and things get a little more tangled.`,
+        `The try goes wide, and the chance passes for now.`,
       ],
     },
   };

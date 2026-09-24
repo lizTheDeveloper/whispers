@@ -433,3 +433,15 @@ export function seedNpcPronouns(npcs: Array<{ name: string; description?: string
     return p ? [{ name: n.name, pronouns: p }] : [];
   });
 }
+
+/**
+ * The NPCs the story has already put in front of the party: named in any of
+ * `texts` (the DM's beats, earlier scene summaries), in any of the ways
+ * prose names them. Round 14 (7RAAQ7): Clerk Ozymandias, met in scene 1,
+ * announced "I am Clerk Ozymandias" in scene 3.
+ */
+export function npcsMet(names: string[], texts: string[]): string[] {
+  const story = texts.filter(Boolean).join('\n');
+  if (!story) return [];
+  return [...new Set(names.filter(n => n?.trim() && npcMentioned(story, n)))];
+}
