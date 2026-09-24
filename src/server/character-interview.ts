@@ -12,6 +12,12 @@ export interface InterviewRecord {
   sessionToken: string;
   transcript: InterviewTurn[];
   definition: CharacterDefinition | null;
+  /**
+   * The sheet so far — every field the player has stated, merged turn by
+   * turn. Unlike `definition` it may be unfinished; it is what the checklist
+   * and the interviewer's "still needed" list are computed from.
+   */
+  draft: CharacterDefinition | null;
   status: InterviewStatus;
 }
 
@@ -28,18 +34,20 @@ function parseTranscript(raw: unknown, id: string): InterviewTurn[] {
   }
 }
 
+function parseDefinition(raw: unknown, id: string, column: string): CharacterDefinition | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try { return JSON.parse(raw); }
+  catch { console.warn(`[interview] corrupt ${column} JSON for interview ${id}`); return null; }
+}
+
 function rowToRecord(row: any): InterviewRecord {
-  let definition: CharacterDefinition | null = null;
-  if (row.definition) {
-    try { definition = JSON.parse(row.definition); }
-    catch { console.warn(`[interview] corrupt definition JSON for interview ${row.id}`); }
-  }
   return {
     id: row.id,
     campaignId: row.campaign_id,
     sessionToken: row.session_token,
     transcript: parseTranscript(row.transcript, row.id),
-    definition,
+    definition: parseDefinition(row.definition, row.id, 'definition'),
+    draft: parseDefinition(row.draft, row.id, 'draft'),
     status: row.status,
   };
 }
@@ -60,7 +68,7 @@ export function getOrCreateInterview(db: Database.Database, campaignId: string, 
   const id = randomBytes(16).toString('hex');
   db.prepare('INSERT INTO character_interviews (id, campaign_id, session_token) VALUES (?, ?, ?)')
     .run(id, campaignId, sessionToken);
-  return { id, campaignId, sessionToken, transcript: [], definition: null, status: 'open' };
+  return { id, campaignId, sessionToken, transcript: [], definition: null, draft: null, status: 'open' };
 }
 
 export function getInterviewBySession(db: Database.Database, campaignId: string, sessionToken: string): InterviewRecord | null {
@@ -102,6 +110,53 @@ export function appendInterviewTurn(db: Database.Database, id: string, turn: Int
 export function setInterviewDefinition(db: Database.Database, id: string, definition: CharacterDefinition): void {
   db.prepare("UPDATE character_interviews SET definition = ?, status = 'open', updated_at = datetime('now') WHERE id = ?")
     .run(JSON.stringify(definition), id);
+}
+
+export function setInterviewDraft(db: Database.Database, id: string, draft: CharacterDefinition): void {
+  db.prepare("UPDATE character_interviews SET draft = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(draft), id);
+}
+
+/** The sheet as it stands: the running draft, else the last finished sheet. */
+export function interviewSheet(interview: InterviewRecord | null): CharacterDefinition | null {
+  return interview?.draft ?? interview?.definition ?? null;
+}
+
+const hasText = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+
+/**
+ * Fold one interview turn's reported sheet into the draft so far. The model
+ * reports the whole sheet as it understands it, so a field it filled in
+ * replaces the old value and a field it left empty keeps it — a stated name
+ * is never lost because a later reply only asked a question.
+ */
+export function mergeCharacterDraft(base: Partial<CharacterDefinition> | null, update: Partial<CharacterDefinition> | null): CharacterDefinition {
+  const b = base ?? {};
+  const u = update ?? {};
+  const text = (k: 'name' | 'highConcept' | 'trouble' | 'personality' | 'backstory') =>
+    hasText(u[k]) ? u[k]!.trim() : (hasText(b[k]) ? b[k]! : '');
+  const list = (k: 'aspects' | 'stunts') => {
+    const next = Array.isArray(u[k]) ? u[k]!.filter(hasText) : [];
+    return next.length > 0 ? next : (Array.isArray(b[k]) ? b[k]! : []);
+  };
+  const skills = u.skills && Object.keys(u.skills).length > 0 ? u.skills : (b.skills ?? {});
+  const merged: CharacterDefinition = {
+    name: text('name'),
+    highConcept: text('highConcept'),
+    trouble: text('trouble'),
+    aspects: list('aspects'),
+    personality: text('personality'),
+    backstory: text('backstory'),
+    skills,
+    stunts: list('stunts'),
+  };
+  const age = u.age ?? b.age;
+  if (age !== undefined) merged.age = age;
+  const pronouns = u.pronouns ?? b.pronouns;
+  if (pronouns !== undefined) merged.pronouns = pronouns;
+  const relationships = u.relationships && u.relationships.length > 0 ? u.relationships : b.relationships;
+  if (relationships && relationships.length > 0) merged.relationships = relationships;
+  return merged;
 }
 
 export function setInterviewStatus(db: Database.Database, id: string, status: InterviewStatus): void {

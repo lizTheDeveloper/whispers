@@ -8,7 +8,7 @@ import { WorldBible } from './world-bible.js';
 import { getInfluences, setCampaignPaused, setCampaignPhase } from './room.js';
 import { loadStockScenario, getWorldSeed, seedWorld } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
-import { callLlm, runWithLlmSignal } from './agents/llm-client.js';
+import { callProse, runWithLlmSignal } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { recordReplayBroadcast } from './replay-log.js';
@@ -1470,12 +1470,18 @@ export class GameLoop {
     const voiceHint = presetVoices[campaign?.dm_preset] ?? 'Write in the DM\'s voice — warm, reflective, slightly bittersweet.';
 
     try {
-      const epilogue = await callLlm({
+      const epilogue = await callProse({
         messages: [
           { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them.` },
           { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.` },
         ],
-        maxTokens: 512,
+        // Seen live at 248 characters, stopped mid-sentence ("...and the
+        // distant toll of the great clock"): the reasoning model spent most
+        // of 512 tokens thinking over the session record before writing.
+        // 3-5 sentences is ~250 tokens; 3072 leaves ~2.5k for reasoning over
+        // a record that can run to several thousand tokens, and callProse
+        // retries a cut-off reply at double that, then trims to a sentence.
+        maxTokens: 3072,
       });
       const text = epilogue.trim();
       if (text && text.length > 20) {
@@ -1513,12 +1519,14 @@ export class GameLoop {
         : 'You learned to distrust the whisper. Whatever it wanted, it wasn\'t always what you needed.';
 
       try {
-        const reflection = await callLlm({
+        const reflection = await callProse({
           messages: [
             { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
             { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nWhat happened: ${sceneSummaries}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. One line each.` },
           ],
-          maxTokens: 200,
+          // Two short lines (~80 tokens), but reasoning comes out of the same
+          // budget: 200 was enough to come back empty or cut off.
+          maxTokens: 1536,
           temperature: 0.7,
         });
 

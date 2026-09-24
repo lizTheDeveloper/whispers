@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { callLlm } from './llm-client.js';
+import { callLlm, callProse } from './llm-client.js';
 import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema, WorldSeedSchema, DmOpeningSchema } from './schemas.js';
 import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply, DmOpening } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
@@ -770,22 +770,21 @@ ${places}
 People:
 ${people}`;
 
-    return callLlm({
+    return callProse({
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: 'Introduce them to this world.' },
       ],
       temperature: 0.9,
-      // This is the first prose a player ever reads about the world, and the
-      // confirmed site of the "omitted maxTokens -> proxy default -> silent
-      // mid-sentence truncation" bug (observed live, cut off at "...before
-      // midnight doubles the"). The prompt targets 120-180 words of plain
-      // prose (no JSON/field overhead), which comfortably fits well under
-      // 1000 tokens even for a verbose model that overshoots the target by
-      // 2-3x. callLlm's own default (2048) would already cover this, but
-      // this call gets its own explicit ceiling rather than silently relying
-      // on the shared default — a scene-setting introduction, sized for one.
-      maxTokens: 1024,
+      // The first prose a player reads about the world, seen cut off live
+      // twice ("...before midnight doubles the", "...twirls a feathered hat
+      // that blushes"). The model behind the proxy is a reasoning model and
+      // its hidden reasoning spends this same budget before a word of the
+      // 120-180 word (~250 token) reply is written, so 1024 left too little.
+      // 3072 leaves ~2.5k for reasoning plus 2x output overshoot; callProse
+      // retries a cut-off reply at double that and never returns half a
+      // sentence.
+      maxTokens: 3072,
     });
   }
 
@@ -831,8 +830,8 @@ ${worldBlock}${tableBlock}${unmetBlock}${ruleContext ? `\nRules reference:\n${ru
 
 CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON.
 
-While the sheet is unfinished: {"reply": "your question", "definition": null}
-Once you believe it is finished: {"reply": "what you understand about them, in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."],"age":null,"pronouns":null,"relationships":[]}}
+Every reply carries the sheet as it stands so far, finished or not: {"reply": "your next question, or what you understand about them in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."],"age":null,"pronouns":null,"relationships":[]}}
+Fill in every field the player has stated or you have inferred and reflected back; leave the rest empty ("", [], {}). When the player states something outright — a name, what they are, what trouble dogs them, something they can do — record it in the sheet at once, in their words lightly tidied, and do not ask for it again. Include everything from earlier turns too, not just what changed. Only when you know nothing yet may "definition" be null.
 
 "age" is a number or short phrase if you know it, else null. "pronouns" is how this character is referred to ("she/her", "he/him", "they/them") — fill it only if the player said so or plainly stated a gender ("I'm a girl", "my son"); otherwise null. Never assume a gender from a name, an age, a role or anything else, and do not write one into the backstory or personality either — if it matters to the player they will say, and you may ask. "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a kid whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Use the player's own relation word: "my kid Biz" is "kid", not "son" — never assume a gender. Fill it from what the player told you — including anything the backstory states, such as "her kid Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
 
@@ -842,7 +841,17 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
       messages[messages.length - 1] = { ...last, content: `${last.content}\n\n(Remember: respond with ONLY a JSON object, no other text)` };
     }
 
-    return callLlm({ messages, schema: CharInterviewReplySchema, temperature: 0.5 });
+    return callLlm({
+      messages,
+      schema: CharInterviewReplySchema,
+      temperature: 0.5,
+      // A reply plus a whole draft sheet, after reasoning over a long system
+      // prompt (world, table, rules). The 2048 default was seen cutting the
+      // reply mid-sentence ("...You glance toward"), and JSON repair then
+      // closed it without the definition, so nothing the player said landed.
+      // callLlm also retries a cut-off JSON reply once at double this.
+      maxTokens: 4096,
+    });
   }
 
   /**
@@ -894,12 +903,14 @@ Once you believe it is finished: {"reply": "what you understand about them, in p
       });
       return result.summary;
     } catch {
-      const plainText = await callLlm({
+      const plainText = await callProse({
         messages: [
           { role: 'system', content: 'Summarize this TTRPG scene in 3-5 sentences. Plain text only, no JSON.' },
           { role: 'user', content: `${text}\n\nCover: what happened, who was involved, what changed.${charHint}` },
         ],
-        maxTokens: 512,
+        // 3-5 sentences (~200 tokens) after reasoning over a whole scene's
+        // transcript: 512 left the reasoning model almost nothing to write with.
+        maxTokens: 2048,
       });
       return plainText.trim() || 'The scene draws to a close.';
     }

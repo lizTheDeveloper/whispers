@@ -28,7 +28,8 @@ import { GameLoop } from './game-loop.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
-  getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewStatus, getInterviewBySession, listTableCharacters,
+  getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewDraft, setInterviewStatus, getInterviewBySession, listTableCharacters,
+  interviewSheet, mergeCharacterDraft,
   type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness } from './character-readiness.js';
@@ -719,6 +720,12 @@ wss.on('connection', (ws) => {
           nonOwnerHasChatted = nonOwnerInterview?.transcript.some(t => t.role === 'user') ?? false;
           if (nonOwnerHasChatted && nonOwnerInterview) {
             send(ws, { type: 'interview-replay', transcript: nonOwnerInterview.transcript, definition: nonOwnerInterview.definition });
+            // No finished sheet to show: bring back the checklist for the
+            // draft so far, so a refresh does not blank what was registered.
+            const draftSheet = interviewSheet(nonOwnerInterview);
+            if (!nonOwnerInterview.definition && draftSheet) {
+              send(ws, { type: 'character-readiness', readiness: checkCharacterReadiness(draftSheet) });
+            }
           }
         }
       }
@@ -1281,7 +1288,10 @@ wss.on('connection', (ws) => {
 
       const dm = new DmAgent(db);
       try {
-        const before = checkCharacterReadiness(interview.definition);
+        // The interviewer is told what is still missing from the sheet so
+        // far — the running draft, not just a finished sheet — or it asks
+        // again for a name the player already gave.
+        const before = checkCharacterReadiness(interviewSheet(interview));
         const fullHistory = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
         const history = windowInterviewHistory(fullHistory);
         const reply = await dm.interviewForCharacter({
@@ -1306,39 +1316,37 @@ wss.on('connection', (ws) => {
         // Re-read fresh before computing readiness or sending anything.
         const current = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken) ?? interview;
 
-        // A clarifying question ("can she be called Ash?") gets `definition:
-        // null` back from the model — it isn't re-proposing a sheet, just
-        // answering. And a thin-but-non-null proposal (the model believes a
-        // partial answer is finished) must not be allowed to eclipse an
-        // already-ready stored sheet either: the DISPLAYED readiness has to
-        // come from the stored definition whenever one exists and is ready,
-        // so the screen never contradicts what the server holds. Without
-        // this, a confirmed, complete character gets told it is missing
-        // every field — and loses both its preview and its confirm button —
-        // on its very next follow-up message.
-        const proposalReadiness = reply.definition ? checkCharacterReadiness(reply.definition) : null;
+        // Every reply reports the sheet as the model understands it so far;
+        // it is folded into the stored draft, so a field stated once stays
+        // stated (a clarifying question comes back with `definition: null`
+        // and changes nothing). The checklist is computed from that draft.
+        const draft = reply.definition ? mergeCharacterDraft(interviewSheet(current), reply.definition) : interviewSheet(current);
+        if (reply.definition && draft) setInterviewDraft(db, interview.id, draft);
+        const draftReadiness = checkCharacterReadiness(draft);
         const storedReadiness = checkCharacterReadiness(current.definition);
-        if (reply.definition && proposalReadiness!.ready) {
-          setInterviewDefinition(db, interview.id, reply.definition);
-          send(ws, { type: 'char-chat-reply', text: reply.reply, definition: reply.definition });
-          send(ws, { type: 'character-preview', definition: reply.definition, readiness: proposalReadiness! });
+        // A ready draft that differs from the stored sheet is a new proposal
+        // (setInterviewDefinition resets it to unconfirmed). One identical to
+        // a ready stored sheet — a thin reply that changed nothing — is not:
+        // the stored sheet is re-shown without touching its confirmation.
+        const changed = JSON.stringify(draft) !== JSON.stringify(current.definition);
+        if (reply.definition && draft && draftReadiness.ready && changed) {
+          setInterviewDefinition(db, interview.id, draft);
+          send(ws, { type: 'char-chat-reply', text: reply.reply, definition: draft });
+          send(ws, { type: 'character-preview', definition: draft, readiness: draftReadiness });
         } else if (current.definition && storedReadiness.ready) {
-          // Nothing usable was proposed this turn — either nothing at all, or
-          // a thin proposal that doesn't clear the bar — but the stored sheet
-          // is still ready. Re-send IT as the preview instead of a false
-          // "still shaping this character" checklist computed off the thin
-          // proposal. Does NOT touch interview status: if it was already
-          // confirmed, the confirm button reappearing and requiring one more
-          // click is a minor inconvenience, not a lie about the character's
-          // state.
+          // Nothing new and finished was proposed this turn, but the stored
+          // sheet is ready: re-send IT as the preview rather than a false
+          // "still shaping this character" checklist. Does NOT touch
+          // interview status: if it was already confirmed, the confirm
+          // button reappearing and requiring one more click is a minor
+          // inconvenience, not a lie about the character's state.
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: null });
           send(ws, { type: 'character-preview', definition: current.definition, readiness: storedReadiness });
         } else {
-          // A proposed-but-incomplete sheet is NOT shown as a definition — the
-          // model does not get to decide the interview is finished.
-          const readiness = proposalReadiness ?? storedReadiness;
+          // An unfinished draft is NOT shown as a definition — the model
+          // does not get to decide the interview is finished.
           send(ws, { type: 'char-chat-reply', text: reply.reply, definition: null });
-          send(ws, { type: 'character-readiness', readiness });
+          send(ws, { type: 'character-readiness', readiness: draftReadiness });
         }
       } catch (e) {
         console.error('[char-chat] error:', e);
