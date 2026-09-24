@@ -672,30 +672,114 @@ export function withoutDmWhispers(text: string): string {
 
 const ACQUIRE = /\b(?:take|takes|took|taking|snatch(?:es|ed|ing)?|grab(?:s|bed|bing)?|seiz(?:e|es|ed|ing)|pocket(?:s|ed|ing)?|pick(?:s|ed|ing)?\s+up|lift(?:s|ed|ing)?|scoop(?:s|ed|ing)?|wrest(?:s|ed|ing)?|pr(?:y|ies|ied|ying)|yank(?:s|ed|ing)?|pull(?:s|ed|ing)?|catch(?:es|ing)?|caught|collect(?:s|ed|ing)?|retriev(?:e|es|ed|ing)|find(?:s|ing)?|found|claim(?:s|ed)?\s+(?:it|the)\b[^.!?]*\b(?:from|off)|receiv(?:e|es|ed|ing)|accept(?:s|ed|ing)?|win(?:s|ning)?|won|steal(?:s|ing)?|stole|swipe(?:s|d)?|tuck(?:s|ed|ing)?|slip(?:s|ped|ping)?\s+(?:it|the)[^.!?]*\binto)\b/i;
 const GIVE_TO = (name: string) => new RegExp(`\\b(?:hand(?:s|ed|ing)?|give(?:s|n)?|gave|giving|pass(?:es|ed|ing)?|toss(?:es|ed|ing)?|offer(?:s|ed|ing)?|slid(?:e|es|ing)?|press(?:es|ed|ing)?)\\b[^.!?]*\\b${name}\\b|\\b${name}\\b[^.!?]*\\b(?:is|was)\\s+(?:handed|given|passed|tossed)\\b|\\b(?:hand(?:s|ed)?|give(?:s|n)?|gave|pass(?:es|ed)?)\\s+${name}\\b`, 'i');
-const REFUSAL = /\b(?:not|never|no|refus(?:e|es|ed|ing)|won['’]t|wouldn['’]t|doesn['’]t|didn['’]t|can['’]t|cannot|fails?\s+to|keeps?|kept|holds?\s+(?:it|onto)|withhold(?:s|ing)?|clutch(?:es)?\s+(?:it|her|his|their)|snatch(?:es|ed)?\s+(?:it\s+)?back|out\s+of\s+reach)\b/i;
+const REFUSAL = /\b(?:refus(?:e|es|ed|ing)|won['’]t|wouldn['’]t|fails?\s+to|keeps?|kept|holds?\s+(?:it|onto)|withhold(?:s|ing)?|clutch(?:es)?\s+(?:it|her|his|their)|snatch(?:es|ed)?\s+(?:it\s+)?back|out\s+of\s+reach)\b/i;
+/** Verbs by which an item comes to someone — for a plain negation right before one ("does not hand", "never takes"). */
+const TRANSFER_VERB = String.raw`(?:take|takes|took|grab|grabs|snatch|snatches|pocket|pockets|pick|picks|hand|hands|give|gives|gave|pass|passes|press|presses|place|places|slip|slips|put|puts|tuck|tucks|drop|drops|receive|receives|accept|accepts|catch|catches|claim|claims|let\s+(?:her|him|them|\w+)\s+(?:have|take))`;
+const NEGATED_TRANSFER = new RegExp(String.raw`\b(?:not|never|no\s+longer|doesn['’]t|didn['’]t|can['’]t|cannot|won['’]t|wouldn['’]t)\s+(?:\w+\s+){0,2}?${TRANSFER_VERB}\b`, 'i');
+/**
+ * A hand-off into someone's keeping: "pressing the brass key into her palm",
+ * "slips the note into Liz's pocket", "places it in their hands". Group 1 is
+ * the verb, group 2 the receiver ("her", "Liz's").
+ */
+const HANDOFF = /\b(press(?:es|ed|ing)?|plac(?:e|es|ed|ing)|slip(?:s|ped|ping)?|put(?:s|ting)?|tuck(?:s|ed|ing)?|drop(?:s|ped|ping)?|push(?:es|ed|ing)?|fold(?:s|ed|ing)?)\b[^.!?;]*?\b(?:into|in|onto)\s+(her|their|his|[A-Z][\w-]*['’]s)\s+(?:own\s+|open\s+|waiting\s+|outstretched\s+|small\s+|cupped\s+)?(?:palm|palms|hand|hands|pocket|pockets|grip|fingers|arms|keeping)\b/i;
 
 /**
  * Does a ruling's narration show `actor` actually coming to hold `item` —
- * taking, picking up, being handed, finding it — in a sentence that names the
- * item (by any word of its name) and is not a refusal? A claim in speech ("It
- * is my property") is not: live, Liz's claim put Lady Vex's Brass Ruler in
- * Liz's inventory while Vex went on tapping it.
+ * taking, picking up, being handed, having it pressed into their palm,
+ * finding it — in a sentence that names the item (by any word of its name)
+ * and is not a refusal? A claim in speech ("It is my property") is not:
+ * live, Liz's claim put Lady Vex's Brass Ruler in Liz's inventory while Vex
+ * went on tapping it. A negation counts only on the transfer itself: live,
+ * "The Linen-Suited Man does not recoil; instead, he … [is] pressing the
+ * brass key into her palm" was read as a refusal and the key was dropped.
  */
 export function narratesItemTransfer(narration: string, item: string, actor: string): boolean {
   if (!narration || !item) return false;
   const itemWords = item.toLowerCase().match(/[a-z]+/g)?.filter(w => w.length >= 3 && !['the', 'and', 'of'].includes(w)) ?? [];
   if (itemWords.length === 0) return false;
-  const name = esc(firstName(actor));
+  const first = firstName(actor);
+  const name = esc(first);
   const unquoted = quoteRuns(narration).filter(r => !r.quoted).map(r => r.text).join(' ');
   for (const sentence of unquoted.split(SENTENCES)) {
     const lower = sentence.toLowerCase();
     if (!itemWords.some(w => new RegExp(`\\b${w}s?\\b`).test(lower))) continue;
-    if (REFUSAL.test(sentence)) continue;
+    if (REFUSAL.test(sentence) || NEGATED_TRANSFER.test(sentence)) continue;
     const actorHere = new RegExp(`\\b${name}\\b`, 'i').test(sentence) || /^\s*(?:she|he|they)\b/i.test(sentence);
     if (GIVE_TO(name).test(sentence)) return true;
+    const handoff = sentence.match(HANDOFF);
+    if (handoff) {
+      const receiver = handoff[2]!.replace(/['’]s$/, '');
+      // "into Liz's palm" is Liz's; "into Odo's palm" is not.
+      if (/^[A-Z]/.test(receiver) && !/^(?:Her|Their|His)$/.test(receiver)) {
+        if (receiver.toLowerCase() === first.toLowerCase()) return true;
+      } else if (actorHere && !new RegExp(`\\b${name}\\s+(?:\\w+ly\\s+)?${esc(handoff[1]!)}\\b`, 'i').test(sentence)) {
+        // "her palm" in a sentence about the actor, who is not the one doing the pressing.
+        return true;
+      }
+    }
     if (actorHere && ACQUIRE.test(sentence)) return true;
   }
   return false;
+}
+
+// ─── Repetition of a whole beat ─────────────────────────────────────────────
+
+const beatWords = (t: string) => t.toLowerCase().replace(/[’‘]/g, "'").match(/[a-z0-9']+/g) ?? [];
+
+/**
+ * How much of `text` repeats `earlier`: the share of its words covered by a
+ * three-word run that also appears in `earlier`. Live (E9W9YT), a narration
+ * came back a round later with only its first clause reworded — 0.93.
+ */
+export function beatOverlap(text: string, earlier: string): number {
+  const a = beatWords(text);
+  const b = beatWords(earlier);
+  if (a.length < 3 || b.length < 3) return a.join(' ') === b.join(' ') && a.length > 0 ? 1 : 0;
+  const runs = new Set<string>();
+  for (let i = 0; i + 3 <= b.length; i++) runs.add(`${b[i]} ${b[i + 1]} ${b[i + 2]}`);
+  const covered = new Array<boolean>(a.length).fill(false);
+  for (let i = 0; i + 3 <= a.length; i++) {
+    if (runs.has(`${a[i]} ${a[i + 1]} ${a[i + 2]}`)) covered[i] = covered[i + 1] = covered[i + 2] = true;
+  }
+  return covered.filter(Boolean).length / a.length;
+}
+
+/** The earlier beat `text` repeats (identical, or at least `threshold` of it overlapping), or null. Short lines ("[Biz takes a moment…]") are never judged. */
+export function repeatsRecentBeat(text: string, recent: string[], threshold = 0.9): string | null {
+  if (beatWords(text).length < 8) return null;
+  return recent.find(r => r && beatOverlap(text, r) >= threshold) ?? null;
+}
+
+// ─── A table with a child ───────────────────────────────────────────────────
+
+/**
+ * The handful of images that read as horror at a table with a ten-year-old,
+ * softened in place. Seen live: "the clerk's bow tie tighten around their
+ * neck like a noose", "a *click* that sounds like a bone cracking", "a
+ * terrifying, static-filled warmth", "a gentle pressure that feels like a
+ * brand". Peril stays; the prompt carries the rest.
+ */
+const CHILD_SOFTENERS: Array<[RegExp, string]> = [
+  [/\bnooses\b/gi, 'tangles of rope'],
+  [/\bnoose\b/gi, 'tangle of rope'],
+  [/\b(a|the)\s+bones?\s+(?:cracking|snapping|breaking|splintering)\b/gi, '$1 twig snapping'],
+  [/\bbone[- ](?:cracking|snapping|breaking|shattering)\b/gi, 'twig-snapping'],
+  [/\blike a brand\b/gi, 'like a warm coin'],
+  [/\ba terrifying\b/gi, 'an unnerving'],
+  [/\bterrifying\b/gi, 'unnerving'],
+];
+
+export function softenForChildren(text: string): string {
+  if (!text) return text;
+  let out = text;
+  for (const [re, to] of CHILD_SOFTENERS) {
+    out = out.replace(re, (m: string, ...groups: unknown[]) => {
+      const rep = to.replace('$1', typeof groups[0] === 'string' ? groups[0] : '');
+      return /^[A-Z]/.test(m) ? rep[0]!.toUpperCase() + rep.slice(1) : rep;
+    });
+  }
+  if (out !== text) console.log(`[guard] family table: softened "${text.slice(0, 80)}" → "${out.slice(0, 80)}"`);
+  return out;
 }
 
 // ─── Repetition ─────────────────────────────────────────────────────────────

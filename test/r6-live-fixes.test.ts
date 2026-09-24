@@ -8,7 +8,7 @@ import {
   withoutPartyEntities,
 } from '../src/server/narrative-guards.js';
 import {
-  findPronounConflicts, withConsistentPronouns, guardInterviewReply,
+  findPronounConflicts, repairGenderedNouns, guardInterviewReply,
 } from '../src/server/pronoun-consistency.js';
 import { checkedWhisperVerdict } from '../src/server/whisper-verdict.js';
 import { readingDelayMs, pacingFromEnv, ReadingClock } from '../src/server/pacing.js';
@@ -91,56 +91,22 @@ describe('2a. a party member who is clearly the subject for several sentences', 
   });
 });
 
-describe('2b. the rewrite may not touch NPCs', () => {
-  it('keeps the NPC sentences as written even when the model rewrites them', async () => {
-    // An NPC in the sentence before Biz's: not the simple case, so the model is asked.
+describe('2b. NPC pronouns are never touched (round 9: no pronoun is rewritten at all)', () => {
+  it('keeps every NPC sentence — and every pronoun — as written', () => {
     const text = 'Squeak-Ink shrugs. Biz holds out the seal; it warms in his palm. Tilly Tink snatches it. "I need it," she chirps, her voice bright. Squeak-Ink shrugs. He holds up a glinting Stamp.';
-    const overEager = 'Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink snatches it. "I need it," they chirp, their voice bright. Squeak-Ink shrugs. They hold up a glinting Stamp.';
-    const prompts: string[] = [];
-    const out = await withConsistentPronouns(text, MEMBERS, {
-      npcNames: ['Tilly Tink', 'Squeak-Ink'],
-      llm: async (m) => { prompts.push(m.map(x => x.content).join('\n')); return overEager; },
-    });
-    expect(out).toBe('Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink snatches it. "I need it," she chirps, her voice bright. Squeak-Ink shrugs. He holds up a glinting Stamp.');
-    // The prompt limits the change to the listed members and names the others.
-    expect(prompts[0]).toMatch(/only the listed party members/i);
-    expect(prompts[0]).toContain('Tilly Tink');
-    expect(prompts[0]).toContain('Squeak-Ink');
-  });
-
-  it('a sentence it should not touch keeps its original wording even when the model changed it beyond pronouns', async () => {
-    // Round 7: taken sentence by sentence — the flagged sentence's good repair
-    // is kept; the one the model rewrote beyond pronouns stays as written.
-    const text = 'Squeak-Ink shrugs. Biz holds out the seal; it warms in his palm. Tilly Tink snatches it and runs.';
-    const out = await withConsistentPronouns(text, MEMBERS, {
-      npcNames: ['Tilly Tink', 'Squeak-Ink'],
-      llm: async () => 'Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink grabs the seal and bolts.',
-    });
-    expect(out).toBe('Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink snatches it and runs.');
+    expect(repairGenderedNouns(text, MEMBERS)).toBe(text);
   });
 });
 
 describe('2c. pronoun option lists and the pronoun question are never rewritten', () => {
-  it('interview: the question that asks for pronouns keeps its options', async () => {
-    const reply = 'Biz sounds wonderful. How should people refer to Biz (e.g., she/her, he/him, they/them, or another set of pronouns)? And what does she carry in her pockets?';
-    const mangled = 'Biz sounds wonderful. How should people refer to Biz (e.g., they/them, he/him, they/them, or another set of pronouns)? And what do they carry in their pockets?';
-    const out = await guardInterviewReply(reply, { name: 'Biz', pronouns: null, relationships: [] }, [], { llm: async () => mangled });
-    expect(out).toBe('Biz sounds wonderful. How should people refer to Biz (e.g., she/her, he/him, they/them, or another set of pronouns)? And what do they carry in their pockets?');
+  it('interview: the question that asks for pronouns is left as written', () => {
+    const reply = 'Biz sounds wonderful. How should people refer to Biz (e.g., she/her, he/him, they/them, or another set of pronouns)? And what does Biz carry in their pockets?';
+    expect(guardInterviewReply(reply, { name: 'Biz', pronouns: null, relationships: [] }, [])).toBe(reply);
   });
 
-  it('a pronoun question alone asks for no rewrite', async () => {
-    let calls = 0;
-    const reply = 'Which pronouns should I use for her — she/her, he/him, they/them, or another set of pronouns?';
-    expect(await guardInterviewReply(reply, { name: 'Biz', pronouns: null, relationships: [] }, [], { llm: async () => { calls++; return 'x'; } })).toBe(reply);
-    expect(calls).toBe(0);
-  });
-
-  it('in play, a list of pronoun options is kept as written even inside a flagged sentence', async () => {
-    const text = 'Biz taps the badge. It reads she/her, he/him, they/them in a looping hand, and it warms under his thumb.';
-    const out = await withConsistentPronouns(text, MEMBERS, {
-      llm: async () => 'Biz taps the badge. It reads they/them, they/them, they/them in a looping hand, and it warms under their thumb.',
-    });
-    expect(out).toBe('Biz taps the badge. It reads she/her, he/him, they/them in a looping hand, and it warms under their thumb.');
+  it('in play, a list of pronoun options is kept as written', () => {
+    const text = 'Biz taps the badge. It reads she/her, he/him, they/them in a looping hand.';
+    expect(repairGenderedNouns(text, MEMBERS)).toBe(text);
   });
 });
 
@@ -201,7 +167,7 @@ describe('4. "Mom, Liz" / "mom Liz" / "Mom (Liz)"', () => {
   });
 
   it('the interview reply: "their mom Liz" → "Liz"', async () => {
-    const out = await guardInterviewReply('So Biz is traveling with their mom Liz. What does Biz carry?', { name: 'Biz', pronouns: 'they/them', relationships: [{ to: 'Liz', relation: 'mother', address: 'Mom' }] }, ['Liz'], { llm: async () => { throw new Error('no call expected'); } });
+    const out = guardInterviewReply('So Biz is traveling with their mom Liz. What does Biz carry?', { name: 'Biz', pronouns: 'they/them', relationships: [{ to: 'Liz', relation: 'mother', address: 'Mom' }] }, ['Liz']);
     expect(out).toBe('So Biz is traveling with Liz. What does Biz carry?');
   });
 });

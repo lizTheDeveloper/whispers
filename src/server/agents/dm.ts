@@ -5,6 +5,8 @@ import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, Char
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { PLAIN_PROSE_STYLE } from './style.js';
 import { repetitionNotes } from '../narrative-guards.js';
+import { repairGenderedNouns } from '../pronoun-consistency.js';
+import { influenceKey } from '../world-readiness.js';
 import { wantsNoSpoilers } from '../../shared/spoilers.js';
 import { safeDataFile } from '../data-paths.js';
 import type Database from 'better-sqlite3';
@@ -376,7 +378,7 @@ export function childToneRule(party: PartyMember[]): string {
   const kids = childrenInParty(party);
   if (kids.length === 0) return '';
   const who = kids.length === 1 ? `${kids[0]} is a child` : `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]} are children`;
-  return `FAMILY TABLE: ${who}. Peril and stakes are fine — danger, fear, narrow escapes, real consequences — but never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die.`;
+  return `FAMILY TABLE: ${who}, playing at this table. Peril and stakes are fine — danger, fear, narrow escapes, real consequences — but never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die. Keep the imagery a ten-year-old can read, for EVERYONE in the scene, NPCs included: no nooses or hanging, no bones cracking or breaking, no blood, wounds or gore, no death imagery (corpses, skulls, "dying" light, graves), no branding or burning skin, nothing "terrifying" or "horrifying". Tension comes from mischief, puzzles, near-misses and ticking clocks instead.`;
 }
 
 const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
@@ -425,8 +427,12 @@ export function assembleSystemPrompt(input: {
 }): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
   const sections = composePresetSections(input.preset);
   const partyNames = (input.party ?? []).map(p => p.name);
-  const dmCustomPrompt = withoutPlaceholderParty(input.dmCustomPrompt, partyNames);
-  const dmInstructions = withoutPlaceholderParty(input.dmInstructions, partyNames);
+  // The setup chat is had before anyone states pronouns: live, its direction
+  // said "her 10-year-old son Biz" for a they/them Biz, in every DM prompt.
+  const nounMembers = (input.party ?? []).map(p => ({ name: p.name, pronouns: p.pronouns ?? null, relationships: p.relationships ?? [] }));
+  const neutral = (t: string | null) => (t ? repairGenderedNouns(t, nounMembers, { neutralWhenUnknown: true }) : t);
+  const dmCustomPrompt = neutral(withoutPlaceholderParty(input.dmCustomPrompt, partyNames));
+  const dmInstructions = neutral(withoutPlaceholderParty(input.dmInstructions, partyNames));
   let prompt = sections.head;
   const criticalSection = sections.critical;
   const narrationHint = sections.narrationHint;
@@ -492,6 +498,8 @@ export interface ScenePacing {
   isFinale?: boolean;
   /** The narration-only opening (arrival + introductions) has just been delivered; this is the first real beat of play. */
   afterOpening?: boolean;
+  /** An earlier beat the last draft repeated nearly word for word: this one must move on from it. */
+  repeatedBeat?: string;
 }
 
 interface DmContext {
@@ -626,6 +634,7 @@ export class DmAgent {
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
       repetition ? `\n<already_said>\n${repetition}\n</already_said>` : '',
+      pacing?.repeatedBeat ? `\n<repeated>\nYour last draft repeated this earlier beat almost word for word — the table has already read it:\n"${pacing.repeatedBeat}"\nDo NOT reuse its sentences, its NPC lines or its images. Write what happens NEXT, after it.\n</repeated>` : '',
       `\n<task>`,
       `Narrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. VARY YOUR OPENING — don't start with the character's name every time. Try starting with: a sound, an NPC speaking, a sensory detail, a shift in the environment, or an action in progress. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.\nNPC INITIATIVE: If activeNpcs are present, at least one NPC must SPEAK or ACT in the narration — they approach the party, ask a question, block a path, offer information, make a demand, or reveal something. "The foreman steps from the shadows, voice hoarse: 'You shouldn't be down here.'" NPCs who initiate create drama the characters MUST respond to.${partyHint}`,
       `currentLocationName MUST be COPIED EXACTLY from the <valid_locations> list above. NEVER invent a new location name. If no <valid_locations> section exists, you may introduce a new name.${personalityReminder}`,
@@ -824,7 +833,9 @@ Have a natural conversation with the game host to build their world with them:
 Be conversational and enthusiastic. Ask one or two questions at a time, never a checklist.
 Accumulate every influence the host names into "influences" — return the full list every time, not just new ones.
 When you have enough to build a world, set "done": true and fill in dmInstructions (a summary of how they want this run) and dmCustomPrompt (your tailored direction for running it).
-Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.${spoilerBlock}
+Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.
+"reply" is only what you SAY to the host, in plain conversation. Never copy dmInstructions or dmCustomPrompt into it, and never lay out a field-by-field draft there (no "Plot Hook:", "Key NPCs:", "Current Situation:", "Secrets:" or "Twist:" headings) — the host sees the drafted world on its own card.
+PLAYER CHARACTERS: never give the host's player characters a gender the host has not stated — not in "reply", dmInstructions, dmCustomPrompt or anywhere else. Use the host's own relation words: if the host says "my kid Biz", write "her kid Biz" or "Biz", never "son", "daughter", "boy" or "girl"; if the host gave no pronouns for a character, use their name.${spoilerBlock}
 ${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` : ''}${unmetBlock}
 
 Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }`;
@@ -866,7 +877,7 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
     if (named.length > 0) {
       const all = [...(reply.influences ?? []), ...named];
       const seen = new Set<string>();
-      reply = { ...reply, influences: all.filter(i => { const k = i.trim().toLowerCase(); if (!k || seen.has(k)) return false; seen.add(k); return true; }) };
+      reply = { ...reply, influences: all.filter(i => { const k = influenceKey(i); if (!k || seen.has(k)) return false; seen.add(k); return true; }) };
     }
     return reply;
   }
@@ -922,6 +933,8 @@ Requirements:
 - items: 0 or more notable objects
 
 Make places and people specific enough to walk into. Avoid generic fantasy furniture unless the influences call for it.
+
+PLAYER CHARACTERS: never give the host's player characters a gender the host has not stated — not in the premise or anywhere else in this world. Use the host's own relation words: if the host says "my kid Biz", write "her kid Biz" or "Biz", never "son", "daughter", "boy" or "girl"; if the host gave no pronouns for a character, use their name.
 
 NO SPOILERS: The host reads every field of this world on a card before play — the premise, the location and NPC descriptions, dispositions and motivations, the plotHooks and the items — and the host may be playing. None of it may reveal or hint at a twist, a culprit, who is responsible for anything, who is behind anything, a hidden motive, or the answer to a mystery. Not even obliquely: no "rumors hint at a deliberate cover-up", no "someone wants the truth buried", no "it was no accident". Motivations say what an NPC openly wants; plotHooks say what is happening on the surface, as open questions. If the conversation asks something the story should answer ("whose mistake brought us here?"), leave it an open question — the answers belong to the DM's private direction, never to this world.
 
@@ -1003,14 +1016,14 @@ ${people}`;
     history: Array<{ role: string; content: string }>;
     unmet: string[];
     /** Characters already at this table (live, awaiting approval, or being made by another player). */
-    tableCharacters?: Array<{ name: string; highConcept: string }>;
+    tableCharacters?: Array<{ name: string; highConcept: string; pronouns?: string | null }>;
   }): Promise<CharInterviewReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'character creation aspects skills stunts');
     // No plot hooks: whatever this prompt knows can end up in the player's
     // backstory, and from there in the character agent's prompt every turn.
     const tableCharacters = (opts.tableCharacters ?? []).filter(c => c.name.trim());
     const tableBlock = tableCharacters.length > 0
-      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''}`).join('\n')}\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
+      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). Use the relation word the player used ("kid" stays "kid").\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
       : '';
     const worldBlock = opts.seed
       ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\n`

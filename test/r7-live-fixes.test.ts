@@ -10,7 +10,7 @@ import type { CharacterDefinition, RoomState, WorldSeed } from '../src/shared/ty
 import type { ServerMessage } from '../src/shared/protocol.js';
 import { pluralVerb } from '../src/shared/pronouns.js';
 import {
-  findPronounConflicts, withConsistentPronouns, spliceRewrite, toTheyThem, guardInterviewReply,
+  findPronounConflicts, repairGenderedNouns, guardInterviewReply,
 } from '../src/server/pronoun-consistency.js';
 import {
   withoutPartyEntities, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, namesInNarration,
@@ -28,7 +28,6 @@ const canned = {
   epilogue: 'The Registry fell quiet behind them.',
   activeNpcs: [] as string[],
   proposals: undefined as string[] | undefined,
-  pronounRewrite: undefined as string | undefined,
 };
 
 vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
@@ -38,11 +37,6 @@ vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
     const all = opts.messages.map(m => m.content).join('\n');
     if (all.includes('OPENING OF THE ADVENTURE')) return { narration: 'The Registry hums.', introductions: [], currentLocationName: '' };
     if (all.includes('Pacing:')) return { narration: canned.narration, currentLocationName: 'The Grand Registry Hall', activeNpcs: canned.activeNpcs, isSceneEnd: false };
-    if (all.includes('You correct how people are referred to in a passage')) {
-      // The passage, with the live sentences swapped for their repair (the loop may have appended its own lines).
-      const passage = all.split('Passage:\n')[1] ?? '';
-      return canned.pronounRewrite ? passage.replace(RIDDLE.split("'A letter.' ")[1]!, RIDDLE_FIXED.split("'A letter.' ")[1]!) : 'ok';
-    }
     if (all.includes('Propose 2-4 actions')) {
       if (canned.proposals) return { actions: canned.proposals.map(description => ({ description, reasoning: 'r' })) };
       return { actions: [{ description: 'I take a numbered ticket from the dispenser', reasoning: 'queue' }, { description: 'I ask the clerk where we are', reasoning: 'talk' }] };
@@ -74,13 +68,11 @@ afterAll(() => { rmSync(dataDir, { recursive: true, force: true }); });
 
 const M = [{ name: 'Liz', pronouns: 'she/her' }, { name: 'Biz', pronouns: 'they/them' }];
 const NPCS = ['Quillwick', 'Mayor Penstroke', 'Pip'];
-const noLlm = async (): Promise<string> => { throw new Error('no LLM call expected'); };
 
 // ─── 1. Biz still "he" in a resolution and in the epilogue ─────────────────
 
 // The live resolution, around its three quoted fragments.
 const RIDDLE = "Biz's voice rings clear as he declares 'A letter.' The riddle-door sighs, and a storm of parchment wings swirls around him. Liz steps beside Biz, her hand resting reassuringly on his shoulder.";
-const RIDDLE_FIXED = "Biz's voice rings clear as they declare 'A letter.' The riddle-door sighs, and a storm of parchment wings swirls around them. Liz steps beside Biz, her hand resting reassuringly on their shoulder.";
 
 describe('1. the riddle resolution: detection fired, the repair was thrown away', () => {
   it('detection: all three sentences are flagged ("Biz\'s" names Biz; the quote does not hide it)', () => {
@@ -92,39 +84,13 @@ describe('1. the riddle resolution: detection fired, the repair was thrown away'
     ]));
   });
 
-  it('root cause: "he declares" → "they declare" was counted as a change beyond pronouns, and one such sentence rejected the whole repair', () => {
-    // Before: skeleton() stripped -s/-es, so "declares" read "declar" and
-    // "declare" read "declare" — the right rewrite never matched.
-    expect(spliceRewrite(RIDDLE, RIDDLE_FIXED, new Set([0, 1, 2]))).toBe(RIDDLE_FIXED);
-  });
-
-  it('a sentence the model did change beyond pronouns keeps the original, and only that one', () => {
-    const rogue = "Biz's voice rings clear as they declare 'A letter.' The riddle-door sighs, and a storm of paper birds circles them. Liz steps beside Biz, her hand resting reassuringly on their shoulder.";
-    expect(spliceRewrite(RIDDLE, rogue, new Set([0, 1, 2]))).toBe(
-      "Biz's voice rings clear as they declare 'A letter.' The riddle-door sighs, and a storm of parchment wings swirls around him. Liz steps beside Biz, her hand resting reassuringly on their shoulder.");
-  });
-
-  it('the whole resolution comes out right: the simple sentence in code, the rest by the model', async () => {
-    const prompts: string[] = [];
-    const out = await withConsistentPronouns(RIDDLE, M, {
-      actor: 'Biz', npcNames: NPCS,
-      llm: async (m) => { prompts.push(m.map(x => x.content).join('\n')); return RIDDLE_FIXED; },
-    });
-    expect(out).toBe(RIDDLE_FIXED);
-    // The model saw the passage with sentence 1 already repaired.
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain('as they declare');
-  });
-
-  it('"Biz\'s voice rings clear as he declares \'A letter.\'" alone needs no model at all', async () => {
-    expect(await withConsistentPronouns("Biz's voice rings clear as he declares 'A letter.'", M, { actor: 'Biz', npcNames: NPCS, llm: noLlm }))
-      .toBe("Biz's voice rings clear as they declare 'A letter.'");
-  });
-
-  it('the epilogue: "…feel the invisible bureaucratic pressure pulse through his chest"', async () => {
-    const text = 'Biz could still feel the invisible bureaucratic pressure pulse through his chest.';
-    expect(await withConsistentPronouns(text, M, { npcNames: NPCS, llm: noLlm }))
-      .toBe('Biz could still feel the invisible bureaucratic pressure pulse through their chest.');
+  // Round 9: the pronoun rewrite is gone (it did more harm than good with
+  // qwen — see pronoun-consistency.ts). Detection still logs; the text is
+  // left as written, and only a gendered noun naming a member is repaired.
+  it('since round 9 no pronoun is rewritten: the riddle resolution is left as written', () => {
+    expect(repairGenderedNouns(RIDDLE, M)).toBe(RIDDLE);
+    const epilogue = 'Biz could still feel the invisible bureaucratic pressure pulse through his chest.';
+    expect(repairGenderedNouns(epilogue, M)).toBe(epilogue);
   });
 
   it('why the epilogue was missed: the trouble, stored as an NPC, made "After" a name', () => {
@@ -135,25 +101,10 @@ describe('1. the riddle resolution: detection fired, the repair was thrown away'
     expect(findPronounConflicts(text, M, { npcNames: NPCS }).map(c => [c.name, c.word])).toEqual([['Biz', 'his']]);
   });
 
-  it('NPC safety: the code repair never runs where an NPC is named, nearby, or a companion could own the word', async () => {
-    const prompts: string[] = [];
-    const llm = async (m: Msg[]) => { prompts.push(m.map(x => x.content).join('\n')); return 'ok'; };
-    // An NPC in the sentence: never flagged at all.
-    expect(await withConsistentPronouns('Biz shows Quillwick the letter, and he grins.', M, { npcNames: NPCS, llm })).toBe('Biz shows Quillwick the letter, and he grins.');
-    // An NPC in the sentence before: the model decides, and a bad answer changes nothing.
-    expect(await withConsistentPronouns('Quillwick sets down his quill. Biz nods at him.', M, { npcNames: NPCS, llm })).toBe('Quillwick sets down his quill. Biz nods at him.');
-    // "her" could be Liz's: the model decides.
-    expect(await withConsistentPronouns('Biz leans into her embrace.', M, { npcNames: NPCS, llm })).toBe('Biz leans into her embrace.');
-    expect(prompts.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('toTheyThem: forms and verb agreement, quoted speech untouched', () => {
-    expect(toTheyThem('Biz grins as he quickly declares the answer.')).toBe('Biz grins as they quickly declare the answer.');
-    expect(toTheyThem("He's been here before, and he is sure of himself.")).toBe("They've been here before, and they are sure of themself.");
-    expect(toTheyThem('Biz hands her the key; the choice was hers.')).toBe('Biz hands them the key; the choice was theirs.');
-    expect(toTheyThem('Biz tucks her hair back and watches.')).toBe('Biz tucks their hair back and watches.');
-    expect(toTheyThem('Biz says "he went that way" and he watches the door.')).toBe('Biz says "he went that way" and they watch the door.');
-    expect(toTheyThem('Biz shrugs; the idea was his.')).toBe('Biz shrugs; the idea was theirs.');
+  it('NPC safety: NPC and companion pronouns are never touched', () => {
+    for (const t of ['Biz shows Quillwick the letter, and he grins.', 'Quillwick sets down his quill. Biz nods at him.', 'Biz leans into her embrace.']) {
+      expect(repairGenderedNouns(t, M)).toBe(t);
+    }
   });
 
   it('pluralVerb agrees a he/she verb with they', () => {
@@ -253,7 +204,7 @@ describe('4. a sentence that states the address term keeps it', () => {
       'Biz is a curious kid who wanders off after anything shiny, and calls Mom Liz.',
     ]) {
       expect(namesInNarration(t, terms)).toBe(t);
-      expect(await guardInterviewReply(t, { name: 'Biz', pronouns: 'they/them', relationships: [{ to: 'Liz', relation: 'mother', address: 'Mom' }] }, ['Liz'], { llm: noLlm })).toBe(t);
+      expect(guardInterviewReply(t, { name: 'Biz', pronouns: 'they/them', relationships: [{ to: 'Liz', relation: 'mother', address: 'Mom' }] }, ['Liz'])).toBe(t);
     }
     // Still repaired where the term is used AS a name.
     expect(namesInNarration('Biz steadies Mom.', terms)).toBe('Biz steadies Liz.');
@@ -396,19 +347,15 @@ describe('in play', () => {
     }
   }, 30_000);
 
-  it('1. the live resolution reaches the table repaired', async () => {
+  it('1. since round 9 the live resolution reaches the table as written — no rewrite is asked for', async () => {
     canned.resolution = RIDDLE;
-    canned.pronounRewrite = RIDDLE_FIXED;
     try {
-      const { broadcasts } = await runLoop({ until: m => m.type === 'resolution' });
+      const { broadcasts, calls } = await runLoop({ until: m => m.type === 'resolution' });
       const res = broadcasts.find(m => m.type === 'resolution') as Extract<ServerMessage, { type: 'resolution' }>;
-      // Whoever acted, Biz is "they" throughout.
-      expect(res.text).toContain("Biz's voice rings clear as they declare 'A letter.'");
-      expect(res.text).toContain('on their shoulder');
-      expect(res.text).not.toMatch(/\bhe declares\b|\bhis shoulder\b/);
+      expect(res.text).toContain("Biz's voice rings clear as he declares 'A letter.'");
+      expect(calls.some(c => c.includes('You correct how people are referred to'))).toBe(false);
     } finally {
       canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
-      canned.pronounRewrite = undefined;
     }
   }, 30_000);
 

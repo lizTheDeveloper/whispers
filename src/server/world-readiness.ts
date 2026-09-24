@@ -8,6 +8,22 @@ const MAX_INFLUENCES = 12;
 const MAX_INFLUENCE_LEN = 120;
 
 /**
+ * What makes two influences the same one: lowercase, without parentheticals,
+ * articles, possessives and punctuation. Live, "Brazil (Terry Gilliam
+ * film)" and "Brazil (the Terry Gilliam film)" were both recorded and the
+ * card counted 4/3.
+ */
+export function influenceKey(influence: string): string {
+  return influence.toLowerCase()
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
+    .replace(/['’]s\b/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w && !['the', 'a', 'an'].includes(w))
+    .join(' ');
+}
+
+/**
  * Influences arrive from a model, so treat the value as untrusted shape as
  * well as untrusted content: anything that is not an array of strings becomes
  * an empty list rather than throwing, and the result is capped so a runaway
@@ -21,8 +37,8 @@ export function normalizeInfluences(raw: unknown): string[] {
     if (typeof entry !== 'string') continue;
     const trimmed = entry.trim().slice(0, MAX_INFLUENCE_LEN);
     if (!trimmed) continue;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) continue;
+    const key = influenceKey(trimmed);
+    if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(trimmed);
     if (out.length >= MAX_INFLUENCES) break;

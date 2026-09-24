@@ -4,6 +4,7 @@ import { WorldBible } from './world-bible.js';
 import { safeDataFile } from './data-paths.js';
 import { WorldSeedSchema } from './agents/schemas.js';
 import type { WorldSeed } from '../shared/types.js';
+import { neutralSetupNouns } from './pronoun-consistency.js';
 
 /**
  * Write a seed into the world bible.
@@ -131,25 +132,105 @@ export function isSeedAccepted(db: Database.Database, campaignId: string): boole
   return Boolean(row?.seed_accepted_at);
 }
 
+/** Labels of the DM's private draft that never belong in a chat reply, for any host. */
+const FIELD_LABEL = String.raw`dm[ _]?instructions|dm[ _]?custom[ _]?prompt|plot\s+hooks?|key\s+npcs?|current\s+situation|secrets?|twists?`;
+/** …and, for a host who plays or asked for no spoilers, the NPCs the DM has in mind. */
+const NPC_LABEL = String.raw`npcs?(?:\s*\d+)?`;
+const labelAt = (labels: string) => new RegExp(String.raw`^\s*(?:[-*•>#]+\s*|\d+[.)]\s*)?(?:\*\*|__)?\s*(?:${labels})\s*(?:\*\*|__)?\s*:`, 'i');
+/** A label after a sentence inside a line: "…ready. Plot Hook: the clerk vanished." */
+const labelInline = (labels: string) => new RegExp(String.raw`(?<=[.!?…]["”’']?\s+)(?:\*\*|__)?\s*(?:${labels})\s*(?:\*\*|__)?\s*:`, 'i');
+
+/**
+ * A setup-chat reply with the DM's draft fields taken out. Live (E9W9YT, a
+ * host playing and asking for no spoilers), the model wrote its structured
+ * output into `reply` itself: first a "**Plot Hook:**" block, then
+ * "**dmInstructions:**" and "**dmCustomPrompt:**" dumps with "Current
+ * Situation" and "Key NPCs". Nothing in the server copies those fields into
+ * the reply; the model echoed them. A block — its label line and the lines
+ * after it up to a blank line — goes, for every host (a DM host reads the
+ * drafted world on its card, not in the chat), and so does an intro line
+ * ending in ":" right before it. `noSpoilers` also drops "NPC 1:" blocks.
+ */
+export function withoutSetupFieldDumps(reply: string, opts: { noSpoilers?: boolean; fallback?: string } = {}): string {
+  if (!reply) return reply;
+  const labels = opts.noSpoilers ? `${FIELD_LABEL}|${NPC_LABEL}` : FIELD_LABEL;
+  const atStart = labelAt(labels);
+  const inline = labelInline(labels);
+  if (!reply.split('\n').some(l => atStart.test(l)) && !inline.test(reply)) return reply;
+  const kept: string[] = [];
+  let dropping = false;
+  let dropped = 0;
+  for (const line of reply.split('\n')) {
+    if (dropping) {
+      if (line.trim() === '') { dropping = false; kept.push(line); }
+      continue;
+    }
+    if (atStart.test(line)) {
+      dropping = true;
+      dropped++;
+      // "Here is the summary of how we will run this game:" introduced it.
+      let k = kept.length - 1;
+      while (k >= 0 && kept[k]!.trim() === '') k--;
+      if (k >= 0 && /:\s*$/.test(kept[k]!) && !atStart.test(kept[k]!)) kept.splice(k, 1);
+      continue;
+    }
+    const m = line.match(inline);
+    if (m && m.index !== undefined) {
+      dropped++;
+      kept.push(line.slice(0, m.index).trimEnd());
+      continue;
+    }
+    kept.push(line);
+  }
+  const out = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (dropped > 0) console.log(`[dm-chat] dropped ${dropped} draft-field block(s) from a setup reply`);
+  return out || opts.fallback || 'I have the shape of it — the rest you will discover in play. What tone do you want at the table?';
+}
+
+/** Sentences of the DM's private direction that carry a secret: its labelled secret blocks, and any sentence about motives, secrets or who is behind what. */
+export function directionSecrets(direction: string | null | undefined): string[] {
+  if (!direction?.trim()) return [];
+  const out: string[] = [];
+  const atStart = labelAt(`${FIELD_LABEL}|${NPC_LABEL}`);
+  let inBlock = false;
+  for (const line of direction.split('\n')) {
+    if (atStart.test(line)) { inBlock = true; out.push(line); continue; }
+    if (inBlock && (line.trim() === '' || /^\s*(?:\*\*|__)[^*_]+(?:\*\*|__)\s*:?/.test(line) && !/^\s*\d/.test(line))) inBlock = false;
+    if (inBlock) { out.push(line); continue; }
+    for (const sentence of line.split(/(?<=[.!?…]["”’']?)\s+/)) {
+      if (/\b(?:secret\w*|hidden|hides?|hiding|actually|truly|really|twist\w*|behind|responsible|culprit|motive\w*|betray\w*|plans?\s+to|wants?\s+to|scheme\w*|vanish\w*|disappear\w*)\b/i.test(sentence)) out.push(sentence);
+    }
+  }
+  return out;
+}
+
 /**
  * A setup-chat reply for a host who plays or asked for no spoilers, with
  * every sentence dropped that repeats a plot hook or an NPC motivation from
- * the drafted world — six words in a row of it, or all of a shorter one.
- * The prompt asks for this; this is the net under it. Null seed: as written.
+ * the drafted world — three words in a row of it, up to six — or a secret
+ * of the DM's direction still being drafted (`direction`: four words in a
+ * row of a secret sentence, see directionSecrets). The prompt asks for
+ * this; this is the net under it. Nothing to compare against: as written.
  */
-export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null, fallback?: string): string {
-  if (!reply || !seed) return reply;
-  const words = (t: string) => t.toLowerCase().match(/[a-z0-9'’]+/g) ?? [];
-  const secrets = [...seed.plotHooks, ...seed.npcs.map(n => n.motivation ?? '')].map(words).filter(w => w.length >= 3);
-  if (secrets.length === 0) return reply;
+export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null, fallback?: string, direction: Array<string | null | undefined> = []): string {
+  if (!reply) return reply;
+  const words = (t: string) => t.toLowerCase().replace(/[’‘]/g, "'").match(/[a-z0-9']+/g) ?? [];
   const runs = new Set<string>();
-  for (const w of secrets) {
-    const n = Math.min(6, w.length);
-    for (let i = 0; i + n <= w.length; i++) runs.add(w.slice(i, i + n).join(' '));
-  }
+  const addRuns = (texts: string[], min: number) => {
+    for (const w of texts.map(words).filter(x => x.length >= min)) {
+      const n = Math.min(6, w.length);
+      for (let i = 0; i + n <= w.length; i++) runs.add(w.slice(i, i + n).join(' '));
+      if (min > 3) for (let k = min; k < n; k++) for (let i = 0; i + k <= w.length; i++) runs.add(w.slice(i, i + k).join(' '));
+    }
+  };
+  if (seed) addRuns([...seed.plotHooks, ...seed.npcs.map(n => n.motivation ?? '')], 3);
+  // The draft direction is long and repeats the host's own premise; only its secrets count, at four words.
+  addRuns(direction.flatMap(d => directionSecrets(d)), 4);
+  if (runs.size === 0) return reply;
+  const minRun = seed ? 3 : 4;
   const spoils = (sentence: string) => {
     const w = words(sentence);
-    for (let n = 3; n <= 6; n++) {
+    for (let n = minRun; n <= 6; n++) {
       for (let i = 0; i + n <= w.length; i++) if (runs.has(w.slice(i, i + n).join(' '))) return true;
     }
     return false;
@@ -164,4 +245,24 @@ export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null, fallb
   // A caller-chosen fallback moves the setup on; the fixed line, sent for
   // every fully-dropped reply, read to the host as the DM stuck in a loop.
   return out || fallback || 'I have the shape of it — the rest you will discover in play. What tone do you want at the table?';
+}
+
+
+/**
+ * The drafted or accepted world in the host's own relation words: live, the
+ * host wrote "her 10-year-old kid, Biz" and the seed said "her ten-year-old
+ * son Biz", which was then copied into Liz's backstory. The setup chat is
+ * had before anyone states pronouns, so a gendered noun for a character the
+ * host named becomes "kid" unless the host used that noun themselves.
+ */
+export function seedWithHostNouns(seed: WorldSeed, hostMessages: string[]): WorldSeed {
+  const fix = (t: string) => neutralSetupNouns(t, hostMessages);
+  const out: WorldSeed = {
+    ...seed,
+    premise: fix(seed.premise),
+    locations: seed.locations.map(l => ({ ...l, description: l.description ? fix(l.description) : l.description })),
+    npcs: seed.npcs.map(n => ({ ...n, description: n.description ? fix(n.description) : n.description, motivation: n.motivation ? fix(n.motivation) : n.motivation })),
+    plotHooks: seed.plotHooks.map(fix),
+  };
+  return JSON.stringify(out) === JSON.stringify(seed) ? seed : out;
 }

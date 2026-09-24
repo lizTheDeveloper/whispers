@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, CharacterState } from '../src/shared/types.js';
-import { withConsistentPronouns, findPronounConflicts } from '../src/server/pronoun-consistency.js';
+import { repairGenderedNouns, findPronounConflicts } from '../src/server/pronoun-consistency.js';
 import { withoutWhisperMentions, withoutDmWhispers, narratesItemTransfer, repetitionNotes } from '../src/server/narrative-guards.js';
 import { statedAddressTerms, withStatedAddressTerms, mergeCharacterDraft } from '../src/server/character-interview.js';
 import { assembleSystemPrompt, influencesNamedIn, SETUP_REPEAT_NUDGE } from '../src/server/agents/dm.js';
@@ -70,10 +70,6 @@ beforeAll(async () => {
 afterAll(() => { rmSync(dataDir, { recursive: true, force: true }); });
 
 const M = [{ name: 'Liz', pronouns: 'she/her' }, { name: 'Biz', pronouns: 'they/them' }];
-const unchanged = (seen: string[]) => async (m: Msg[]) => {
-  seen.push(m.map(x => x.content).join('\n'));
-  return m[m.length - 1]!.content.split('Passage:\n')[1] ?? '';
-};
 
 // ─── 2. The setup chat stuck on one reply ──────────────────────────────────
 
@@ -125,7 +121,7 @@ describe('2. a no-spoiler host\'s setup chat keeps moving', () => {
 
 // ─── 3. "the boy" for Biz, returned unchanged by the rewrite ───────────────
 
-describe('3. gendered nouns for a they/them member, and a rewrite that changed nothing', () => {
+describe('3. gendered nouns for a they/them member', () => {
   const LINGER = "Biz ducks under the rollers, and a cold draft keeps lingering where the boy just was.";
   const NECK = "Liz grips the rail. Biz freezes, and a chill prickles the back of the boy's neck.";
 
@@ -139,58 +135,37 @@ describe('3. gendered nouns for a they/them member, and a rewrite that changed n
     expect(findPronounConflicts('Biz bows like a young lady at court.', M).map(c => c.word)).toEqual(['young lady']);
   });
 
-  it('the model returns the passage unchanged: re-checked, asked again more strictly, then repaired in code', async () => {
-    const seen: string[] = [];
-    const log = vi.spyOn(console, 'warn');
-    expect(await withConsistentPronouns(LINGER, M, { npcNames: ['Lady Vex'], llm: unchanged(seen) }))
-      .toBe('Biz ducks under the rollers, and a cold draft keeps lingering where Biz just was.');
-    expect(seen).toHaveLength(2);
-    expect(seen[1]).toMatch(/STILL/);
-    expect(log.mock.calls.some(c => String(c[0]).includes('unchanged'))).toBe(true);
-    log.mockRestore();
+  // Round 9: no rewrite is asked for any more (the strict second ask caused
+  // the misgendering seen in E9W9YT). "the boy" alone could be anyone: it is
+  // left as written; "the boy Biz" names Biz and is repaired.
+  it('"the boy" alone is left as written; "the boy Biz" and "her son Biz" are repaired', () => {
+    expect(repairGenderedNouns(LINGER, M)).toBe(LINGER);
+    expect(repairGenderedNouns(NECK, M)).toBe(NECK);
+    expect(repairGenderedNouns('The boy Biz ducks under the rollers.', M)).toBe('Biz ducks under the rollers.');
+    expect(repairGenderedNouns('Liz pulls her son Biz close.', M)).toBe('Liz pulls her kid Biz close.');
   });
 
-  it('"the back of the boy\'s neck" → "the back of Biz\'s neck"', async () => {
-    expect(await withConsistentPronouns(NECK, M, { npcNames: ['Lady Vex'], llm: unchanged([]) }))
-      .toBe("Liz grips the rail. Biz freezes, and a chill prickles the back of Biz's neck.");
-  });
-
-  it('a good rewrite is used, and not asked for twice', async () => {
-    const seen: string[] = [];
-    const fixed = 'Biz ducks under the rollers, and a cold draft keeps lingering where the kid just was.';
-    expect(await withConsistentPronouns(LINGER, M, { npcNames: ['Lady Vex'], llm: async (m) => { seen.push(m[1]!.content); return fixed; } })).toBe(fixed);
-    expect(seen).toHaveLength(1);
-  });
-
-  it('a stray "a boy" (someone else) is never rewritten in code', async () => {
+  it('a stray "a boy" (someone else) is never rewritten', () => {
     const text = 'Biz watches a boy chase paper cranes across the hall.';
-    expect(await withConsistentPronouns(text, M, { llm: unchanged([]) })).toBe(text);
+    expect(repairGenderedNouns(text, M)).toBe(text);
   });
 });
 
 // ─── 4. Odo's coat is Odo's ─────────────────────────────────────────────────
 
-describe('4. the code repair never touches a pronoun near an NPC it does not know', () => {
-  it('"Odo steps forward, his stormcloud coat…" keeps "his" (Odo is not in the NPC list yet)', async () => {
+describe('4. no pronoun is ever rewritten — an NPC\'s least of all', () => {
+  it('"Odo steps forward, his stormcloud coat…" keeps "his"', () => {
     const text = "Odo steps forward, his stormcloud coat brushing Biz's shoulder.";
-    const prompts: string[] = [];
-    // Whatever the model says, the code must not repair this one itself.
-    const out = await withConsistentPronouns(text, M, { npcNames: ['Lady Vex'], llm: unchanged(prompts) });
-    expect(out).toBe(text);
-    // The model path was used, and told Odo keeps his pronouns.
-    expect(prompts.length).toBeGreaterThanOrEqual(1);
-    expect(prompts[0]).toContain('Odo');
+    expect(repairGenderedNouns(text, M)).toBe(text);
   });
 
-  it('an NPC in the sentence before: the model decides, the code does not', async () => {
+  it('an NPC in the sentence before keeps "he"', () => {
     const text = 'Odo adjusts his hat. Biz watches as he walks off.';
-    expect(await withConsistentPronouns(text, M, { npcNames: [], llm: unchanged([]) })).toBe(text);
+    expect(repairGenderedNouns(text, M)).toBe(text);
   });
 
-  it('the plain case still needs no model', async () => {
-    const noLlm = async (): Promise<string> => { throw new Error('no LLM call expected'); };
-    expect(await withConsistentPronouns('Biz tightens his grip on the ledger.', M, { npcNames: ['Odo'], llm: noLlm }))
-      .toBe('Biz tightens their grip on the ledger.');
+  it('even the plain case is left as written: pronoun ownership is too ambiguous for code', () => {
+    expect(repairGenderedNouns('Biz tightens his grip on the ledger.', M)).toBe('Biz tightens his grip on the ledger.');
   });
 });
 

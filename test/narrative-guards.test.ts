@@ -41,8 +41,6 @@ const canned = {
   decisions: {} as Record<string, { chosenAction: string; spokenWords: string | null }>,
   epilogue: 'The queue closed behind them, and the Bureau went quiet.',
   proposals: undefined as string[] | undefined,
-  /** What the pronoun-consistency rewrite returns (undefined → echo 'ok', which is rejected). */
-  pronounRewrite: {} as Record<string, string>,
   /** The ruling's state changes (by character name → resolved to the id at call time). */
   stateChanges: [] as Array<{ characterId: string; field: string; action: string; value: unknown }>,
   /** How the character says it took the whisper. */
@@ -60,11 +58,6 @@ vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
     }
     if (all.includes('Pacing:')) {
       return { narration: canned.narration, currentLocationName: 'The Intake Hall', activeNpcs: [], isSceneEnd: false };
-    }
-    if (all.includes('You correct how people are referred to in a passage')) {
-      const passage = all.split('Passage:\n')[1] ?? '';
-      const hit = Object.entries(canned.pronounRewrite).find(([from]) => passage.includes(from));
-      return hit ? passage.replace(hit[0], hit[1]) : 'ok';
     }
     if (all.includes('Propose 2-4 actions')) {
       if (canned.proposals) return { actions: canned.proposals.map(description => ({ description, reasoning: 'r' })) };
@@ -562,14 +555,13 @@ describe('a taken-out character stays down until they recover', () => {
   });
 });
 
-// ─── 5. Pronoun consistency (checked in code, repaired by a small rewrite) ──
+// ─── 5. Pronoun consistency (checked in code; since round 9 only logged) ───
 //
 // Live (Liz = she/her, Biz = they/them, both STATED): a resolution read
-// "…give way under his finger… tingles on his skin…" and the epilogue "left a
-// tingling stain on his palm". Prompts alone were not followed. A cheap
-// pre-filter finds a stated member near a conflicting word; only then is the
-// model asked for a pronoun-only rewrite, which is kept only if it is close
-// to the original.
+// "…give way under his finger… tingles on his skin…". Rounds 5-8 repaired
+// that with an LLM rewrite; with qwen the rewrite (its strict second ask
+// above all) caused more misgendering than it fixed, so since round 9 the
+// pre-filter only logs, and only gendered nouns that name a member change.
 
 const LIZ_STATED: CharacterDefinition = { ...LIZ, pronouns: 'she/her' };
 const BIZ_STATED: CharacterDefinition = { ...BIZ, pronouns: 'they/them' };
@@ -595,81 +587,37 @@ describe('the pronoun pre-filter', () => {
   });
 });
 
-describe('the pronoun rewrite', () => {
-  it('uses the rewrite when the check fires', async () => {
-    const { withConsistentPronouns } = await import('../src/server/pronoun-consistency.js');
-    const seen: string[] = [];
-    const out = await withConsistentPronouns('Biz presses the rune. It gives way under his finger and tingles on his skin.', MEMBERS, {
-      llm: async (messages) => { seen.push(messages.map(m => m.content).join('\n')); return 'Biz presses the rune. It gives way under their finger and tingles on their skin.'; },
-    });
-    expect(out).toBe('Biz presses the rune. It gives way under their finger and tingles on their skin.');
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatch(/change nothing else/i);
-    expect(seen[0]).toContain('- Biz: they/them');
-    expect(seen[0]).toContain('- Liz: she/her');
-  });
-
-  it('makes no LLM call when nothing conflicts', async () => {
-    const { withConsistentPronouns } = await import('../src/server/pronoun-consistency.js');
-    let calls = 0;
-    const text = 'Biz presses the rune; it tingles on their skin while Liz reads her form.';
-    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => { calls++; return 'x'; } })).toBe(text);
-    expect(await withConsistentPronouns('Biz rubs his palm.', [{ name: 'Biz' }], { llm: async () => { calls++; return 'x'; } })).toBe('Biz rubs his palm.');
-    expect(calls).toBe(0);
-  });
-
-  it('keeps the original when the rewrite changes too much or drops a name', async () => {
-    const { withConsistentPronouns, acceptRewrite } = await import('../src/server/pronoun-consistency.js');
+describe('since round 9, DM prose is never pronoun-rewritten', () => {
+  it('leaves pronouns as written, with no LLM call', async () => {
+    const { repairGenderedNouns } = await import('../src/server/pronoun-consistency.js');
     const text = 'Biz presses the rune. It gives way under his finger and tingles on his skin.';
-    // The rejected rewrite is never used. Since round 8 a conflict the model
-    // leaves in place twice is repaired in code where that is safe (only Biz
-    // could own "his" here, and no NPC is near), so the result is the
-    // original with just the pronouns changed — never the model's preamble
-    // or its "The kid".
-    const repaired = 'Biz presses the rune. It gives way under their finger and tingles on their skin.';
-    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'Here is the corrected passage, with every pronoun fixed as requested: Biz presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(repaired);
-    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'The kid presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(repaired);
-    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => { throw new Error('proxy down'); } })).toBe(repaired);
-    // Where the code cannot be sure (an NPC just before), a bad rewrite leaves the original.
-    const nearNpc = 'Odo nods. It gives way under his finger.';
-    expect(await withConsistentPronouns(`Biz presses the rune. ${nearNpc}`, MEMBERS, { llm: async () => 'The kid presses the rune. Odo nods. It gives way under their finger.' })).toBe(`Biz presses the rune. ${nearNpc}`);
-    expect(acceptRewrite('abc Liz', '', ['Liz'])).toBe(false);
+    expect(repairGenderedNouns(text, MEMBERS)).toBe(text);
   });
-});
 
-describe('DM prose in play passes the pronoun check', () => {
-  it('rewrites a resolution and the epilogue that misgender Biz, before the table sees them', async () => {
+  it('in play: the resolution and the epilogue reach the table as written, and no rewrite is asked for', async () => {
     const resolution = 'Biz presses the rune. It gives way under his finger and tingles on his skin, which makes his heart race.';
-    const fixedResolution = 'Biz presses the rune. It gives way under their finger and tingles on their skin, which makes their heart race.';
     const epilogue = 'In the end Biz kept the rune; it left a tingling stain on his palm.';
-    const fixedEpilogue = 'In the end Biz kept the rune; it left a tingling stain on their palm.';
     canned.resolution = resolution;
     canned.epilogue = epilogue;
-    canned.pronounRewrite = { [resolution]: fixedResolution, [epilogue]: fixedEpilogue };
     try {
       const { broadcasts, calls } = await runLoop({ liz: LIZ_STATED, biz: BIZ_STATED, until: m => m.type === 'resolution', endGame: true });
       const resolutions = broadcasts.filter(m => m.type === 'resolution').map(m => (m as Extract<ServerMessage, { type: 'resolution' }>).text);
-      expect(resolutions[0]).toContain(fixedResolution);
-      expect(resolutions.join('\n')).not.toMatch(/\bhis\b/);
+      expect(resolutions[0]).toContain(resolution);
       const ep = broadcasts.find(m => m.type === 'narration' && m.isEpilogue) as Extract<ServerMessage, { type: 'narration' }>;
-      expect(ep.text).toBe(fixedEpilogue);
-      // The resolution's run needs the model; the one-sentence epilogue that
-      // names only Biz is the simple case and is repaired in code (round 7).
-      expect(calls.filter(c => c.includes('You correct how people are referred to')).length).toBeGreaterThanOrEqual(1);
+      expect(ep.text).toBe(epilogue);
+      expect(calls.filter(c => c.includes('You correct how people are referred to'))).toEqual([]);
     } finally {
       canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
       canned.epilogue = 'The queue closed behind them, and the Bureau went quiet.';
-      canned.pronounRewrite = {};
     }
   }, 30_000);
 
-  it('asks for no rewrite when the pronouns already match', async () => {
-    canned.resolution = 'Biz presses the rune. It gives way under their finger.';
+  it('in play: "her son Biz" in a ruling becomes "her kid Biz"', async () => {
+    canned.resolution = 'Liz squeezes the hand of her son Biz and steps up to the counter.';
     try {
-      const { calls, broadcasts } = await runLoop({ liz: LIZ_STATED, biz: BIZ_STATED, until: m => m.type === 'resolution' });
-      expect(calls.filter(c => c.includes('You correct how people are referred to'))).toEqual([]);
-      const resolutions = broadcasts.filter(m => m.type === 'resolution').map(m => (m as Extract<ServerMessage, { type: 'resolution' }>).text);
-      expect(resolutions[0]).toContain('Biz presses the rune. It gives way under their finger.');
+      const { broadcasts } = await runLoop({ liz: LIZ_STATED, biz: BIZ_STATED, until: m => m.type === 'resolution' });
+      const res = broadcasts.find(m => m.type === 'resolution') as Extract<ServerMessage, { type: 'resolution' }>;
+      expect(res.text).toContain('Liz squeezes the hand of her kid Biz and steps up to the counter.');
     } finally {
       canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
     }
@@ -701,25 +649,18 @@ describe('the character interview reply', () => {
 
   it('calls a companion by name, not "Mom Liz"', async () => {
     const { guardInterviewReply } = await import('../src/server/pronoun-consistency.js');
-    const out = await guardInterviewReply('So Biz is traveling with Mom Liz. What does Biz carry?', { ...bizSheet, pronouns: 'they/them' }, ['Liz'], { llm: async () => { throw new Error('no call expected'); } });
+    const out = guardInterviewReply('So Biz is traveling with Mom Liz. What does Biz carry?', { ...bizSheet, pronouns: 'they/them' }, ['Liz']);
     expect(out).toBe('So Biz is traveling with Liz. What does Biz carry?');
   });
 
-  it('rewrites "her" for the character being made while their pronouns are unknown', async () => {
+  it('never rewrites a pronoun (round 9); a guessed "her" is only logged', async () => {
     const { guardInterviewReply } = await import('../src/server/pronoun-consistency.js');
-    const prompts: string[] = [];
-    const out = await guardInterviewReply('Great, Liz it is. What would catch her attention first?', { name: 'Liz', pronouns: null, relationships: [] }, [], {
-      llm: async (m) => { prompts.push(m.map(x => x.content).join('\n')); return 'Great, Liz it is. What would catch their attention first?'; },
-    });
-    expect(out).toBe('Great, Liz it is. What would catch their attention first?');
-    expect(prompts[0]).toMatch(/never he, him, his, she or her/);
-  });
-
-  it('leaves the reply alone once pronouns are stated, or when the pronoun belongs to someone else at the table', async () => {
-    const { guardInterviewReply } = await import('../src/server/pronoun-consistency.js');
-    const noCall = { llm: async (): Promise<string> => { throw new Error('no call expected'); } };
-    expect(await guardInterviewReply('What would catch her attention?', { name: 'Liz', pronouns: 'she/her', relationships: [] }, [], noCall)).toBe('What would catch her attention?');
-    expect(await guardInterviewReply('Does Liz let you out of her sight?', bizSheet, ['Liz'], noCall)).toBe('Does Liz let you out of her sight?');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(guardInterviewReply('Great, Liz it is. What would catch her attention first?', { name: 'Liz', pronouns: null, relationships: [] }, [])).toBe('Great, Liz it is. What would catch her attention first?');
+    expect(warn.mock.calls.some(c => String(c[0]).includes('before pronouns were stated'))).toBe(true);
+    warn.mockRestore();
+    expect(guardInterviewReply('What would catch her attention?', { name: 'Liz', pronouns: 'she/her', relationships: [] }, [])).toBe('What would catch her attention?');
+    expect(guardInterviewReply('Does Liz let you out of her sight?', bizSheet, ['Liz'])).toBe('Does Liz let you out of her sight?');
   });
 });
 
@@ -783,23 +724,6 @@ describe('round 6, in play', () => {
     const line = narrations(broadcasts).find(t => t.includes('TAKEN OUT'))!;
     expect(line).toBeDefined();
     expect(line).toContain('Liz is TAKEN OUT — overwhelmed by stress and injuries, she collapses or is forced to retreat.');
-  }, 30_000);
-
-  it("a resolution about its actor that never names them is still checked", async () => {
-    // Both they/them here, so whoever acts first is misgendered by "her".
-    const resolution = "The ink's glow dims before her eyes. A cold tingle settles on her fingertips, and the path she hoped to find fades.";
-    const fixed = "The ink's glow dims before their eyes. A cold tingle settles on their fingertips, and the path they hoped to find fades.";
-    canned.resolution = resolution;
-    canned.pronounRewrite = { [resolution]: fixed };
-    try {
-      const { broadcasts, calls } = await runLoop({ liz: { ...LIZ, pronouns: 'they/them' }, biz: BIZ_STATED, until: m => m.type === 'resolution' });
-      expect(calls.filter(c => c.includes('You correct how people are referred to')).length).toBe(1);
-      const res = broadcasts.find(m => m.type === 'resolution') as Extract<ServerMessage, { type: 'resolution' }>;
-      expect(res.text).toContain(fixed);
-    } finally {
-      canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
-      canned.pronounRewrite = {};
-    }
   }, 30_000);
 
   it('a high concept is never a name: not in DM prose, not in a chip', async () => {

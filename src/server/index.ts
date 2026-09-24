@@ -19,14 +19,14 @@ import {
 import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
-  withoutSeedSpoilers,
+  withoutSeedSpoilers, withoutSetupFieldDumps, seedWithHostNouns,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent, wantsNoSpoilers, nextSetupQuestion } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
-import { guardInterviewReply } from './pronoun-consistency.js';
+import { guardInterviewReply, neutralSetupNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
@@ -1356,6 +1356,7 @@ wss.on('connection', (ws) => {
         // Mom' in the sheet") goes on the sheet whether or not the model
         // wrote it down — live, it was dropped.
         const playerLines = fullHistory.filter(t => t.role === 'user').map(t => t.content);
+        const tableMembers: PronounMember[] = tableCharacters.map(c => ({ name: c.name, pronouns: c.pronouns, relationships: c.relationships }));
         const withStated = <T extends import('../shared/types.js').CharacterDefinition | null>(sheet: T): T => {
           if (!sheet) return sheet;
           const terms = playerLines.flatMap(line => statedAddressTerms(line, {
@@ -1364,10 +1365,13 @@ wss.on('connection', (ws) => {
             tableNames: tableCharacters.map(c => c.name),
             relationships: sheet.relationships ?? [],
           }));
-          return withStatedAddressTerms(sheet, terms);
+          // "She and her ten-year-old son Biz" (copied from the world seed)
+          // while Biz's pronouns are unknown or they/them: "kid".
+          const self: PronounMember = { name: sheet.name ?? '', pronouns: sheet.pronouns ?? null, relationships: sheet.relationships ?? [] };
+          return sheetWithNeutralNouns(withStatedAddressTerms(sheet, terms), [...(self.name ? [self] : []), ...tableMembers]);
         };
         const sheetAsOfReply = withStated(reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview));
-        reply.reply = await guardInterviewReply(reply.reply, sheetAsOfReply, tableCharacters.map(c => c.name));
+        reply.reply = guardInterviewReply(reply.reply, sheetAsOfReply, tableMembers);
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
         // interview was fetched BEFORE the await above — a stale snapshot
@@ -1466,11 +1470,24 @@ wss.on('connection', (ws) => {
           unmet: before.detail,
           hostTableRole: campaign.hostTableRole,
         });
-        // A host who plays, or asked for no spoilers, never reads the drafted
-        // world's plot hooks or NPC motives back in a chat reply.
-        if (campaign.hostTableRole === 'player' || wantsNoSpoilers(currentPlayer.setupChat)) {
-          reply.reply = withoutSeedSpoilers(reply.reply, getWorldSeed(db, campaign.id), `I have the shape of it — the rest you will discover in play. ${nextSetupQuestion(before.detail).replace(/^Noted\.\s*/, '')}`);
+        // The chat reply is conversation only. Live (E9W9YT) the model wrote
+        // its own draft into it — a "Plot Hook:" block, then raw
+        // "dmInstructions:" / "dmCustomPrompt:" dumps — so labelled draft
+        // blocks come out for every host (a DM host sees the world on its
+        // card). A host who plays, or asked for no spoilers, also never reads
+        // the drafted world's plot hooks or NPC motives back, nor a secret of
+        // the direction still being drafted (this reply's own dmCustomPrompt).
+        const noSpoilers = campaign.hostTableRole === 'player' || wantsNoSpoilers(currentPlayer.setupChat);
+        const movingOn = `I have the shape of it — the rest you will discover in play. ${nextSetupQuestion(before.detail).replace(/^Noted\.\s*/, '')}`;
+        reply.reply = withoutSetupFieldDumps(reply.reply, { noSpoilers, fallback: movingOn });
+        if (noSpoilers) {
+          reply.reply = withoutSeedSpoilers(reply.reply, getWorldSeed(db, campaign.id), movingOn, [reply.dmCustomPrompt, campaign.dmCustomPrompt]);
         }
+        // "her son Biz" when the host said "her kid Biz".
+        const hostLines = currentPlayer.setupChat.filter(m => m.role === 'user').map(m => m.content);
+        reply.reply = neutralSetupNouns(reply.reply, hostLines);
+        if (reply.dmInstructions) reply.dmInstructions = neutralSetupNouns(reply.dmInstructions, hostLines);
+        if (reply.dmCustomPrompt) reply.dmCustomPrompt = neutralSetupNouns(reply.dmCustomPrompt, hostLines);
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 
         const influences = normalizeInfluences(reply.influences);
@@ -1524,14 +1541,14 @@ wss.on('connection', (ws) => {
         // and must not touch chat history, which is already saved and shown.
         try {
           const stock = after.scenarioId ? loadStockScenario(after.scenarioId) : null;
-          const seed = await dm.draftWorldSeed({
+          const seed = seedWithHostNouns(await dm.draftWorldSeed({
             preset: after.dmPreset,
             systemId: after.systemId,
             influences: getInfluences(db, after.id),
             dmInstructions: after.dmInstructions ?? '',
             history: currentPlayer.setupChat,
             existing: getWorldSeed(db, after.id) ?? stock?.seed ?? null,
-          });
+          }), currentPlayer.setupChat.filter(m => m.role === 'user').map(m => m.content));
 
           // accept-world-seed is fully synchronous and can complete — mark
           // accepted, seed the world bible, advance the phase — during this
@@ -1641,14 +1658,14 @@ wss.on('connection', (ws) => {
         if (isValidLongField(msg.note) && msg.note.trim()) {
           history.push({ role: 'user', content: `Redraft the world: ${msg.note}` });
         }
-        const seed = await dm.draftWorldSeed({
+        const seed = seedWithHostNouns(await dm.draftWorldSeed({
           preset: campaign.dmPreset,
           systemId: campaign.systemId,
           influences: getInfluences(db, campaign.id),
           dmInstructions: campaign.dmInstructions ?? '',
           history,
           existing: getWorldSeed(db, campaign.id),
-        });
+        }), history.filter(m => m.role === 'user').map(m => m.content));
         // The draft above sat behind a real LLM call, which the host's own
         // accept-world-seed (fully synchronous, no await of its own) can
         // complete during and after. If that happened, the seed actually in

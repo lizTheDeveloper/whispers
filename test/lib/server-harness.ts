@@ -131,8 +131,6 @@ export const LLM_STUB_REPLIES = {
     reply: 'Liz sounds like someone who reads the fine print. How should I refer to Liz — she/her, he/him, they/them? And what would catch her attention first in the Lamp Room?',
     definition: { name: 'Liz', highConcept: 'Mom With a Clipboard Heart', trouble: '', aspects: [], personality: '', backstory: '', skills: {}, stunts: [], pronouns: null },
   },
-  // The pronoun rewrite's answer to it: only the pronoun changed.
-  charInterviewGenderedReplyRewrite: 'Liz sounds like someone who reads the fine print. How should I refer to Liz — she/her, he/him, they/them? And what would catch their attention first in the Lamp Room?',
   // A thin-but-non-null definition — the model believes it is done (it is
   // not refusing, it filled in the field it has), but only `name` clears the
   // bar. Used to prove the server coerces this to definition: null on the
@@ -323,11 +321,6 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
         if (slowToken) consumedSlowTokens.add(slowToken);
         if (slow) {
           text = JSON.stringify(LLM_STUB_REPLIES.slowDecision);
-        } else if (body.includes('You correct how people are referred to in a passage')) {
-          // The pronoun rewrite (pronoun-consistency.ts). Only the interview
-          // test's passage has a canned answer; anything else gets a reply the
-          // closeness check rejects, so the original text stands.
-          text = body.includes('what would catch her attention') ? LLM_STUB_REPLIES.charInterviewGenderedReplyRewrite : 'ok';
         } else if (body.includes('You are a world builder for a TTRPG')) {
           text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
         } else if (body.includes('introducing a player to a world')) {

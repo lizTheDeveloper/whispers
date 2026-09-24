@@ -455,9 +455,11 @@ describe('the interview end-to-end, over the wire', () => {
   }, 60_000);
 
   // Live: the very message that asked for Liz's pronouns said "what would
-  // catch her attention". Until the sheet states pronouns, a reply that
-  // genders the character being made is rewritten to their name or "they".
-  it('rewrites an interview reply that says "her" before any pronouns are stated', async () => {
+  // catch her attention". Rounds 6-8 rewrote such a reply with the model;
+  // since round 9 no pronoun is rewritten (the rewrite did more harm than
+  // good with qwen) — the interview prompt carries the rule, and the reply
+  // goes out as written, with no rewrite call.
+  it('sends an interview reply as written, asking for no pronoun rewrite', async () => {
     const { hostWs, joined } = await openTable();
     const playerWs = await connectWs(port);
     const pq = new MessageQueue(playerWs);
@@ -468,10 +470,10 @@ describe('the interview end-to-end, over the wire', () => {
     const before = harness.receivedBodies.length;
     sendMsg(playerWs, { type: 'char-chat', text: 'GENDERED_REPLY_TRIGGER I am Liz, a mom with a clipboard.' });
     const reply = await pq.waitFor('char-chat-reply', 15_000) as any;
-    expect(reply.text).toContain('what would catch their attention first');
-    expect(reply.text).not.toContain('catch her attention');
-    const rewrite = harness.receivedBodies.slice(before).find(b => b.includes('You correct how people are referred to'));
-    expect(rewrite).toMatch(/Liz/);
+    expect(reply.text).toContain('what would catch her attention first');
+    const bodies = harness.receivedBodies.slice(before);
+    expect(bodies.some(b => b.includes('You correct how people are referred to'))).toBe(false);
+    expect(bodies.some(b => b.includes('never call the character he, him, his, she or her'))).toBe(true);
 
     await closeWs(playerWs);
     await closeWs(hostWs);

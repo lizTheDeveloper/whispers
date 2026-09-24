@@ -1,15 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { DmAgent, childToneRule, describeRelationships, introduceCharacter, pronounsFor, type PartyMember } from './agents/dm.js';
+import { DmAgent, childToneRule, childrenInParty, describeRelationships, introduceCharacter, pronounsFor, type PartyMember } from './agents/dm.js';
 import { CharacterAgent, type PartyMemberView } from './agents/character.js';
-import type { DmOpening } from './agents/schemas.js';
+import type { DmNarration as DmNarrationResult, DmOpening } from './agents/schemas.js';
 import { ExtractorAgent } from './agents/extractor.js';
 import { WorldBible } from './world-bible.js';
 import { getInfluences, setCampaignPaused, setCampaignPhase } from './room.js';
 import { loadStockScenario, getWorldSeed, seedWorld } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
 import { callProse, isLlmAbort, runWithLlmSignal } from './agents/llm-client.js';
-import { withConsistentPronouns, type PronounMember } from './pronoun-consistency.js';
+import { findPronounConflicts, repairGenderedNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
@@ -27,7 +27,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransfer,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransfer, softenForChildren, repeatsRecentBeat,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -275,6 +275,10 @@ export class GameLoop {
         updatedAt: row.updated_at,
       });
     }
+    // A sheet that copied the setup's "her ten-year-old son Biz" reads "kid"
+    // to every prompt once Biz is they/them (or has not said). In memory only.
+    const members = this.pronounMembers();
+    for (const c of this.characters.values()) c.definition = sheetWithNeutralNouns(c.definition, members);
     this.retireSheetPhraseEntities();
   }
 
@@ -484,8 +488,12 @@ export class GameLoop {
       const party = Array.from(this.characters.values()).map(c => ({ name: c.definition.name, highConcept: c.definition.highConcept }));
       // …and "a paper sprite—Wanders Off After Anything Shiny—flits" is just a sprite.
       // …and whispers come only from players: no voice in anyone's ear.
-      const fixed = withoutDmWhispers(namesInNarration(sheetPhrasesToNames(highConceptsToNames(text, party), this.sheetOwners()), terms));
+      let fixed = withoutDmWhispers(namesInNarration(sheetPhrasesToNames(highConceptsToNames(text, party), this.sheetOwners()), terms));
       if (fixed !== text) console.log(`[guard] address term in narration replaced by a name: "${text.slice(0, 80)}" → "${fixed.slice(0, 80)}"`);
+      // "her son Biz" for a they/them Biz: the noun only, never a pronoun.
+      fixed = repairGenderedNouns(fixed, this.pronounMembers());
+      // A table with a child: the few images that read as horror, softened.
+      if (childrenInParty(this.partyForDm()).length > 0) fixed = softenForChildren(fixed);
       return fixed;
     } catch (e) {
       console.error('[guard] narration name guard failed, text left as written:', e);
@@ -493,29 +501,27 @@ export class GameLoop {
     }
   }
 
-  /** Each party member with the pronouns their own sheet states (unset: not stated, never checked). */
+  /** Each party member with the pronouns and ties their own sheet states (unset pronouns: not stated, never checked). */
   private pronounMembers(): PronounMember[] {
-    return Array.from(this.characters.values()).map(c => ({ name: c.definition.name, pronouns: c.definition.pronouns ?? null }));
+    return Array.from(this.characters.values()).map(c => ({ name: c.definition.name, pronouns: c.definition.pronouns ?? null, relationships: c.definition.relationships ?? [] }));
   }
 
   /**
-   * DM prose as the table will see it: the address guard first, then the
-   * pronoun consistency check (see pronoun-consistency.ts) — a cheap
-   * pre-filter, and one small LLM rewrite only when a party member with
-   * stated pronouns is called something else nearby. A failed or
-   * over-eager rewrite leaves the guarded text as it was; a cancelled call
-   * (pause, End Game) is re-thrown for the loop to handle.
+   * DM prose as the table will see it: guardText (names, gendered nouns,
+   * the family-table softener), and the pronoun detector for the log. A
+   * pronoun is never rewritten — see pronoun-consistency.ts: the LLM
+   * rewrite this replaced caused more misgendering with qwen than it fixed.
    */
   private async consistentProse(text: string, actor?: string): Promise<string> {
     const guarded = this.guardText(text);
     if (!guarded || this.characters.size === 0) return guarded;
     try {
-      return await withConsistentPronouns(guarded, this.pronounMembers(), { actor, npcNames: this.knownNpcNames() });
+      const conflicts = findPronounConflicts(guarded, this.pronounMembers(), { actor, npcNames: this.knownNpcNames() });
+      if (conflicts.length > 0) console.log(`[pronouns] possible mismatch, left as written: ${conflicts.map(c => `"${c.word}" near ${c.name} (${c.pronouns})`).join('; ')}`);
     } catch (e) {
-      if (isLlmAbort(e)) throw e;
-      console.error('[pronouns] consistency check failed, text left as written:', e);
-      return guarded;
+      console.error('[pronouns] check failed:', e);
     }
+    return guarded;
   }
 
   /**
@@ -525,6 +531,23 @@ export class GameLoop {
    */
   private checkedProse(text: string, actor?: string): Promise<string | null> {
     return this.haltable(() => this.consistentProse(text, actor), () => this.guardText(text));
+  }
+
+  /** A plain one-line ruling for `outcome`, when the model's own cannot be used. */
+  private plainOutcome(character: Character, outcome: string): string {
+    const firstName = getFirstName(character.definition.name);
+    return outcome === 'failure'
+      ? `${firstName}'s effort falls short — the situation worsens despite the attempt.`
+      : outcome === 'tie'
+      ? `${firstName} pushes through, but the cost is felt immediately.`
+      : outcome === 'success-with-cost'
+      ? `${firstName} succeeds, but not without a price.`
+      : outcomeLines(firstName, this.ownPronouns(character)).success;
+  }
+
+  /** The DM's last few beats (narration and rulings), for the repeated-beat guard. */
+  private recentDmBeats(n = 6): string[] {
+    return this.transcript.filter(m => m.role === 'dm').slice(-n).map(m => m.content);
   }
 
   /** Extracted world facts without the party recorded as NPCs (see withoutPartyEntities). */
@@ -991,8 +1014,38 @@ export class GameLoop {
     if (checkedNarration === null) return;
     narration.narration = checkedNarration;
 
-    this.addTranscript('dm', narration.narration);
-    this.applyDeclaredTakenOut(narration.narration);
+    // Live (E9W9YT): a narration came back a round later near word for word
+    // (Clerk 734's line, "The brass clip skitters out from under the
+    // ledger…") — two narrate calls, one round apart; the model repeating
+    // itself, not a double send. A beat that repeats one of the last few is
+    // asked for once more, told what it repeated; if that repeats too, the
+    // beat is dropped and the round goes on without it.
+    const recentBeats = this.recentDmBeats();
+    if (repeatsRecentBeat(narration.narration, recentBeats)) {
+      console.warn(`[game-loop] narration repeats an earlier DM beat; asking once more: "${narration.narration.slice(0, 80)}"`);
+      const repeated = repeatsRecentBeat(narration.narration, recentBeats)!;
+      const again = await this.haltable<DmNarrationResult | undefined>(
+        () => this.dm.narrate(narrateArgs.ctx, { ...narrateArgs.pacing, repeatedBeat: repeated }),
+        (e) => { console.error('[game-loop] re-narration after a repeated beat failed:', e); return undefined; },
+      );
+      if (again === null) return;
+      const checkedAgain = again ? await this.checkedProse(again.narration) : undefined;
+      if (checkedAgain === null) return;
+      if (again && checkedAgain && !repeatsRecentBeat(checkedAgain, recentBeats)) {
+        narration.narration = checkedAgain;
+        narration.isSceneEnd = again.isSceneEnd;
+        narration.activeNpcs = again.activeNpcs;
+        if (again.currentLocationName) narration.currentLocationName = again.currentLocationName;
+      } else {
+        console.warn('[game-loop] the retry repeated an earlier beat too (or failed); dropping this narration beat');
+        narration.narration = '';
+      }
+    }
+
+    if (narration.narration) {
+      this.addTranscript('dm', narration.narration);
+      this.applyDeclaredTakenOut(narration.narration);
+    }
 
     if (narration.currentLocationName) {
       if (narration.currentLocationName === this.lastLocationName) {
@@ -1043,7 +1096,7 @@ export class GameLoop {
         this.worldBible.markEntityKnown(this.campaignId, npcName);
       }
 
-      generateSceneImage(this.campaignId, narration.currentLocationName, narration.narration)
+      if (narration.narration) generateSceneImage(this.campaignId, narration.currentLocationName, narration.narration)
         .then(result => {
           if (result.imageUrl) {
             this.broadcastFn({ type: 'scene-image', imageUrl: result.imageUrl, locationName: narration.currentLocationName });
@@ -1052,8 +1105,10 @@ export class GameLoop {
         .catch(() => {});
     }
 
-    if (!(await this.pace())) return;
-    this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
+    if (narration.narration) {
+      if (!(await this.pace())) return;
+      this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
+    }
 
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
     const isFinale = this.state.currentScene >= 4 && (this.state.currentTurn ?? 0) >= 18;
@@ -1485,15 +1540,7 @@ export class GameLoop {
         .split(/[.!]/)[0] ?? '')
         .trim()
         .slice(0, 80);
-      const firstName = getFirstName(character.definition.name);
-      const outcomeNarration = resolution.outcome === 'failure'
-        ? `${firstName}'s effort falls short — the situation worsens despite the attempt.`
-        : resolution.outcome === 'tie'
-        ? `${firstName} pushes through, but the cost is felt immediately.`
-        : resolution.outcome === 'success-with-cost'
-        ? `${firstName} succeeds, but not without a price.`
-        : outcomeLines(firstName, this.ownPronouns(character)).success;
-      resolution.narration = outcomeNarration;
+      resolution.narration = this.plainOutcome(character, resolution.outcome);
     }
 
     if (diceResult && resolution.difficulty != null && resolution.skill && campaign.system_id === 'fate-core') {
@@ -1738,6 +1785,12 @@ export class GameLoop {
     const checkedResolution = await this.checkedProse(resolution.narration, character.definition.name);
     if (checkedResolution === null) return;
     resolution.narration = checkedResolution;
+    // A ruling that repeats an earlier beat (see runScene) is not read twice:
+    // its mechanics stand, told in one plain line.
+    if (repeatsRecentBeat(resolution.narration, this.recentDmBeats())) {
+      console.warn(`[game-loop] ruling repeats an earlier DM beat; replaced with a plain outcome line: "${resolution.narration.slice(0, 80)}"`);
+      resolution.narration = this.plainOutcome(character, resolution.outcome);
+    }
     this.addTranscript('dm', resolution.narration);
     this.recentRulings = [...this.recentRulings, `${getFirstName(character.definition.name)} tried: ${decision.chosenAction}\nWhat happened: ${resolution.narration}`].slice(-4);
     if (!(await this.pace())) return;

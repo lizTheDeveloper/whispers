@@ -172,11 +172,11 @@ const sameFirst = (a: string, b: string) => a.trim().split(/\s+/)[0]?.toLowerCas
  * leaves it out. Live: "calls Liz Mom" was on the sheet, then gone.
  */
 function mergeRelationships(base: Relationship[], update: Relationship[]): Relationship[] {
-  return update.map(r => {
+  return withoutSelfAddress(update.map(r => {
     if (r.address?.trim()) return r;
     const before = base.find(o => sameFirst(o.to, r.to) && o.address?.trim());
     return before ? { ...r, address: before.address } : r;
-  });
+  }));
 }
 
 /** Kin words a player uses as an address term, and the relation each implies. */
@@ -193,12 +193,48 @@ const ADDRESS_RELATION: Array<[RegExp, string]> = [
 
 const TERM = String.raw`["“'‘]?([A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*)?)["”'’]?`;
 
+/** Address words that name a parent, and relation words that make the other person this character's child. */
+const PARENT_ADDRESS = /^(?:mom|mommy|mum|mummy|mama|ma|mother|dad|daddy|papa|pa|pop|father|grandma|granny|nana|gran|grandpa|granddad|grandad|gramps)$/i;
+const CHILD_ADDRESS = /^(?:son|sonny|daughter|kiddo|kid|junior|baby|sweetie)$/i;
+const CHILD_TIE = /\b(?:child|kid|son|daughter|stepchild|stepson|stepdaughter|grandchild|grandson|granddaughter|toddler|baby)\b/i;
+const PARENT_TIE = /\b(?:mother|mom|mum|mama|father|dad|papa|parent|stepmother|stepfather|stepparent|grandmother|grandfather|grandparent)\b/i;
+
 /**
- * Address terms the player states outright in their own message: "calls Liz
- * Mom", "Biz calls her Mom", "Biz calls me Mom" (the player speaking as the
- * person called). Each is { to, address }, where `to` is someone at the table
- * or on the sheet. "her"/"him"/"them" resolve only when one person is meant:
- * the sheet's single tie, else the table's single other character.
+ * Would this address term, on X's tie to Y, describe X rather than Y? "Mom"
+ * on Liz's tie to Biz, when that tie says Biz is Liz's kid: Liz is the mom,
+ * and it is Biz who says "Mom". Live, Liz then said "Good job, Mom." to Biz.
+ */
+export function addressDescribesSelf(relation: string | undefined, address: string | undefined): boolean {
+  const a = address?.trim();
+  if (!a) return false;
+  const r = relation ?? '';
+  return (PARENT_ADDRESS.test(a) && CHILD_TIE.test(r)) || (CHILD_ADDRESS.test(a) && PARENT_TIE.test(r));
+}
+
+/** A sheet's ties without any address term that describes the character themself (see addressDescribesSelf). */
+export function withoutSelfAddress(rels: Relationship[]): Relationship[] {
+  if (!rels.some(r => addressDescribesSelf(r.relation, r.address))) return rels;
+  return rels.map(r => {
+    if (!addressDescribesSelf(r.relation, r.address)) return r;
+    console.warn(`[interview] dropped address "${r.address}" on the tie to ${r.to} (${r.relation}): it is what ${r.to} calls this character, not the other way round`);
+    const { address: _a, ...rest } = r;
+    return rest as Relationship;
+  });
+}
+
+/**
+ * Address terms the player states outright in their own message, for THIS
+ * character's sheet: what this character calls someone. "calls Liz Mom"
+ * with no one else as the subject ("Please keep 'calls Liz Mom' on the
+ * sheet", in Biz's interview), "Biz calls her Mom" and "Biz calls me Mom" in
+ * Biz's own interview. Each is { to, address }, where `to` is someone at the
+ * table or on the sheet. "her"/"him"/"them" resolve only when one person is
+ * meant: the sheet's single tie, else the table's single other character.
+ *
+ * The address belongs to the one who SAYS it. In Liz's interview, "Her kid
+ * Biz calls her Mom", "Biz calls me Mom" and "my kid calls me Mom" are what
+ * Biz calls Liz — Biz's sheet, not Liz's — and are left out. Live, that line
+ * put "Mom" on Liz's tie to Biz and Liz said "Good job, Mom." to her kid.
  */
 export function statedAddressTerms(text: string, ctx: { characterName: string; playerName: string; tableNames: string[]; relationships: Relationship[] }): Array<{ to: string; address: string }> {
   if (!text) return [];
@@ -213,9 +249,23 @@ export function statedAddressTerms(text: string, ctx: { characterName: string; p
   const re = new RegExp(String.raw`\bcall(?:s|ed|ing)?\s+(?:(me|her|him|them)|([A-Z][\w'’-]*))\s+${TERM}`, 'g');
   for (const m of text.matchAll(re)) {
     const [, pronoun, name, term] = m;
+    // Who is doing the calling: the words just before "calls" in this sentence.
+    const before = text.slice(0, m.index).split(/[.!?;\n]/).pop() ?? '';
+    const subject = before.match(/([A-Za-z][\w'’-]*)\s+(?:\w+ly\s+|still\s+|always\s+|just\s+|also\s+)?$/)?.[1];
+    if (subject) {
+      const s = subject.toLowerCase();
+      const isSelf = ctx.characterName && sameFirst(subject, ctx.characterName);
+      // "I call her Mom" is this character (the player speaking as them).
+      const selfWord = s === 'i' || s === 'we';
+      // "Biz calls…", "my kid calls…", "she calls…": someone else speaking — their sheet, not this one.
+      const someoneElse = Boolean(findKnown(subject))
+        || /^(?:kid|child|son|daughter|boy|girl|mom|dad|mother|father|she|he|they|who|everyone|people|friends?)$/i.test(s)
+        || (/^[A-Z]/.test(subject) && !/^(?:Please|Also|And|But|So|Just|Keep|Note)$/.test(subject));
+      if (!isSelf && !selfWord && someoneElse) continue;
+    }
     let to: string | undefined;
     if (name) to = findKnown(name);
-    else if (pronoun === 'me') to = findKnown(ctx.playerName);
+    else if (pronoun === 'me') to = subject && ctx.characterName && sameFirst(subject, ctx.characterName) ? findKnown(ctx.playerName) : undefined;
     else {
       const tied = [...new Set(ctx.relationships.map(r => r.to.trim()))];
       to = tied.length === 1 ? tied[0] : known.length === 1 ? known[0] : undefined;
@@ -225,14 +275,14 @@ export function statedAddressTerms(text: string, ctx: { characterName: string; p
   return out;
 }
 
-/** The sheet with each stated address term on its tie — or on a new tie, when the term itself says what the tie is ("Mom"). */
+/** The sheet with each stated address term on its tie — or on a new tie, when the term itself says what the tie is ("Mom"). Never a term that describes the character themself. */
 export function withStatedAddressTerms<T extends Partial<CharacterDefinition>>(sheet: T, terms: Array<{ to: string; address: string }>): T {
-  if (terms.length === 0) return sheet;
-  const rels: Relationship[] = [...(sheet.relationships ?? [])];
-  let changed = false;
+  const rels: Relationship[] = withoutSelfAddress([...(sheet.relationships ?? [])]);
+  let changed = rels.some((r, i) => r !== sheet.relationships?.[i]);
   for (const t of terms) {
     const i = rels.findIndex(r => sameFirst(r.to, t.to));
     if (i >= 0) {
+      if (addressDescribesSelf(rels[i]!.relation, t.address)) continue;
       if (rels[i]!.address?.trim() !== t.address) { rels[i] = { ...rels[i]!, address: t.address }; changed = true; }
       continue;
     }
@@ -255,8 +305,16 @@ export function setInterviewStatus(db: Database.Database, id: string, status: In
  * neither interview knowing the other exists. Excludes the asking session's
  * own sheet; deduped by name, first source wins.
  */
-export function listTableCharacters(db: Database.Database, campaignId: string, excludeSessionToken: string): Array<{ name: string; highConcept: string }> {
-  const out: Array<{ name: string; highConcept: string }> = [];
+export interface TableCharacter {
+  name: string;
+  highConcept: string;
+  /** As that character's own sheet states them; null until their player says. */
+  pronouns: string | null;
+  relationships: Relationship[];
+}
+
+export function listTableCharacters(db: Database.Database, campaignId: string, excludeSessionToken: string): TableCharacter[] {
+  const out: TableCharacter[] = [];
   const seen = new Set<string>();
   const add = (raw: unknown) => {
     if (typeof raw !== 'string' || !raw) return;
@@ -265,7 +323,12 @@ export function listTableCharacters(db: Database.Database, campaignId: string, e
     const name = typeof def?.name === 'string' ? def.name.trim() : '';
     if (!name || seen.has(name.toLowerCase())) return;
     seen.add(name.toLowerCase());
-    out.push({ name, highConcept: typeof def.highConcept === 'string' ? def.highConcept.trim() : '' });
+    out.push({
+      name,
+      highConcept: typeof def.highConcept === 'string' ? def.highConcept.trim() : '',
+      pronouns: typeof def.pronouns === 'string' && def.pronouns.trim() ? def.pronouns.trim() : null,
+      relationships: Array.isArray(def.relationships) ? def.relationships : [],
+    });
   };
   const ownCharacter = db.prepare('SELECT character_id FROM campaign_sessions WHERE token = ?').get(excludeSessionToken) as { character_id: string | null } | undefined;
   for (const row of db.prepare('SELECT id, definition FROM characters WHERE campaign_id = ? AND revoked_at IS NULL ORDER BY created_at').all(campaignId) as Array<{ id: string; definition: string }>) {
