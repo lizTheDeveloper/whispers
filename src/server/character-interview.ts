@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, CharacterReadiness } from '../shared/types.js';
 import { beatOverlap } from './narrative-guards.js';
+import { shortName } from '../shared/names.js';
 
 export type InterviewStatus = 'open' | 'confirmed' | 'live' | 'revoked';
 
@@ -165,7 +166,8 @@ export function mergeCharacterDraft(base: Partial<CharacterDefinition> | null, u
 
 type Relationship = NonNullable<CharacterDefinition['relationships']>[number];
 
-const sameFirst = (a: string, b: string) => a.trim().split(/\s+/)[0]?.toLowerCase() === b.trim().split(/\s+/)[0]?.toLowerCase();
+/** Same person by the name they are called by (round 22: never a shared title — "Captain Vane" is not "Captain Hook"). */
+const sameFirst = (a: string, b: string) => shortName(a).toLowerCase() === shortName(b).toLowerCase();
 
 /**
  * The model reports the relationships it understands this turn; an address

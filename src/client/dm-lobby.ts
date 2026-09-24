@@ -127,6 +127,9 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   let playerCount = 0;
   let approvedCount = 0;
   let dmReady = false;
+  // Round 22 (BH9P94): the checklist as the server last sent it. The DM's
+  // "done" only means its direction is saved; "DM is ready!" waits for this.
+  let lastReadiness: WorldReadiness | null = null;
   let uploadToken = '';
   let phase: GamePhase = 'lobby';
   let hostTableRole: TableRole | null = null;
@@ -269,8 +272,13 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   });
 
   function updateStartButton() {
-    startBtn.disabled = !dmReady;
-    if (dmReady && approvedCount > 0) {
+    // Unmet checklist items (the world not drafted or accepted, no seat
+    // chosen) mean the table is not ready, whatever the DM chat said.
+    const unmet = lastReadiness !== null && !lastReadiness.ready;
+    startBtn.disabled = !dmReady || unmet;
+    if (dmReady && unmet) {
+      startHint.textContent = 'The DM has its direction. Still needed: see the checklist.';
+    } else if (dmReady && approvedCount > 0) {
       startHint.textContent = `DM ready, ${approvedCount} character${approvedCount > 1 ? 's' : ''} approved. Let's go!`;
     } else if (dmReady) {
       startHint.textContent = 'DM is ready! Waiting for players to submit characters...';
@@ -352,6 +360,8 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   // ─── Readiness ───
 
   function renderReadiness(readiness: WorldReadiness | null) {
+    lastReadiness = readiness;
+    updateStartButton();
     readinessList.replaceChildren();
     if (!readiness) {
       const li = document.createElement('li');

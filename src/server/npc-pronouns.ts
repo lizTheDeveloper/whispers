@@ -3,6 +3,7 @@ import { quoteRuns } from './narrative-guards.js';
 import { pluralVerb } from '../shared/pronouns.js';
 import { TITLE } from './sentences.js';
 import { npcKindOf, npcCastLabel } from './npc-kind.js';
+import { shortName } from '../shared/names.js';
 
 /**
  * An NPC's pronouns, fixed once and handed to the DM every turn. Live
@@ -87,7 +88,7 @@ export function partyPronounLine(party: Array<{ name: string; pronouns?: string 
   const stated = party.filter(p => p.pronouns?.trim());
   if (stated.length === 0) return '';
   const neutral = stated.filter(p => neutralPronouns(p.pronouns));
-  const nouns = neutral.length > 0 ? ` ${neutral.map(p => neutralNounRule(p.name.trim().split(/\s+/)[0] ?? p.name, p.pronouns)).join('; ')}.` : '';
+  const nouns = neutral.length > 0 ? ` ${neutral.map(p => neutralNounRule(shortName(p.name) || p.name, p.pronouns)).join('; ')}.` : '';
   return `Party pronouns: ${stated.map(p => `${p.name}: ${p.pronouns!.trim()}`).join('; ')}.${nouns}`;
 }
 

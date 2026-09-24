@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { callLlm } from './agents/llm-client.js';
 import { z } from 'zod';
 import { quoteRuns } from './narrative-guards.js';
+import { shortName } from '../shared/names.js';
 
 const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Words after which a person is the object: "to Mom", "hugged Mom". */
@@ -19,7 +20,7 @@ const OBJECT_BEFORE = /\b(?:to|at|with|from|for|beside|behind|toward|towards|nea
  */
 export function observerOwnWords(content: string, observerName: string, aliases: string[]): string {
   if (!content) return content;
-  const first = observerName.trim().split(/\s+/)[0] ?? observerName;
+  const first = shortName(observerName) || observerName;
   const names = [...new Set([first, ...aliases].map(n => n.trim()).filter(Boolean))];
   if (names.length === 0) return content;
   const alt = names.map(escRe).join('|');
@@ -298,7 +299,7 @@ export class CharacterMemoryStore {
   }
 
   private fallbackObservation(actorName: string, action: string): string {
-    const firstName = actorName.split(' ')[0]!;
+    const firstName = shortName(actorName);
     const cleaned = action
       .replace(/^I\s+/i, '')
       .replace(/\bmy\b/gi, `${firstName}'s`)

@@ -12,7 +12,7 @@ import { callProse, isLlmAbort, runWithLlmSignal } from './agents/llm-client.js'
 import { findPronounConflicts, ownKinNouns, repairChildNouns, repairGenderedNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
-import { floorBackstop, withoutFloorBreaches, minorsInParty, describesChild, childReferencesIn, addProtected, type ProtectedPerson, type FloorCandidate } from './safety-floor.js';
+import { floorBackstop, withoutFloorBreaches, minorsInParty, describesChild, describesAdult, childReferencesIn, addProtected, type ProtectedPerson, type FloorCandidate } from './safety-floor.js';
 import { campaignWantsGentlePeril, hostSetupMessages, tableRating, setStoredContentRating, storedContentRating, type TableRating } from './content-rating.js';
 import { ratingPolicy, ratingChangeLine, parseContentRating, type ContentRating, type RatingPolicy } from '../shared/rating.js';
 import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
@@ -42,6 +42,7 @@ import { referTo } from '../shared/pronouns.js';
 import { startingKit } from './starting-kit.js';
 import { planItemMoves, endingItemsBlock, type ItemMove, type AppliedMove } from './item-moves.js';
 import { SENTENCE_SPLIT, splitSentences } from './sentences.js';
+import { shortName } from '../shared/names.js';
 
 /**
  * Consecutive turns with no whisper from any human before the table pauses
@@ -76,9 +77,9 @@ function pronounKey(p: string | null | undefined): 'she' | 'he' | 'they' {
   return /^\s*she\b/i.test(p ?? '') ? 'she' : /^\s*he\b/i.test(p ?? '') ? 'he' : 'they';
 }
 
+/** The name a person is called by — never a title (round 22: "Sir Aldric Vey" is "Aldric"). */
 function getFirstName(fullName: string): string {
-  const parts = fullName.split(/\s+/);
-  return parts.find(p => !TITLES.has(p.toLowerCase())) ?? parts[0]!;
+  return shortName(fullName);
 }
 
 // The gentle-peril read moved to content-rating.ts with the rating (round 20); re-exported for existing importers.
@@ -737,14 +738,24 @@ export class GameLoop {
     return list;
   }
 
-  /** Everyone a text can call a child: the party and the story's NPCs, with their pronouns. */
+  /**
+   * Everyone a text can call a child: the party and the story's NPCs, with
+   * their pronouns — and (round 22) whether their own sheet or description
+   * makes them an adult, so a weak inference never protects them.
+   */
   private floorCandidates(): FloorCandidate[] {
-    const out: FloorCandidate[] = Array.from(this.characters.values()).map(c => ({ name: c.definition.name, pronouns: this.ownPronouns(c) ?? null }));
+    const kids = new Set(this.safeMinorsInParty());
+    const out: FloorCandidate[] = Array.from(this.characters.values()).map(c => {
+      const d = c.definition;
+      const age = typeof d.age === 'number' ? d.age : parseInt(String(d.age ?? '').match(/\d+/)?.[0] ?? '', 10);
+      const adult = !kids.has(d.name) && ((Number.isFinite(age) && age >= 18) || describesAdult(d.highConcept));
+      return { name: d.name, pronouns: this.ownPronouns(c) ?? null, ...(adult ? { adult: true } : {}) };
+    });
     try {
       const pronouns = new Map(this.worldBible.getNpcPronouns(this.campaignId).map(n => [n.name, n.pronouns]));
-      for (const r of this.db.prepare("SELECT name FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(this.campaignId) as Array<{ name: string }>) {
+      for (const r of this.db.prepare("SELECT name, description FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(this.campaignId) as Array<{ name: string; description: string | null }>) {
         if (this.isPartyName(r.name)) continue;
-        out.push({ name: r.name.replace(/^(?:the|a|an)\s+/i, ''), pronouns: pronouns.get(r.name) ?? null, npc: true });
+        out.push({ name: r.name.replace(/^(?:the|a|an)\s+/i, ''), pronouns: pronouns.get(r.name) ?? null, npc: true, ...(describesAdult(r.description) ? { adult: true } : {}) });
       }
     } catch (e) {
       console.error('[floor] could not read the NPCs for the safety floor:', e);
@@ -757,12 +768,31 @@ export class GameLoop {
    * that calls someone a child ("the cabin boy", "a ten-year-old", "barely
    * out of boyhood") puts them on the floor's list for the rest of the game.
    */
-  private noteProtected(text: string, source: string): void {
+  private noteProtected(text: string, source: string, opts: { human?: boolean } = {}): void {
     if (!text?.trim()) return;
     const list = this.protectedPeople();
-    for (const person of childReferencesIn(text, this.floorCandidates(), source)) {
+    const candidates = this.floorCandidates();
+    // Round 22 (BH9P94): "the boy" in a sentence about Bosun Calloway was
+    // Pip — already protected, and in the scene. Who is protected already
+    // (with pronouns), and the recent story, go with the text.
+    const pronounsOf = new Map(candidates.map(c => [c.name.toLowerCase(), c.pronouns ?? null]));
+    const known = list.map(p => ({ name: p.name, pronouns: pronounsOf.get(p.name.toLowerCase()) ?? null }));
+    const recent = this.transcript.slice(-12).map(m => m.content ?? '').join('\n');
+    const onDeclined = (d: ProtectedPerson) => {
+      if (this.floorDeclined.has(d.name)) return;
+      this.floorDeclined.add(d.name);
+      console.warn(`[floor] NOT protecting ${d.name}: ${d.why}. An explicit age, "X is a child", or a player's own words would still protect them.`);
+    };
+    for (const person of childReferencesIn(text, candidates, source, { protected: known, recent, human: opts.human, onDeclined })) {
       if (addProtected(list, person)) console.warn(`[floor] ${person.name} is protected by the safety floor from here on: ${person.why}`);
     }
+  }
+
+  /** Round 22: who a weak inference was declined for (logged once each). */
+  private floorDeclined = new Set<string>();
+
+  private safeMinorsInParty(): string[] {
+    try { return minorsInParty(this.partyForDm()); } catch { return []; }
   }
 
   /** The child player characters, by first name (for the tone judge). */
@@ -2233,6 +2263,18 @@ export class GameLoop {
     // Round 20: the safety floor, at every rating — a character's action,
     // words and thought never carry violence or sexual content aimed at a
     // child. What crosses it goes; an action left empty falls back below.
+    //
+    // Round 22 (BH9P94): spoken words get ONLY this deterministic backstop —
+    // no judge call. Batching the speech into the ruling's floor judge is
+    // not cheap: the ruling is written while the table reads the action, so
+    // the action-taken frame (the speech with it) goes out before the ruling
+    // or its judge exist; judging the speech there would hold every action
+    // back for the ruling's LLM call and its judge. The options' floor judge
+    // runs before the decision, so it never sees the speech either. What
+    // does hold: the speech names people for the protected list
+    // (noteProtected), the backstop reads it with that list, and at mature
+    // the options the character chose from were floor-judged. A separate
+    // judge call on speech would add one judge round trip per spoken turn.
     {
       for (const t of [decision.chosenAction, decision.spokenWords ?? '', decision.innerThought]) this.noteProtected(t, `${character.definition.name}'s words`);
       const floorCtx = { minors: this.minorNames() };
@@ -3339,7 +3381,7 @@ export class GameLoop {
       return { status: 'rejected', characterId: targetId, characterName: null, message: 'That character is no longer at this table.' };
     }
     // Round 21 (FYXZTP): a whisper that calls someone a child ("the cabin boy, the ten-year-old") protects them.
-    try { this.noteProtected(text, 'a whisper'); } catch (e) { console.error('[floor] could not read the whisper for who it protects:', e); }
+    try { this.noteProtected(text, 'a whisper', { human: true }); } catch (e) { console.error('[floor] could not read the whisper for who it protects:', e); }
     if (this.pendingWhisperResolve && this.pendingWhisperCharacterId === targetId) {
       const resolve = this.pendingWhisperResolve;
       this.pendingWhisperResolve = null;

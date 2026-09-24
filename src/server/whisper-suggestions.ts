@@ -7,6 +7,7 @@
  * ever changes the case of its first letter.
  */
 import { SENTENCE_BREAK, SENTENCE_SPLIT } from './sentences.js';
+import { shortName } from '../shared/names.js';
 
 export const SUGGESTION_MAX_CHARS = 60;
 
@@ -86,10 +87,10 @@ export function endSentence(text: string): string {
  * said "Ask Pip what they're hiding" while every narration called Pip "it".
  */
 export function npcPronounInNarration(name: string, narration: string, partyNames: string[] = []): 'he' | 'she' | 'it' | 'they' | null {
-  const first = name.trim().split(/\s+/)[0] ?? name;
+  const first = shortName(name) || name;
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const named = new RegExp(`(?<![\\w'’-])${esc(first)}(?![\\w-])`);
-  const party = partyNames.map(n => n.trim().split(/\s+/)[0] ?? n).filter(Boolean).map(n => new RegExp(`\\b${esc(n)}\\b`));
+  const party = partyNames.map(n => shortName(n) || n).filter(Boolean).map(n => new RegExp(`\\b${esc(n)}\\b`));
   const counts = { he: 0, she: 0, it: 0, they: 0 };
   const sentences = narration.split(SENTENCE_BREAK);
   sentences.forEach((s, i) => {

@@ -1,5 +1,6 @@
 import type { CharacterReadiness, CharacterReadinessItem } from '../shared/types.js';
 import { agree, capitalize, pronounSet, referTo } from '../shared/pronouns.js';
+import { shortName } from '../shared/names.js';
 
 export const MIN_ASPECTS = 2;
 export const MIN_SKILLS = 1;
@@ -38,7 +39,7 @@ export function checkCharacterReadiness(def: unknown): CharacterReadiness {
   // In the character's own pronouns once they are stated — live, the hint
   // read "They need at least 1 stunt" while building she/her Liz — else
   // their name, else "they" (nobody has said yet).
-  const name = isNonEmptyString(d.name) ? d.name.trim().split(/\s+/)[0]! : '';
+  const name = isNonEmptyString(d.name) ? shortName(d.name) : '';
   const set = pronounSet(isNonEmptyString(d.pronouns) ? d.pronouns : null);
   const r = set ?? (name ? referTo(name, null) : pronounSet('they')!);
   const Subj = capitalize(r.subject);

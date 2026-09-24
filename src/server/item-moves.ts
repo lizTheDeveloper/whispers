@@ -13,6 +13,7 @@
  * Pure: no database, no LLM. The game loop applies the plan.
  */
 import { sameItem, isStack, singleOf, itemHead, namesOneThing, withoutCount, mergeCount, lessOne, moveShownInProse } from './narrative-guards.js';
+import { shortName } from '../shared/names.js';
 
 /** One move as the DM states it. `from`/`to`: a player character's name, an NPC's name, "world", or null (appears / is gone). */
 export interface ItemMove {
@@ -79,7 +80,7 @@ export function parseItemMoves(raw: unknown): ItemMove[] | undefined {
   return out;
 }
 
-const first = (name: string) => name.trim().split(/\s+/)[0]!.toLowerCase();
+const first = (name: string) => shortName(name).toLowerCase();
 
 function resolveSide(v: string | null, party: Array<{ id: string; name: string }>): ItemSide {
   if (v === null) return { kind: 'none' };

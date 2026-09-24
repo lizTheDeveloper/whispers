@@ -51,6 +51,15 @@ export const LLM_STUB_REPLIES = {
     dmInstructions: 'A haunted lighthouse, spooky but hopeful.',
     dmCustomPrompt: 'You are running a haunted lighthouse game.',
   },
+  // Round 22 (BH9P94): a done reply that also says the game is ready while
+  // the world is still to draft and accept. Selected by READY_CLAIM_TRIGGER.
+  setupDoneClaimsReady: {
+    reply: 'We have the tone, the influences, and the core premise. The game is ready to begin.',
+    done: true,
+    influences: ['Black Sails', 'Treasure Island', 'Master and Commander'],
+    dmInstructions: 'A mutiny aboard a rotting galleon, mature and tense.',
+    dmCustomPrompt: 'You are running a pirate mutiny.',
+  },
   // Reproduces the live bug: the model narrates full instructions in `reply`
   // (prose), sets done: true, but leaves dmInstructions/dmCustomPrompt null —
   // a shape DmSetupReplySchema permits since both fields are nullable. Used
@@ -476,6 +485,8 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           const latestHost = [...msgs].reverse().find(m => m.role === 'user')?.content ?? '';
           if (hostSpoke && latestHost.includes('EDIT_CLAIM_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.setupClaimsEdit);
+          } else if (hostSpoke && latestHost.includes('READY_CLAIM_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.setupDoneClaimsReady);
           } else if (hostSpoke && body.includes('NO_INSTRUCTIONS_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.setupDoneNoInstructions);
           } else if (body.includes('MISSING_DONE_TRIGGER')) {

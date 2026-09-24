@@ -19,6 +19,14 @@
  * why, for the whole game); a pronoun or an addressed "you" that means the
  * protected person is them; and a clause that clearly refuses or denies
  * the violence ("I am not a monster who hurts children") passes.
+ *
+ * Round 22 (live BH9P94): precision. An apposition never crosses a quote
+ * or takes a possessive ("Captain Vane, 'Your boy…'" is not Vane); "the
+ * boy" in a sentence about an adult NPC is the protected child already in
+ * the story; a weak inference never protects someone whose own seed or
+ * sheet makes them an adult; and a refusal ("wants me to…, but that's a
+ * death sentence") or a warning ("Fire, and you kill the boy", "…ensures
+ * Vane shoots Pip") passes, while a threat does not.
  */
 import { childrenInParty, type PartyMember } from './agents/dm.js';
 import { splitSentences } from './sentences.js';
@@ -55,6 +63,43 @@ export function describesChild(text: string | null | undefined): boolean {
     if (!SOMEONE_ELSES.test(text.slice(0, m.index))) return true;
   }
   return false;
+}
+
+/** Head nouns that make a description's subject a grown-up ("A broad-shouldered man…"). */
+const ADULT_NOUN = /^(?:man|men|woman|women|gentleman|gentlewoman|lady|adult|grown-?up|veteran|widow|widower|matron|crone|hag|patriarch|matriarch|grandfather|grandmother|greybeard|graybeard|elder|old-timer|husband|wife|father|mother)$/i;
+/** Words in that noun phrase that only a grown-up is ("A grizzled sailor", "a bearded cook"). */
+const ADULT_ADJ = /^(?:grizzled|elderly|middle-aged|bearded|grey-bearded|gray-bearded|white-bearded|grey-haired|gray-haired|white-haired|silver-haired|balding|bald|wizened|aged|old|ancient|weathered|wrinkled|venerable)$/i;
+/** An age of 18 or more: "a 45-year-old", "in his fifties", "aged 60". */
+const ADULT_AGE = /\b(?:(?:1[89]|[2-9]\d|1\d\d)[- ]years?[- ]old|in\s+(?:his|her|their)\s+(?:(?:early|mid|late)[- ])?(?:twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties)|aged\s+(?:1[89]|[2-9]\d))\b/i;
+/** Where a description's first noun phrase ends. */
+const NP_END = /^(?:with|who|whom|whose|that|which|in|of|from|and|but|on|at|by|whose|carrying|wearing|holding|named|called)$/i;
+
+/**
+ * Does this description explicitly make its subject an adult (round 22)?
+ * "A broad-shouldered man with a beard", "A man carved from iron", "a
+ * grizzled sailor", "a 45-year-old". Read off the first noun phrase only,
+ * so "the old man's son" is not the old man; and never when anything in it
+ * makes them a child. "A young man" is not enough — the live FYXZTP child
+ * was "a young man, barely out of boyhood".
+ */
+export function describesAdult(text: string | null | undefined): boolean {
+  if (!text?.trim() || describesChild(text)) return false;
+  if (ADULT_AGE.test(text)) return true;
+  const first = text.trim().split(/(?<=[.!?])\s+/)[0] ?? '';
+  const np: string[] = [];
+  for (const raw of first.replace(/^(?:(?:he|she|they)\s+(?:is|was|are|were)\s+)/i, '').split(/\s+/)) {
+    const w = raw.replace(/^[^\p{L}]+/u, '');
+    const bare = w.replace(/[^\p{L}'’-]+$/u, '');
+    if (np.length > 0 && NP_END.test(bare)) break;
+    np.push(bare);
+    // A possessive or a clause break ends the phrase: "The old man's son", "A man, carved…".
+    if (/['’]s$/.test(bare) || /[,;:—–]$/.test(w)) break;
+  }
+  const words = np.map(w => w.toLowerCase()).filter(w => !/^(?:a|an|the|this|that)$/.test(w));
+  if (words.some(w => /['’]s$/.test(w))) return false;
+  const young = words.includes('young') || words.includes('younger');
+  if (!young && words.some(w => ADULT_NOUN.test(w))) return true;
+  return words.some(w => ADULT_ADJ.test(w));
 }
 
 /** A stated age under 18. */
@@ -169,6 +214,50 @@ const INSTRUCTED = /\b(?:wants?|wanted|tells?|told|urges?|urged|asks?|asked|begs
 /** …that the speaker then refuses: "…, but I am not a monster", "and I won't". */
 const REFUSAL = /(?:,|;|—|–|\bbut\b|\band\b)[^.!?]*\b(?:I|we)\s*(?:will\s+not|won['’]t|refuse|cannot|can['’]t|will\s+never|would\s+never|do\s+not|don['’]t|never|(?:am|are|['’]m|['’]re)\s+not\s+(?:a|an|going|gonna|that|the|some|about|doing|hurting|harming|here\s+to))\b/i;
 
+/**
+ * Round 22 (BH9P94): "The voice wants me to grab Pip by the throat, but
+ * that's a death sentence…" was removed; "…break Pip's arm, but I'm too
+ * rattled" was kept. After an instruction to the speaker, a "but" that
+ * declines it — the speaker cannot, will not, is too…, has nothing to do it
+ * with, or calls it death, madness or wrong — is a refusal. A "but" that
+ * does not decline ("but first I bar the door") is not.
+ */
+const DECLINE = /\bbut\b[^.!?;]{0,40}?\b(?:(?:I|we)\s*(?:['’]m|am|are|['’]re)\s+(?:too|not|no|unarmed|carrying\s+nothing)\b|(?:I|we)\s+(?:have|['’]ve\s+got|['’]ve|got|hold|carry)\s+(?:no|nothing)\b|(?:I|we)\s+(?:can['’]t|cannot|won['’]t|will\s+not|refuse|don['’]t|do\s+not|never|wouldn['’]t|would\s+never|couldn['’]t|could\s+never|shan['’]t)\b|(?:that|this|it)(?:['’]s|\s+is|\s+would\s+be|['’]d\s+be|\s+will\s+be|['’]ll\s+be|\s+means|\s+would\s+mean)\s+(?:a\s+|an\s+|my\s+|our\s+|certain\s+|sure\s+)*(?:death|suicide|madness|insan\w*|folly|foolish\w*|mistake|wrong|monstrous|murder|evil|unthinkable|out\s+of\s+the\s+question|never\s+going\s+to\s+happen|not\s+happening|not\s+who\s+I\s+am)\b|not\s+(?:today|now|this|like\s+this|a\s+child|a\s+kid)\b|no(?:\s*[,.!—–]|\s+way\b))/i;
+
+/**
+ * Round 22 (BH9P94): a warning is not a threat. "Fire, and you kill the
+ * boy you need to keep quiet" and "…killing him ensures Vane shoots Pip"
+ * were removed. A threat is "do X or I'll hurt the boy"; a warning is "if
+ * you do X, you kill the boy" or "X means Vane shoots Pip". Exempt only
+ * these shapes, in the present or future, with "you" or a third party —
+ * never the speaker (I, we, my men) — as the one who would do it.
+ */
+const MODAL = String.raw`(?:(?:will|['’]ll|would|['’]d|could|might|may|can|is\s+going\s+to|are\s+going\s+to|['’]s\s+going\s+to|['’]re\s+going\s+to)\s+(?:only\s+|just\s+|probably\s+|surely\s+)?)?`;
+/** "If you fire, you…", "the moment you move, you…". */
+const WARN_IF_YOU = new RegExp(String.raw`\b(?:if|once|when|the\s+moment|the\s+second|as\s+soon\s+as)\s+you\b[^.!?;]*,\s*you\s*${MODAL}$`, 'i');
+/** "Fire, and you…", "Pull that trigger and you'll…": a short imperative, then "and you". */
+const WARN_AND_YOU = new RegExp(String.raw`^\s*["“‘']?\s*((?:[\p{L}'’-]+\s+){0,5}[\p{L}'’-]+)\s*,?\s+(?:and|or)\s+you\s*${MODAL}$`, 'iu');
+/** "…ensures Vane shoots Pip", "…means Grell stabs the boy": a prediction with someone else as the harmer. */
+const WARN_PREDICTS = new RegExp(String.raw`\b(?:[Ee]nsures?|[Mm]eans|[Gg]uarantees?|(?:will|would)\s+(?:mean|ensure|guarantee))\s+(?:that\s+)?(?:you|he|she|they|the\s+\p{Ll}[\p{Ll}'’-]*|\p{Lu}[\p{Ll}'’-]+(?:\s+\p{Lu}[\p{Ll}'’-]+)?)\s*${MODAL}$`, 'u');
+/** The speaker, or their own people, doing it: a threat, never a warning. */
+const SPEAKER_SIDE = /\b(?:I|we|my|our|me|us)\b/i;
+/** A verb in the past: what happened, not a warning of what would. */
+const PAST_VERB = /(?:ed|ew|ot|uck|ung|ang)$|^(?:hit|cut|beat|bit|slit|hanged)$/i;
+
+function warned(sentence: string, index: number, verb: string): boolean {
+  if (PAST_VERB.test(verb.trim().split(/\s+/)[0] ?? '')) return false;
+  const lead = sentence.slice(0, index);
+  if (WARN_IF_YOU.test(lead)) return true;
+  const and = WARN_AND_YOU.exec(lead);
+  // The imperative is the whole lead: not "You lunge and you…", not "Grell lunges, and you…" narrated.
+  if (and && !/^(?:I|you|he|she|we|they|it)$/i.test(and[1]!.trim().split(/\s+/)[0] ?? '') && !SPEAKER_SIDE.test(and[1]!)) return true;
+  const from = clauseStart(sentence, index);
+  const clause = sentence.slice(from, index);
+  const pred = WARN_PREDICTS.exec(clause);
+  if (pred && !SPEAKER_SIDE.test(clause.slice(0, pred.index).split(/\s+/).slice(-2).join(' ')) && !SPEAKER_SIDE.test(pred[0])) return true;
+  return false;
+}
+
 /** "…anyone who'd hurt him", "whoever tries to harm the boy": a would-be attacker, named to guard against. */
 const WOULD_BE = /\b(?:anyone|anybody|whoever|those|any\s+[\p{L}'’-]+|someone|somebody)(?:\s+(?:who|that))?(?:['’]d|\s+would|\s+might|\s+could|\s+tries\s+to|\s+try\s+to|\s+dares?\s+to|\s+wants?\s+to|\s+means?\s+to|\s+thinks?\s+(?:about|of)|\s+who)\s*$/iu;
 
@@ -179,8 +268,9 @@ function clauseStart(sentence: string, index: number): number {
   return m ? m.index! + 1 : 0;
 }
 
-/** Is the violence at `index` clearly negated, counterfactual and denied, or an instruction the speaker refuses? */
-function refused(sentence: string, index: number): boolean {
+/** Is the violence at `index` clearly negated, counterfactual and denied, an instruction the speaker refuses, or a warning against it? */
+function refused(sentence: string, index: number, verb = ''): boolean {
+  if (verb && warned(sentence, index, verb)) return true;
   const from = clauseStart(sentence, index);
   const lead = sentence.slice(from, index);
   if (WOULD_BE.test(lead)) return true;
@@ -199,7 +289,7 @@ function refused(sentence: string, index: number): boolean {
   }
   // "The voice wants me to put a knife to his throat, but … I am not a monster…".
   const ins = [...whole.matchAll(new RegExp(INSTRUCTED.source, 'gi'))].pop();
-  if (ins && REFUSAL.test(sentence.slice(index))) return true;
+  if (ins && (REFUSAL.test(sentence.slice(index)) || DECLINE.test(sentence.slice(index)))) return true;
   return false;
 }
 
@@ -314,7 +404,7 @@ function sentenceBreaches(sentence: string, minors: string[]): boolean {
     const possessive = /^['’]s\b/.test(after) && !m[4];
     if (possessive) continue; // "burns Biz's map": the thing, not the child
     if (NOT_VIOLENCE_AFTER.test(after) || NOT_VIOLENCE_BEFORE.test(sentence.slice(0, m.index))) continue;
-    if (refused(sentence, m.index!)) continue;
+    if (refused(sentence, m.index!, m[1]!)) continue;
     return true;
   }
   // Seized by the throat: "grabbing his throat", "grabs Silas by the neck", "goes for the boy's throat".
@@ -322,7 +412,14 @@ function sentenceBreaches(sentence: string, minors: string[]): boolean {
   for (const m of sentence.matchAll(throat)) {
     const pron = m[2] ?? (m[3] && isPronoun(m[3]) ? m[3] : undefined);
     if (pron && !pronounOk(pron, m.index! + m[0].indexOf(pron), m.index!)) continue;
-    if (refused(sentence, m.index!)) continue;
+    if (refused(sentence, m.index!, m[0])) continue;
+    return true;
+  }
+  // Round 22: a limb or bone broken — "break Pip's arm", "snaps the boy's wrist", "twisting his arm".
+  const broken = new RegExp(String.raw`\b(?:break|breaks|breaking|broke|snap|snaps|snapped|snapping|twist|twists|twisted|twisting|crush|crushes|crushed|crushing|shatter|shatters|shattered|shattering)\s+(?:(${ref})['’]s|\b(${possessives}))\s+(?:\w+\s+)?(?:arms?|legs?|wrists?|fingers?|hands?|ankles?|knees?|necks?|jaw|nose|ribs?|bones?|spine|skull|collarbone|elbows?|shoulders?)\b`, 'gi');
+  for (const m of sentence.matchAll(broken)) {
+    if (m[2] && !pronounOk(m[2], m.index! + m[0].lastIndexOf(m[2]), m.index!)) continue;
+    if (refused(sentence, m.index!, m[0])) continue;
     return true;
   }
   // A blade at the throat: "put a knife to his throat", "holds the dagger against the kid's neck".
@@ -370,12 +467,50 @@ export interface FloorCandidate {
   pronouns?: string | null;
   /** An NPC (only an NPC is protected on a sentence's "the boy" alone). */
   npc?: boolean;
+  /**
+   * Round 22: their own seed or sheet explicitly makes them an adult ("A
+   * broad-shouldered man with a beard", a sheet aged 18 or more). A weak
+   * inference — an apposition, or the lone-NPC rule — never protects them;
+   * an explicit age, a predicate ("X is just a boy") or a person's own words
+   * still do.
+   */
+  adult?: boolean;
+}
+
+/** Someone already protected, as childReferencesIn weighs "the boy" against them. */
+export interface KnownChild {
+  name: string;
+  pronouns?: string | null;
+}
+
+export interface ChildReferenceOptions {
+  /** Round 22: who is protected already — "the boy" in a sentence about an adult is them, when they are in the story. */
+  protected?: KnownChild[];
+  /** The recent story (the last transcript lines): a protected child named there is "in the scene". */
+  recent?: string;
+  /** A person's own words (a whisper, the host): any shape protects, whatever a seed says. */
+  human?: boolean;
+  /** Told of every weak inference not acted on because the seed or sheet makes the person an adult. */
+  onDeclined?: (d: ProtectedPerson) => void;
 }
 
 /** A child-sense word for someone: "the cabin boy", "a ten-year-old", "barely out of boyhood". */
 const CHILD_TERM = String.raw`(?:(?:(?:little|young|small|tiny|scrawny|skinny|frightened|terrified|scared|poor|trembling)\s+)*${BOY_JOB}?(?:child|kid|boy|girl|toddler|baby|infant|urchin|youngster|schoolchild|schoolboy|schoolgirl|minor|teen|teenager|adolescent)(?![\p{L}'’-])(?!\s*['’]s\b)|${UNDER_18}[- ]years?[- ]old(?![\p{L}-])|(?:barely|scarcely|hardly|just|only\s+just|not\s+long|fresh|newly)\s+out\s+of\s+(?:boy|girl|child)hood|not\s+yet\s+(?:a\s+(?:grown\s+)?(?:man|woman)|grown|of\s+age|an\s+adult))`;
 /** Words that never sit between a name and what it is called (they start a new clause). */
-const FILLER_STOP = /^(?:who|whom|whose|which|that|and|but|or|then|as|while|with|without|at|to|from|into|of|for|by|on|in|near|beside|behind|toward|towards|not|no|never|is|was|has|had|he|she|they|his|her|their|him|them)$/i;
+const FILLER_STOP = /^(?:who|whom|whose|which|that|and|but|or|then|as|while|with|without|at|to|from|into|of|for|by|on|in|near|beside|behind|toward|towards|not|no|never|is|was|has|had|he|she|they|his|her|their|him|them|your|my|our|its|yours|mine|ours|you|I|we)$/i;
+/**
+ * Round 22 (BH9P94): "I call out to Captain Vane, 'Your boy is a rat…'" —
+ * a quote between a name and a child word means someone is speaking TO or
+ * ABOUT the named person; the child is someone else. A quote mark, or an
+ * apostrophe that is not inside a word ("Silas's" is), is a boundary.
+ */
+function crossesQuote(between: string): boolean {
+  return /["“”«»‘]/.test(between) || /(?<![\p{L}])['’]|['’](?![\p{L}])/u.test(between);
+}
+/** A possessive before the child word: "your boy", "his girl", "her son" is someone else's child, never the named person. */
+const POSSESSED_TERM = /\b(?:your|my|our|his|her|their|its)\s+(?:(?:little|young|small|tiny|own|poor)\s+)*\S+$/i;
+/** A child word that is strong evidence on its own: an age, or out of (or not yet out of) childhood. */
+const STRONG_TERM = new RegExp(String.raw`^(?:${UNDER_18}[- ]years?[- ]old|(?:barely|scarcely|hardly|just|only\s+just|not\s+long|fresh|newly)\s+out\s+of|not\s+yet)`, 'i');
 const QUALIFIER = String.raw`(?:(?:just|only|barely|still|merely|but|hardly|no\s+more\s+than|little\s+more\s+than|hardly\s+more\s+than|scarcely\s+more\s+than)\s+)`;
 const AGE_BARE = String.raw`(?:aged\s+)?${UNDER_18}(?:\s+years?\s+old)?`;
 
@@ -404,39 +539,72 @@ const clip = (s: string) => (s.length > 90 ? `${s.slice(0, 87)}…` : s).trim();
  * predicate ("Silas is just a boy", "Silas is twelve"), or — an NPC only —
  * a sentence about them that goes on to call them "the boy" ("Silas's
  * fingers release, but the boy does not retreat"). Errs toward protecting.
+ *
+ * Round 22 (BH9P94) — the evidence is tiered:
+ *  - strong: an age under 18, a childhood phrase ("barely out of boyhood"),
+ *    a predicate ("Pip is just a boy"), or a person's own words (a whisper,
+ *    the host: `opts.human`). Strong evidence always protects.
+ *  - weak: an apposition ("Calloway, the cabin boy"), or the lone-NPC rule.
+ *    Weak evidence never protects someone whose own seed or sheet makes them
+ *    an adult (`candidate.adult`); that is logged through `opts.onDeclined`.
+ * An apposition never crosses a quote, and never takes a possessive child
+ * word ("Captain Vane, 'Your boy is a rat…'" is about someone else's boy).
+ * The lone-NPC rule is not used when a protected child whom "the boy" fits
+ * is named in this text or in `opts.recent`: "the boy" is them.
  */
-export function childReferencesIn(text: string, candidates: FloorCandidate[], source = 'the story'): ProtectedPerson[] {
+export function childReferencesIn(text: string, candidates: FloorCandidate[], source = 'the story', opts: ChildReferenceOptions = {}): ProtectedPerson[] {
   if (!text?.trim() || candidates.length === 0) return [];
   const found = new Map<string, ProtectedPerson>();
+  const declined = new Set<string>();
   const cands = candidates.filter(c => c.name?.trim()).map(c => ({ ...c, words: protectedNameWords([c.name]) })).filter(c => c.words.length > 0);
   const nameRe = (words: string[]) => String.raw`(?<![\p{L}'’-])(?:${words.map(esc).join('|')})(?![\p{L}-])(?!['’]s\b)`;
   const capitalised = (m: string, words: string[]) => words.some(w => m.includes(w));
+  const named = (words: string[], where: string) => words.length > 0 && new RegExp(String.raw`(?<![\p{L}'’-])(?:${words.map(esc).join('|')})(?![\p{L}-])`, 'u').test(where);
+  // Protected children in the story now: named in this text or the recent story.
+  const already = (opts.protected ?? []).filter(p => p?.name?.trim()).map(p => ({ ...p, words: protectedNameWords([p.name]) }));
+  const inStory = already.filter(p => named(p.words, text) || (opts.recent ? named(p.words, opts.recent) : false));
+  /** Protect `c`, unless the evidence is weak and their own seed or sheet makes them an adult. */
+  const protect = (c: typeof cands[number], why: string, weak: boolean): boolean => {
+    if (weak && c.adult && !opts.human) {
+      if (!declined.has(c.name)) {
+        declined.add(c.name);
+        opts.onDeclined?.({ name: c.name, why: `${why} — a weak inference, and their own description makes them an adult` });
+      }
+      return false;
+    }
+    found.set(c.name, { name: c.name, why });
+    return true;
+  };
   for (const sentence of splitSentences(text)) {
-    const present = cands.filter(c => new RegExp(String.raw`(?<![\p{L}'’-])(?:${c.words.map(esc).join('|')})(?![\p{L}-])`, 'u').test(sentence));
+    const present = cands.filter(c => named(c.words, sentence));
     for (const c of present) {
       if (found.has(c.name)) continue;
       const N = nameRe(c.words);
-      const patterns: RegExp[] = [
+      const patterns: Array<{ re: RegExp; weak: boolean }> = [
         // "Silas, a young man barely out of boyhood", "Silas, the cabin boy".
-        new RegExp(String.raw`${N}\s*,\s*${QUALIFIER}?(?:(?:a|an|the|this|that|our|their)\s+)?((?:[\p{L}'’-]+\s+){0,3}?)(${CHILD_TERM})`, 'giu'),
+        { re: new RegExp(String.raw`${N}\s*,\s*${QUALIFIER}?(?:(?:a|an|the|this|that|our|their)\s+)?((?:[\p{L}'’-]+\s+){0,3}?)(${CHILD_TERM})`, 'giu'), weak: true },
         // "Silas, ten, …", "Silas, aged 12".
-        new RegExp(String.raw`${N}\s*,\s*(${AGE_BARE})\s*[,.;)]`, 'giu'),
+        { re: new RegExp(String.raw`${N}\s*,\s*(${AGE_BARE})\s*[,.;)]`, 'giu'), weak: false },
         // "the cabin boy Silas", "ten-year-old Silas", "the boy, Silas, …".
-        new RegExp(String.raw`(${CHILD_TERM})(?:\s+|\s*,\s*)${N}(?=\s*(?:[,.;!?)]|$)|\s+\p{Ll})`, 'giu'),
+        { re: new RegExp(String.raw`(${CHILD_TERM})(?:\s+|\s*,\s*)${N}(?=\s*(?:[,.;!?)]|$)|\s+\p{Ll})`, 'giu'), weak: true },
         // "Silas is just a boy", "Silas was barely out of boyhood", "Silas is twelve".
-        new RegExp(String.raw`${N}\s+(?:is|was|seems|looks|remains|is\s+still|was\s+still)\s+${QUALIFIER}*(?:(?:a|an)\s+)?((?:[\p{L}'’-]+\s+){0,2}?)(${CHILD_TERM}|${UNDER_18}(?:\s+years?\s+old)?(?![\p{L}-])(?!\s+(?:feet|foot|inches|hands|paces|yards|meters|metres|miles|minutes|hours|days|weeks|months|men|of|times|steps|strides)))`, 'giu'),
+        { re: new RegExp(String.raw`${N}\s+(?:is|was|seems|looks|remains|is\s+still|was\s+still)\s+${QUALIFIER}*(?:(?:a|an)\s+)?((?:[\p{L}'’-]+\s+){0,2}?)(${CHILD_TERM}|${UNDER_18}(?:\s+years?\s+old)?(?![\p{L}-])(?!\s+(?:feet|foot|inches|hands|paces|yards|meters|metres|miles|minutes|hours|days|weeks|months|men|of|times|steps|strides)))`, 'giu'), weak: false },
       ];
-      for (const re of patterns) {
+      for (const [i, { re, weak }] of patterns.entries()) {
         for (const m of sentence.matchAll(re)) {
           if (!capitalised(m[0], c.words)) continue;
           const term = m[m.length - 1] ?? m[0];
           const fillers = m.length > 2 ? m[1] : undefined;
-          if (fillers !== undefined && re !== patterns[2] && !fillersOk(fillers)) continue;
+          if (fillers !== undefined && i !== 2 && !fillersOk(fillers)) continue;
           if (!genderFits(m[0], c.pronouns)) continue;
+          // Round 22: never across a quote ("Captain Vane, 'Your boy…'"), never someone's possessed child ("Vane, your boy").
+          const termAt = m[0].toLowerCase().lastIndexOf(String(term).toLowerCase());
+          if (crossesQuote(m[0])) continue;
+          if (i !== 2 && POSSESSED_TERM.test(m[0].slice(0, termAt) + String(term).split(/\s+/).pop())) continue;
           // "…of a kid", "mother of…": the child is someone else.
-          if (SOMEONE_ELSES.test(m[0].slice(0, Math.max(0, m[0].toLowerCase().lastIndexOf(String(term).toLowerCase()))))) continue;
-          found.set(c.name, { name: c.name, why: `${source} calls them "${clip(m[0])}"` });
-          break;
+          if (SOMEONE_ELSES.test(m[0].slice(0, Math.max(0, termAt)))) continue;
+          const strong = !weak || STRONG_TERM.test(String(term).trim());
+          if (protect(c, `${source} calls them "${clip(m[0])}"`, !strong)) break;
         }
         if (found.has(c.name)) break;
       }
@@ -449,7 +617,14 @@ export function childReferencesIn(text: string, candidates: FloorCandidate[], so
       // "Silas, the man who hit the boy": the sentence itself calls them grown.
       const grown = new RegExp(String.raw`(?<![\p{L}'’-])(?:${c.words.map(esc).join('|')})\s*,\s*(?:a|an|the)\s+(?:[\p{L}'’-]+\s+)?(?:man|woman|adult|grown-?up)\b`, 'iu').test(sentence);
       const the = grown ? null : later.match(new RegExp(String.raw`\b(?:the|that)\s+((?:(?:little|young|small|frightened|terrified|scared|poor|trembling)\s+)*${BOY_JOB}?(?:boy|girl|kid|child|youngster|urchin)|${UNDER_18}[- ]years?[- ]old)(?![\p{L}-])`, 'iu'));
-      if (the && genderFits(the[0], c.pronouns)) found.set(c.name, { name: c.name, why: `${source} calls them "${clip(the[0])}" ("${clip(sentence)}")` });
+      // Round 22: "the boy" in a sentence about an adult is the protected child already in the story, when one fits.
+      const theirs = the ? inStory.find(p => genderFits(the[0], p.pronouns)) : undefined;
+      // …and never across a quote ("Captain Vane, 'The boy is mine.'").
+      const quoted = the ? crossesQuote(later.slice(0, the.index)) : false;
+      if (the && !theirs && !quoted && genderFits(the[0], c.pronouns)) {
+        const strong = STRONG_TERM.test(the[1] ?? '');
+        protect(c, `${source} calls them "${clip(the[0])}" ("${clip(sentence)}")`, !strong);
+      }
     }
   }
   return [...found.values()];

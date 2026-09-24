@@ -1685,15 +1685,6 @@ wss.on('connection', (ws) => {
           ratingSet = askedRating;
         }
         reply.reply = withoutUnsetRatingClaims(reply.reply, ratingSet ?? ratingBefore.rating, nextSetupQuestion(before.detail));
-        // Round 21 (FYXZTP): "The game is ready to begin." with the plot hooks
-        // unmet. No reply can make the table ready (accepting the world is
-        // the host's own step), so readiness as it stood decides.
-        reply.reply = withoutUnreadyClaim(reply.reply, {
-          ready: before.ready,
-          fallback: before.detail.length > 0 ? `Before we begin: ${before.detail.join(" ")}` : nextSetupQuestion(before.detail),
-        });
-        currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
-
         const influences = normalizeInfluences(reply.influences);
         if (influences.length > 0) setInfluences(db, campaign.id, influences);
 
@@ -1720,10 +1711,24 @@ wss.on('connection', (ws) => {
         } else if (reply.done) {
           console.warn(`[dm-chat] campaign ${campaign.id}: DM set done=true with no dmInstructions — not persisting, reporting not-done to host`);
         }
-        saveSetupChat(db, campaign.id, currentPlayer.setupChat);
-
         after = joinRoom(db, currentJoinCode);
         if (!after) return;
+
+        // Round 21 (FYXZTP): "The game is ready to begin." with the plot hooks
+        // unmet. No reply can make the table ready (accepting the world is
+        // the host's own step), so readiness decides. Round 22 (BH9P94): the
+        // readiness at SEND time — this reply's summary and influences are
+        // saved by now — so the list never names what the readiness sent
+        // with it shows as met ("The DM still needs a summary…").
+        {
+          const now = currentReadiness(after);
+          reply.reply = withoutUnreadyClaim(reply.reply, {
+            ready: now.ready,
+            fallback: now.detail.length > 0 ? `Before we begin: ${now.detail.join(" ")}` : nextSetupQuestion(now.detail),
+          });
+        }
+        currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
+        saveSetupChat(db, campaign.id, currentPlayer.setupChat);
 
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: persisted });
         sendReadiness(ws, after);

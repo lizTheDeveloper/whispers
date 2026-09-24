@@ -16,6 +16,7 @@ import { seedLimitsForPrompt } from '../field-limits.js';
 import type Database from 'better-sqlite3';
 import { CONTENT_RATINGS, RATING_BLURB, ratingLabel, type ContentRating } from '../../shared/rating.js';
 import type { CharacterDefinition, CharacterRelationship, TranscriptMessage, DiceResult, WorldSeed, TableRole } from '../../shared/types.js';
+import { shortName } from '../../shared/names.js';
 
 const presetCache = new Map<string, string>();
 function loadPresetText(presetName: string): string | null {
@@ -205,8 +206,8 @@ function genderFromPronouns(pronouns: string | undefined): Gender | null {
 }
 
 function sameFirstName(a: string, b: string): boolean {
-  const x = a.trim().split(/\s+/)[0]?.toLowerCase();
-  const y = b.trim().split(/\s+/)[0]?.toLowerCase();
+  const x = shortName(a).toLowerCase();
+  const y = shortName(b).toLowerCase();
   return !!x && x === y;
 }
 
@@ -279,7 +280,7 @@ function hasWord(text: string, word: string): boolean {
 
 /** True if `prose` already says this tie: the other person's name plus the relation word or its inverse. */
 function tieIsStated(prose: string, r: CharacterRelationship): boolean {
-  const otherFirst = r.to.trim().split(/\s+/)[0] ?? '';
+  const otherFirst = shortName(r.to);
   if (!otherFirst || !hasWord(prose, otherFirst)) return false;
   return wordsForTie(r.relation).some(w => hasWord(prose, w));
 }
@@ -362,12 +363,13 @@ export function describeParty(members: PartyMember[]): string {
   // A worked example from this party's own sheets: "Biz steadies Liz", never "Biz steadies Mom".
   const example = members.flatMap(m => (m.relationships ?? [])
     .filter(r => r.address?.trim() && !sameFirstName(r.address, r.to) && r.address.trim().toLowerCase() !== r.to.trim().toLowerCase())
-    .map(r => ({ speaker: m.name.trim().split(/\s+/)[0]!, to: r.to.trim().split(/\s+/)[0]!, term: r.address!.trim() })))[0];
+    .map(r => ({ speaker: shortName(m.name), to: shortName(r.to), term: r.address!.trim() })))[0];
   const addressExample = example ? ` ("${example.speaker} steadies ${example.to}", never "${example.speaker} steadies ${example.term}")` : '';
   // Live (WXKC2C): Biz, they/them and ten, was "her son", "the boy" and "its gaze".
   const pronounLine = partyPronounLine(members.map(m => ({ name: m.name, pronouns: pronounsFor(m, members) })));
   const nounRule = pronounLine ? `${pronounLine} Use them in narration and in everyone's speech, NPCs included.` : '';
-  const first = members[0]?.name.trim().split(/\s+/)[0];
+  // Round 22 (BH9P94): never a title — this line told the DM NPCs call Sir Aldric Vey "Sir".
+  const first = members[0] ? shortName(members[0].name) : undefined;
   return [
     'THE PARTY — the player characters actually at this table (authoritative). Any other player-character names that came up while setting the game up were placeholders: those people are not in this game and must never appear as party members.',
     ...lines,
@@ -378,7 +380,7 @@ export function describeParty(members: PartyMember[]): string {
     anyUnstated ? 'Never guess a gender this block does not state — not from a name, an age, or the other side of a relation (a mother\'s child is not therefore a son). Where it is not stated, use the character\'s name or "they", and gender-neutral words for them: kid, child, parent, sibling — never son, daughter, boy, girl, he or she.' : '',
     'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
     'Do not give a character a chair, a seat, a posture or a prop the story has not set up — if you do not know whether someone is sitting, do not say.',
-    `In narration, call each party member by their name, never by their high concept: the phrase after each name above describes them and is not something anyone is called${members[0] ? ` ("${members[0].name.trim().split(/\s+/)[0]} steps forward", never "the ${members[0].highConcept} steps forward")` : ''}.`,
+    `In narration, call each party member by their name, never by their high concept: the phrase after each name above describes them and is not something anyone is called${members[0] ? ` ("${shortName(members[0].name)} steps forward", never "the ${members[0].highConcept} steps forward")` : ''}.`,
     traitRule(members),
     hasAddress ? `Address terms are personal to the relationship: a term like "Mom" is what one character calls another, never that person\'s name. Only that character uses it, and only in their own dialogue; NPCs and everyone else use the name. In narration, resolutions, scene summaries and the epilogue, characters are called by their NAMES${addressExample} — even when a character\'s own action uses the address term; an address term appears only inside that character\'s quoted speech.` : '',
   ].filter(Boolean).join('\n');
@@ -392,7 +394,7 @@ export function describeParty(members: PartyMember[]): string {
 function traitRule(members: PartyMember[]): string {
   const withTrouble = members.find(m => m.trouble?.trim());
   const example = withTrouble
-    ? ` ("${withTrouble.name.trim().split(/\s+/)[0]}'s trouble, ${withTrouble.trouble!.trim()}, pulls at them" — never a creature, spirit or person called "${withTrouble.trouble!.trim()}")`
+    ? ` ("${shortName(withTrouble.name)}'s trouble, ${withTrouble.trouble!.trim()}, pulls at them" — never a creature, spirit or person called "${withTrouble.trouble!.trim()}")`
     : '';
   return `High concepts, troubles, aspects and stunts are character traits — never beings, creatures, objects or places, and never anyone's name. Never invent something that is called by one or embodies one${example}. A character may draw on their own aspect by name; that is the game's mechanic.`;
 }

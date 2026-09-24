@@ -4,6 +4,7 @@ import type { Entity, Location, Item, GameEvent, Relationship } from '../shared/
 import { npcPronounBlock, pronounsInNarration, npcKeyName, namesSameNpc, npcMentioned } from './npc-pronouns.js';
 import { npcKindOf, contradictsKind, npcCastLabel } from './npc-kind.js';
 import { itemKey, itemHead, namesOneThing, softVariants, itemPossessor, withoutCount } from './narrative-guards.js';
+import { NAME_TITLES as SHARED_NAME_TITLES } from '../shared/names.js';
 
 export { npcKeyName };
 
@@ -49,7 +50,7 @@ function mentionsPhrase(text: string, needle: string, caseSensitive = false): bo
   return re.test(text);
 }
 
-const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor', 'the', 'a', 'an', 'of']);
+const NAME_TITLES = new Set([...SHARED_NAME_TITLES, 'of']);
 
 /** `{ kind }` when the metadata has a fixed kind, else {}. */
 function kindOf(meta: Record<string, unknown>): { kind?: string } {

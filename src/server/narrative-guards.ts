@@ -20,6 +20,7 @@
  */
 import { agree, capitalize, referTo } from '../shared/pronouns.js';
 import { SENTENCE_SPLIT } from './sentences.js';
+import { shortName, isPartOfName } from '../shared/names.js';
 
 // ─── Arrival ───────────────────────────────────────────────────────────────
 
@@ -132,7 +133,8 @@ export function fallbackArrival(premise: string, names: string[], pronouns: Arra
 }
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? name;
+/** The name a person is called by — never a title (round 22: "Sir Aldric Vey" is "Aldric", never "Sir"). */
+const firstName = (name: string) => shortName(name);
 
 /**
  * The part of `before` that changed in `after`, with a little context, for
@@ -246,7 +248,8 @@ export function repairAddress(text: string, terms: AddressTerm[], opts: { vocati
   for (const t of terms) {
     const first = firstName(t.name);
     const address = t.address.trim();
-    if (!address || address.toLowerCase() === first.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase()) continue;
+    // Round 22: an address that is a word of their own name ("Vey" for Sir Aldric Vey) is their name, not a term.
+    if (!address || address.toLowerCase() === first.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase() || isPartOfName(address, t.name)) continue;
     const name = `(?:${esc(t.name.trim())}|${esc(first)})`;
     // "Mom Liz" / "Mom, Liz," / "mom Liz" / "Mom (Liz)" / "Mom — Liz —" → "Mom"
     out = out.replace(new RegExp(`\\b(${esc(address)})${STACKED_NAME(name)}`, 'gi'), '$1');
@@ -288,7 +291,7 @@ export function ownWordsForCompanions(text: string, terms: AddressTerm[]): strin
   for (const t of byName.values()) {
     const first = firstName(t.name);
     const address = t.address.trim();
-    if (address.toLowerCase() === first.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase()) continue;
+    if (address.toLowerCase() === first.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase() || isPartOfName(address, t.name)) continue;
     const name = `(?:${esc(t.name.trim())}|${esc(first)})`;
     out = out.replace(new RegExp(`(?<![\\p{L}'’-])${name}(?![\\p{L}-])`, 'gu'), (m: string, offset: number, whole: string) => (statesAddress(whole.slice(0, offset)) ? m : address));
   }
@@ -327,7 +330,7 @@ export function namesInNarration(text: string, terms: AddressTerm[]): string {
     for (const term of terms) {
       const address = term.address.trim();
       const name = firstName(term.name);
-      if (!address || !name || address.toLowerCase() === name.toLowerCase()) continue;
+      if (!address || !name || address.toLowerCase() === name.toLowerCase() || isPartOfName(address, term.name)) continue;
       const nameRe = `(?:${esc(term.name.trim())}|${esc(name)})`;
       out = out.replace(
         new RegExp(`(?:\\b(?:her|his|their|my|your|our)\\s+)?\\b(${esc(address)})(${STACKED_NAME(nameRe)})`, 'gi'),
@@ -349,7 +352,8 @@ export function namesInNarration(text: string, terms: AddressTerm[]): string {
     const name = firstName(t.name);
     if (t.derived) continue;
     if (!address || !name || !/^[A-Z]/.test(address)) continue;
-    if (address.toLowerCase() === name.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase()) continue;
+    // Round 22 (BH9P94): Mara calls Sir Aldric Vey "Aldric" — his own name, never replaced (it became "Sir").
+    if (address.toLowerCase() === name.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase() || isPartOfName(address, t.name)) continue;
     if (!byTerm.has(address)) byTerm.set(address, new Set());
     byTerm.get(address)!.add(name);
   }
@@ -2559,7 +2563,7 @@ export function withoutStrayPronounAfterName(text: string, npcNames: string[]): 
     if (!full) continue;
     forms.add(full);
     forms.add(full.replace(/^(?:the|a|an)\s+/i, ''));
-    const first = full.replace(/^(?:the|a|an)\s+/i, '').split(/\s+/)[0] ?? '';
+    const first = shortName(full.replace(/^(?:the|a|an)\s+/i, ''));
     if (/^\p{Lu}[\p{L}'’-]{2,}$/u.test(first)) forms.add(first);
   }
   const alts = [...forms].filter(Boolean).sort((a, b) => b.length - a.length).map(f => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');

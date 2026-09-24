@@ -27,6 +27,7 @@
 import { changedSpan, kinAddressTerms, namesInNarration, quoteRuns } from './narrative-guards.js';
 import { SENTENCE_BREAK, splitSentences } from './sentences.js';
 import type { CharacterDefinition } from '../shared/types.js';
+import { shortName } from '../shared/names.js';
 
 export interface PronounMember {
   name: string;
@@ -76,7 +77,8 @@ function couldOwn(member: PronounMember, word: string): boolean {
   return !conflictingWords(key).has(word);
 }
 
-const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? name;
+/** The name a person is called by — never a title (round 22: "Sir Aldric Vey" is "Aldric"). */
+const firstName = (name: string) => shortName(name);
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function mentions(sentence: string, member: PronounMember): boolean {

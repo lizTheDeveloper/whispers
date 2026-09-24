@@ -5,12 +5,10 @@ import type { ActionProposal, ActionDecision } from './schemas.js';
 import type { CharacterDefinition, CharacterState, TranscriptMessage } from '../../shared/types.js';
 import type { CharacterMemory } from '../character-memory.js';
 import { neutralPronouns, neutralNounRule } from '../npc-pronouns.js';
+import { shortName } from '../../shared/names.js';
 
-const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor']);
-function getFirstName(fullName: string): string {
-  const parts = fullName.split(/\s+/);
-  return parts.find(p => !NAME_TITLES.has(p.toLowerCase())) ?? parts[0]!;
-}
+/** The name a person is called by — never a title (round 22). */
+const getFirstName = shortName;
 
 export interface PartyMemberView {
   name: string;
