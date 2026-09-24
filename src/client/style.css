@@ -1702,3 +1702,24 @@ button:disabled {
   display: flex;
   gap: 0.6rem;
 }
+
+/* Model text rendered by src/client/markdown.ts */
+.md-p {
+  margin: 0 0 0.5em;
+}
+.md-p:last-child {
+  margin-bottom: 0;
+}
+.md-list {
+  margin: 0.25em 0 0.5em;
+  padding-left: 1.4em;
+}
+.md-list:last-child {
+  margin-bottom: 0;
+}
+.narration-entry code,
+.dm-chat-bubble code,
+.negotiation-bubble code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}

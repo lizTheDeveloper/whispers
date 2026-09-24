@@ -3,6 +3,7 @@ import { callLlm, callProse } from './llm-client.js';
 import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, SceneSummarySchema, DmSetupReplySchema, CharInterviewReplySchema, WorldSeedSchema, DmOpeningSchema } from './schemas.js';
 import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply, DmOpening } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
+import { PLAIN_PROSE_STYLE } from './style.js';
 import { safeDataFile } from '../data-paths.js';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, CharacterRelationship, TranscriptMessage, DiceResult, WorldSeed, TableRole } from '../../shared/types.js';
@@ -346,7 +347,7 @@ Storytelling principles:
   }
 
   if (criticalSection) prompt += criticalSection;
-  prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you.`;
+  prompt += `\nAlways respond with valid JSON matching the requested format. Never fabricate dice rolls — use only rolls provided to you. ${PLAIN_PROSE_STYLE}`;
   return { systemPrompt: prompt, criticalReminder: criticalSection.trim(), narrationHint };
 }
 

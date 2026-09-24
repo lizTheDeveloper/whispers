@@ -2,6 +2,7 @@ import type { WsClient } from './ws-client.js';
 import { renderNegotiationChat } from './negotiation-chat.js';
 import { dmUrl, playUrl } from './session-store.js';
 import type { GamePhase, TableRole, WorldReadiness, WorldSeed, WorldSeedItem, WorldSeedLocation, WorldSeedNpc } from '../shared/types.js';
+import { appendMarkdown } from './markdown.js';
 
 /** Mirrors MIN_INFLUENCES in src/server/world-readiness.ts — display only, the server owns the actual gate. */
 const MIN_INFLUENCES = 3;
@@ -155,7 +156,10 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   function addChatMessage(text: string, sender: 'dm' | 'host') {
     const bubble = document.createElement('div');
     bubble.className = `dm-chat-bubble ${sender}`;
-    bubble.textContent = text;
+    // The DM's replies are model text: safe markdown (DOM nodes only). The
+    // host's own words stay literal.
+    if (sender === 'dm') appendMarkdown(bubble, text);
+    else bubble.textContent = text;
     chatLog.appendChild(bubble);
     chatLog.scrollTop = chatLog.scrollHeight;
   }

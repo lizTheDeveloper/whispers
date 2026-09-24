@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import { callLlm } from './agents/llm-client.js';
+import { PLAIN_PROSE_STYLE } from './agents/style.js';
 import type { CharacterDefinition } from '../shared/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 
@@ -195,7 +196,7 @@ Respond to the latest messages. If there are disagreements, propose a compromise
   private async callDmAgent(userPrompt: string): Promise<string> {
     return callLlm({
       messages: [
-        { role: 'system', content: `You are a TTRPG Dungeon Master ("${this.dmPreset}" style) facilitating character creation negotiation. Be fair, fun, and keep things moving. Respond in 2-4 sentences. No JSON — just speak naturally.` },
+        { role: 'system', content: `You are a TTRPG Dungeon Master ("${this.dmPreset}" style) facilitating character creation negotiation. Be fair, fun, and keep things moving. Respond in 2-4 sentences. No JSON — just speak naturally. ${PLAIN_PROSE_STYLE}` },
         { role: 'user', content: userPrompt },
       ],
       temperature: 0.8,
@@ -206,7 +207,7 @@ Respond to the latest messages. If there are disagreements, propose a compromise
     const d = this.definition;
     return callLlm({
       messages: [
-        { role: 'system', content: `You ARE ${d.name}. You are in a character creation discussion where the DM and other players are reviewing your character sheet. Advocate for yourself — explain why your abilities matter to your concept, but be willing to compromise on things that aren't core to who you are. Stay in character. Respond in 2-3 sentences. No JSON.
+        { role: 'system', content: `You ARE ${d.name}. You are in a character creation discussion where the DM and other players are reviewing your character sheet. Advocate for yourself — explain why your abilities matter to your concept, but be willing to compromise on things that aren't core to who you are. Stay in character. Respond in 2-3 sentences. No JSON. ${PLAIN_PROSE_STYLE}
 
 Your concept: ${d.highConcept}
 Your trouble: ${d.trouble}

@@ -1,5 +1,6 @@
 import type { WsClient } from './ws-client.js';
 import type { PauseReason, ServerMessage } from '../shared/protocol.js';
+import { appendMarkdown, stripMarkdown } from './markdown.js';
 
 // Banner copy per pause reason. 6 mirrors the server's
 // QUIET_TURNS_BEFORE_PAUSE (src/server/game-loop.ts) — keep them in step.
@@ -44,6 +45,20 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     div.textContent = text;
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
+  }
+
+  // Model-written text (narration, actions, thoughts, summaries): rendered
+  // through the safe markdown renderer — DOM nodes only, never innerHTML.
+  // `prefix` and `suffix` are plain text around it (a speaker's name, quotes).
+  function appendProse(text: string, cls: string, prefix = '', suffix = ''): HTMLElement {
+    const div = document.createElement('div');
+    div.className = `narration-entry ${cls}`;
+    if (prefix) div.appendChild(document.createTextNode(prefix));
+    appendMarkdown(div, text);
+    if (suffix) div.appendChild(document.createTextNode(suffix));
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
   }
 
   // Server error text (a refused revoke, a rejected whisper, etc.) is
@@ -164,7 +179,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       : msg.text.startsWith('[Compel:') ? 'compel'
       : msg.text.includes('TAKEN OUT') ? 'taken-out'
       : 'dm';
-    appendLog(msg.text, cls);
+    appendProse(msg.text, cls);
     if (msg.locationName) {
       locationBar.textContent = msg.locationName;
       locationBar.style.display = 'block';
@@ -181,7 +196,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     if (msg.type === 'dice-roll') renderDiceRoll(msg);
   });
   function renderResolution(msg: Extract<ServerMessage, { type: 'resolution' }>): void {
-    appendLog(msg.text, 'resolution');
+    appendProse(msg.text, 'resolution');
   }
   ws.on('resolution', (msg) => { if (msg.type === 'resolution') renderResolution(msg); });
 
@@ -189,7 +204,8 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     sessionStats.scenes++;
     lastEndedScene = Math.max(lastEndedScene, msg.sceneNumber);
     if (msg.sceneNumber === liveScene) turnInLiveScene = false;
-    appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system');
+    const header = appendProse(msg.summary, 'system');
+    header.prepend(document.createTextNode(`--- Scene ${msg.sceneNumber} End ---`), document.createElement('br'));
 
     const stats = msg.whisperStats;
     if (stats && stats.length > 0) {
@@ -269,11 +285,12 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     const ul = document.createElement('ul');
     for (let i = 0; i < msg.actions.length; i++) {
       const li = document.createElement('li');
-      li.textContent = msg.actions[i]!;
+      appendMarkdown(li, msg.actions[i]!);
       if (msg.actionReasons && msg.actionReasons[i]) {
         const reason = document.createElement('span');
         reason.className = 'action-reason';
-        reason.textContent = ` — ${msg.actionReasons[i]}`;
+        reason.textContent = ' — ';
+        appendMarkdown(reason, msg.actionReasons[i]!);
         li.appendChild(reason);
       }
       ul.appendChild(li);
@@ -326,55 +343,10 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     whisperArea.style.display = 'flex';
     whisperInput.focus();
     whisperInput.placeholder = `Whisper to ${msg.characterName}...`;
-    if (msg.mood || msg.trustHint) {
-      const moodEl = whisperArea.querySelector('.whisper-context') ?? (() => {
-        const el = document.createElement('div');
-        el.className = 'whisper-context';
-        whisperArea.insertBefore(el, whisperArea.firstChild);
-        return el;
-      })();
-      const parts: string[] = [];
-      if (msg.mood) parts.push(msg.mood);
-      if (msg.trustHint) parts.push(msg.trustHint);
-      (moodEl as HTMLElement).textContent = parts.join(' ');
-    }
-    const existingGoals = whisperArea.querySelector('.whisper-goals');
-    if (existingGoals) existingGoals.remove();
-    if (msg.goals && msg.goals.length > 0) {
-      // msg.goals is LLM-generated text derived from player-influenced
-      // memories — not a trusted constant — so build each tag with
-      // textContent rather than concatenating it into HTML.
-      const goalsDiv = document.createElement('div');
-      goalsDiv.className = 'whisper-goals';
-      for (const g of msg.goals) {
-        const tag = document.createElement('span');
-        tag.className = 'goal-tag';
-        tag.textContent = g;
-        goalsDiv.appendChild(tag);
-      }
-      whisperArea.insertBefore(goalsDiv, whisperInput);
-    }
-    const existingSuggestions = whisperArea.querySelector('.whisper-suggestions');
-    if (existingSuggestions) existingSuggestions.remove();
-    if (msg.suggestions && msg.suggestions.length > 0) {
-      const sugDiv = document.createElement('div');
-      sugDiv.className = 'whisper-suggestions';
-      for (const sug of msg.suggestions) {
-        const btn = document.createElement('button');
-        btn.className = 'suggestion-btn';
-        btn.textContent = sug;
-        btn.disabled = whisperLocked || gameOver;
-        btn.addEventListener('click', () => {
-          // Same lock as the box the chip fills (the button is disabled too;
-          // this is the belt to that brace).
-          if (whisperLocked || gameOver) return;
-          whisperInput.value = sug;
-          whisperInput.focus();
-        });
-        sugDiv.appendChild(btn);
-      }
-      whisperArea.insertBefore(sugDiv, whisperInput);
-    }
+    // A new window starts with an empty panel; the owner's mood line, goals
+    // and chips arrive right behind it in whisper-guidance (older servers
+    // put them on the prompt itself, so those are honoured too).
+    renderGuidance(msg);
     // Count down to the server's own deadline: the time left it sent
     // (shorter than the window for a tab that rejoined mid-window), measured
     // against this clock from the moment it arrived. Recomputed from the
@@ -413,13 +385,77 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     }, 250);
   });
 
+  // The mood line, goals and suggestion chips of the open whisper window.
+  // They are this character's private options, so the server sends them to
+  // the seat that plays the character and to no one else.
+  function renderGuidance(msg: { mood?: string; trustHint?: string; goals?: string[]; suggestions?: string[] }): void {
+    whisperArea.querySelector('.whisper-context')?.remove();
+    whisperArea.querySelector('.whisper-goals')?.remove();
+    whisperArea.querySelector('.whisper-suggestions')?.remove();
+    if (msg.mood || msg.trustHint) {
+      const moodEl = document.createElement('div');
+      moodEl.className = 'whisper-context';
+      const parts: string[] = [];
+      if (msg.mood) parts.push(stripMarkdown(msg.mood));
+      if (msg.trustHint) parts.push(msg.trustHint);
+      moodEl.textContent = parts.join(' ');
+      whisperArea.insertBefore(moodEl, whisperArea.firstChild);
+    }
+    if (msg.goals && msg.goals.length > 0) {
+      // msg.goals is LLM-generated text derived from player-influenced
+      // memories — not a trusted constant — so build each tag with
+      // textContent rather than concatenating it into HTML.
+      const goalsDiv = document.createElement('div');
+      goalsDiv.className = 'whisper-goals';
+      for (const g of msg.goals) {
+        const tag = document.createElement('span');
+        tag.className = 'goal-tag';
+        tag.textContent = stripMarkdown(g);
+        goalsDiv.appendChild(tag);
+      }
+      whisperArea.insertBefore(goalsDiv, whisperInput);
+    }
+    if (msg.suggestions && msg.suggestions.length > 0) {
+      const sugDiv = document.createElement('div');
+      sugDiv.className = 'whisper-suggestions';
+      for (const raw of msg.suggestions) {
+        const sug = stripMarkdown(raw);
+        const btn = document.createElement('button');
+        btn.className = 'suggestion-btn';
+        btn.textContent = sug;
+        btn.disabled = whisperLocked || gameOver;
+        btn.addEventListener('click', () => {
+          // Same lock as the box the chip fills (the button is disabled too;
+          // this is the belt to that brace).
+          if (whisperLocked || gameOver) return;
+          whisperInput.value = sug;
+          whisperInput.focus();
+        });
+        sugDiv.appendChild(btn);
+      }
+      whisperArea.insertBefore(sugDiv, whisperInput);
+    }
+  }
+  ws.on('whisper-guidance', (msg) => {
+    if (msg.type !== 'whisper-guidance' || gameOver) return;
+    if (hasOwnCharacter && msg.characterId !== myCharacterId) return;
+    renderGuidance(msg);
+  });
+
+  // The public line of a turn: what the character did and said. Their inner
+  // thought and how they took the whisper are private (character-thought,
+  // sent only to the seat that plays them); a replayed row from before that
+  // split may still carry them, so they are drawn only when present.
   function renderActionTaken(msg: Extract<ServerMessage, { type: 'action-taken' }>): void {
     if (!epilogueSeen) turnInLiveScene = true;
-    appendLog(`${msg.characterName}: ${msg.action}`, 'character');
+    appendProse(msg.action, 'character', `${msg.characterName}: `);
     if (msg.spokenWords) {
-      appendLog(`"${msg.spokenWords}"`, 'dialogue');
+      appendProse(msg.spokenWords, 'dialogue', '"', '"');
     }
-    appendLog(`(${msg.innerThought})`, 'whisper');
+    renderThought(msg);
+  }
+  function renderThought(msg: { characterName: string; innerThought?: string; whisperInfluence?: string }): void {
+    if (msg.innerThought) appendProse(msg.innerThought, 'whisper', '(', ')');
     if (msg.whisperInfluence && msg.whisperInfluence !== 'none') {
       const label = msg.whisperInfluence === 'followed' ? 'heeded your whisper'
         : msg.whisperInfluence === 'partially-followed' ? 'partially heeded your whisper'
@@ -427,6 +463,9 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       appendLog(`[${msg.characterName} ${label}]`, 'system');
     }
   }
+  ws.on('character-thought', (msg) => {
+    if (msg.type === 'character-thought') renderThought(msg);
+  });
   ws.on('action-taken', (msg) => {
     if (msg.type !== 'action-taken') return;
     // Panel resets are live-turn chrome, not log content — a replay never
@@ -730,6 +769,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         case 'resolution': renderResolution(entry); break;
         case 'dice-roll': renderDiceRoll(entry); break;
         case 'action-taken': renderActionTaken(entry); break;
+        case 'character-thought': renderThought(entry); break;
         case 'scene-end': renderSceneEnd(entry); break;
         case 'whisper-echo': appendLog(`You whisper: "${entry.text}"`, 'whisper'); break;
         case 'revoked-note': appendLog(entry.text, 'system'); break;

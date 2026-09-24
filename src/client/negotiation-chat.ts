@@ -1,4 +1,5 @@
 import type { WsClient } from './ws-client.js';
+import { appendMarkdown } from './markdown.js';
 
 export function renderNegotiationChat(container: HTMLElement, ws: WsClient, characterId: string, characterName: string, playerName: string, isHost: boolean): void {
   const panel = document.createElement('div');
@@ -78,7 +79,10 @@ export function renderNegotiationChat(container: HTMLElement, ws: WsClient, char
     label.className = 'negotiation-sender';
     label.textContent = sender;
     const body = document.createElement('span');
-    body.textContent = text;
+    // The DM agent, the character agent and the recap are model text: safe
+    // markdown (DOM nodes only). What people type stays literal.
+    if (senderType === 'dm-agent' || senderType === 'char-agent' || senderType === 'summary') appendMarkdown(body, text);
+    else body.textContent = text;
     bubble.append(label, body);
     log.appendChild(bubble);
     log.scrollTop = log.scrollHeight;

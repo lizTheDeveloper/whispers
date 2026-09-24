@@ -17,9 +17,11 @@ let port: number;
 beforeAll(async () => { harness = await startHarness(); port = harness.port; }, 30_000);
 afterAll(async () => { await harness.stop(); });
 
-type ActionTaken = Extract<ServerMessage, { type: 'action-taken' }>;
-function actions(log: ServerMessage[], from = 0): ActionTaken[] {
-  return log.slice(from).filter((m): m is ActionTaken => m.type === 'action-taken');
+// How each turn took the whisper is the owner's private character-thought
+// (one per turn, right after the public action-taken).
+type Thought = Extract<ServerMessage, { type: 'character-thought' }>;
+function actions(log: ServerMessage[], from = 0): Thought[] {
+  return log.slice(from).filter((m): m is Thought => m.type === 'character-thought');
 }
 
 describe('quiet-turn auto-pause', () => {
@@ -47,12 +49,12 @@ describe('quiet-turn auto-pause', () => {
     expect(actions(g.player.log, mark)).toHaveLength(0);
 
     // "Paused after 6 quiet turns — whisper or resume to continue."
-    g.player.q.clear(); // drop the six buffered action-takens above
+    g.player.q.clear(); // drop the six buffered turns above
     sendMsg(g.player.ws, { type: 'whisper', text: 'Wake up. The tide is turning.' });
     const ack = await g.player.q.waitFor('whisper-ack', 10_000) as any;
     expect(ack.status).not.toBe('rejected');
     expect(await g.player.q.waitFor('game-paused', 10_000)).toMatchObject({ paused: false });
-    const next = await g.player.q.waitFor('action-taken', 30_000) as any;
+    const next = await g.player.q.waitFor('character-thought', 30_000) as any;
     expect(next.whisperInfluence).not.toBe('none');
 
     await endGame(g.host);
@@ -61,7 +63,7 @@ describe('quiet-turn auto-pause', () => {
 
   it('a whisper resets the count: six more quiet turns are needed after it', async () => {
     const g = await startPlayingGame(port, 'Quiet Reset');
-    for (let i = 0; i < 3; i++) await g.player.q.waitFor('action-taken', 30_000);
+    for (let i = 0; i < 3; i++) await g.player.q.waitFor('character-thought', 30_000);
     sendMsg(g.player.ws, { type: 'whisper', text: 'Look at the harbour lights.' });
     const ack = await g.player.q.waitFor('whisper-ack', 10_000) as any;
     expect(ack.status).not.toBe('rejected');

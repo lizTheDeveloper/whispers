@@ -26,6 +26,8 @@ describe('End Game during an open whisper window', () => {
   it('closes the window without a turn outcome and tells every client the table is ending first', async () => {
     const g = await startPlayingGame(harness.port, 'End In Window');
     await g.player.q.waitFor('whisper-prompt', 30_000);
+    // Both seats have the open window before either log is marked.
+    await g.host.q.waitFor('whisper-prompt', 10_000);
     const mark = g.player.log.length;
     const hostMark = g.host.log.length;
 

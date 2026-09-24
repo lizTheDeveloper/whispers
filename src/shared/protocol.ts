@@ -36,10 +36,14 @@ export type ClientMessage =
  */
 export type PauseReason = 'host' | 'no-players' | 'quiet' | 'restart';
 
+export type WhisperInfluence = 'followed' | 'partially-followed' | 'ignored' | 'none';
+
 /**
  * One display line of a session's playing-phase log, shaped exactly like the
  * live ServerMessage that produced it (plus two kinds that never were
- * broadcasts: the player's own whisper echo and a revoke note). Sent as an
+ * broadcasts: the player's own whisper echo and a revoke note). A
+ * character-thought row is its owner's alone and replays only to their
+ * session, like a whisper echo. Sent as an
  * array by 'transcript-replay' when a client rejoins mid-game or after the
  * table ended, so a page refresh does not erase the story so far.
  */
@@ -47,7 +51,8 @@ export type ReplayEntry =
   | { type: 'narration'; text: string; sceneNumber: number; locationName?: string; isEpilogue?: boolean }
   | { type: 'resolution'; text: string }
   | { type: 'dice-roll'; result: DiceResult; context: string }
-  | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }
+  | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought?: string; whisperInfluence?: WhisperInfluence }
+  | { type: 'character-thought'; characterId: string; characterName: string; innerThought: string; whisperInfluence: WhisperInfluence }
   | { type: 'scene-end'; summary: string; sceneNumber: number; whisperStats?: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
   | { type: 'whisper-echo'; text: string }
   | { type: 'revoked-note'; text: string };
@@ -70,7 +75,20 @@ export type ServerMessage =
   | { type: 'phase-change'; phase: GamePhase }
   | { type: 'narration'; text: string; sceneNumber: number; locationName?: string; isEpilogue?: boolean }
   | { type: 'scene-image'; imageUrl: string; locationName: string }
+  // A character's private thinking goes ONLY to the seat that plays that
+  // character (never a broadcast, not even to the host): action-proposals,
+  // whisper-guidance and character-thought. What the table sees of a turn is
+  // the whisper-prompt (who is deciding, and the countdown), the public
+  // action-taken, the dice and the DM's words.
   | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; actionReasons?: string[]; whisperTrust: number }
+  // The owner-only half of a whisper-prompt: sent right after it, to fill
+  // the whisper panel's mood line, goals and suggestion chips.
+  | { type: 'whisper-guidance'; characterId: string; mood?: string; trustHint?: string; suggestions?: string[]; goals?: string[] }
+  // The owner-only half of an action-taken: what the character thought, and
+  // how they took the owner's whisper. Sent right after the action-taken.
+  | { type: 'character-thought'; characterId: string; characterName: string; innerThought: string; whisperInfluence: WhisperInfluence }
+  // Broadcast. mood/trustHint/suggestions/goals are the owner's alone and
+  // arrive separately in whisper-guidance; the fields remain optional here.
   // windowMs: the window's full length; remainingMs: what is left of it as
   // of sending (less than windowMs when replayed to a tab that rejoins
   // mid-window). The client counts down from remainingMs. Both absent when
@@ -78,7 +96,9 @@ export type ServerMessage =
   | { type: 'whisper-prompt'; characterId: string; characterName: string; mood?: string; trustHint?: string; suggestions?: string[]; goals?: string[]; carryingQueued?: number; windowMs?: number; remainingMs?: number }
   | { type: 'whisper-ack'; status: 'delivered' | 'queued' | 'rejected'; characterId: string | null; characterName: string | null; message: string }
   | { type: 'whisper-dropped'; characterId: string; count: number }
-  | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }
+  // innerThought/whisperInfluence are absent from the live broadcast (they
+  // travel in character-thought); older replay rows may still carry them.
+  | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought?: string; whisperInfluence?: WhisperInfluence }
   | { type: 'dice-roll'; result: DiceResult; context: string }
   | { type: 'resolution'; text: string }
   | { type: 'dm-question'; question: string }

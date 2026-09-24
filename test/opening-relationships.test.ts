@@ -126,7 +126,7 @@ async function makeLoop(opts: { scenarioId?: string; seed: WorldSeed; dmInstruct
     loop = new GameLoop(db, campaignId, (m) => {
       broadcasts.push(m);
       if (m.type === 'whisper-prompt') setImmediate(() => { loop.stop(); done(); });
-    }, () => {}, state);
+    }, () => {}, state, (_id, m) => broadcasts.push(m));
   });
   const running = loop.start().catch(() => {});
   await Promise.race([firstWindow, new Promise(r => setTimeout(r, 20_000))]);
@@ -317,7 +317,7 @@ describe('the opening respects pause', () => {
     };
 
     const broadcasts: ServerMessage[] = [];
-    const loop = new GameLoop(db, campaignId, (m) => broadcasts.push(m), () => {}, state);
+    const loop = new GameLoop(db, campaignId, (m) => broadcasts.push(m), () => {}, state, (_id, m) => broadcasts.push(m));
     const running = loop.start().catch(() => {});
     const waitFor = async (cond: () => boolean, ms: number) => {
       const end = Date.now() + ms;

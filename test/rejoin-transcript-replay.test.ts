@@ -90,7 +90,10 @@ describe('Rejoin during playing replays the session transcript (MUL-74)', () => 
     // The replayed lines carry their content, not just their kinds.
     const action = entries.find(e => e.type === 'action-taken') as any;
     expect(action.characterName).toBe('Vex Ashgrove');
-    expect(typeof action.innerThought).toBe('string');
+    // The inner thought is the owner's own line, after the public action.
+    expect(action).not.toHaveProperty('innerThought');
+    const thought = entries.find(e => e.type === 'character-thought') as any;
+    expect(typeof thought?.innerThought).toBe('string');
     const dice = entries.find(e => e.type === 'dice-roll') as any;
     expect(dice.result.description).toBeTruthy();
 
@@ -105,6 +108,7 @@ describe('Rejoin during playing replays the session transcript (MUL-74)', () => 
     expect(hostTypes).toContain('narration');
     expect(hostTypes).toContain('action-taken');
     expect(hostTypes).not.toContain('whisper-echo');
+    expect(hostTypes).not.toContain('character-thought');
 
     // --- after end-game the loop is gone from gameLoops; the DB copy must
     // still refill a rejoining player's log (crash-recovery posture) ---

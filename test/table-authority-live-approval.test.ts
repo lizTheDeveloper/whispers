@@ -592,7 +592,9 @@ describe('AI DM approves characters when the host is playing', () => {
       while (turnsCompleted < 3) {
         let msg: any;
         try {
-          msg = await hostQ.waitForAny(['action-proposals', 'whisper-prompt'], 5_000);
+          // action-proposals are the character owner's alone now; the host
+          // sees whose turn it is from the public whisper-prompt/action-taken.
+          msg = await hostQ.waitForAny(['action-taken', 'whisper-prompt'], 5_000);
         } catch {
           break;
         }
@@ -1572,7 +1574,8 @@ describe('AI DM approves characters when the host is playing', () => {
       // Drives resolve() via one full action-resolution turn.
       sendMsg(hostWs, { type: 'start-game' });
       await hostQ.waitFor('phase-change', 15_000);
-      await hostQ.waitFor('action-proposals', 15_000);
+      // The options go to the player who plays the character, not the host.
+      await pq.waitFor('action-proposals', 15_000);
       await hostQ.waitFor('whisper-prompt', 15_000);
       sendMsg(hostWs, { type: 'whisper', text: 'Push forward.' });
       await hostQ.waitFor('resolution', 20_000);

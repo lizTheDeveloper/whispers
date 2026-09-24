@@ -38,6 +38,9 @@ export default defineConfig(({ mode }) => {
       globals: true,
       environment: 'node',
       include: ['test/**/*.test.ts', 'src/**/*.test.ts'],
+      // Reading-time pacing between story beats (src/server/pacing.ts) is
+      // off in tests; the pacing tests turn it on for themselves.
+      env: { PACE_MIN_MS: '0', PACE_MAX_MS: '0' },
     },
   };
 });

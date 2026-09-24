@@ -210,6 +210,10 @@ export async function startHarness(): Promise<Harness> {
   // asserts on the literal 30s production value, so this is safe to set
   // unconditionally for every harness-backed test.
   process.env.ROOM_TEARDOWN_GRACE_MS ??= '300';
+  // Reading-time pacing between beats (src/server/pacing.ts) off unless a
+  // test asks for it — it would otherwise add 2-12s per beat to every test.
+  process.env.PACE_MIN_MS ??= '0';
+  process.env.PACE_MAX_MS ??= '0';
 
   let mod = await import('../../src/server/index.js');
   if (!mod.server.listening) {
