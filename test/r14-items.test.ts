@@ -78,11 +78,14 @@ describe('planItemMoves: the server checks each move against the real inventorie
   });
 
   it('a move from someone who does not hold it is refused and changes nothing', () => {
-    const p = planItemMoves([{ item: 'The Pen of Perpetual Pondering', from: 'Liz', to: 'Biz' }], party());
+    // Round 15 (RZBU7G): a name sharing the head noun of exactly one thing
+    // the giver holds is that thing ("Stamp of Clarity" for "The Stamp"), so
+    // the refusal is for a thing with no such match.
+    const p = planItemMoves([{ item: 'Silver Key', from: 'Liz', to: 'Biz' }], party());
     expect(p.inventories.get('liz')).toEqual(LIZ.inventory);
     expect(p.inventories.get('biz')).toEqual(BIZ.inventory);
     expect(p.applied).toEqual([]);
-    expect(p.rejected[0]).toMatch(/Liz does not hold "The Pen of Perpetual Pondering"/);
+    expect(p.rejected[0]).toMatch(/Liz does not hold "Silver Key"/);
   });
 
   it('one from a stack: the receiver gets one, the giver keeps the stack', () => {

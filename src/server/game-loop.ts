@@ -30,7 +30,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, spokenOrNull, withoutInventedPcSurnames,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, spokenOrNull, withoutInventedPcSurnames,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -967,11 +967,16 @@ export class GameLoop {
    * real inventories, refused when it does not fit, and the world bible
    * follows. Returns who changed and the moves that stood.
    */
-  private applyItemMoves(moves: ItemMove[]): { changed: Set<string>; applied: AppliedMove[] } {
+  private applyItemMoves(moves: ItemMove[], prose = ''): { changed: Set<string>; applied: AppliedMove[] } {
     const changed = new Set<string>();
     try {
       const chars = Array.from(this.characters.values());
-      const plan = planItemMoves(moves, chars.map(c => ({ id: c.id, name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })), { worldItems: this.worldBible.getItemNames(this.campaignId) });
+      const places = this.worldBible.getItemPlaces(this.campaignId);
+      const plan = planItemMoves(moves, chars.map(c => ({ id: c.id, name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })), {
+        worldItems: this.worldBible.getItemNames(this.campaignId),
+        aliases: this.worldBible.getItemAliases(this.campaignId),
+        looseItems: places.filter(p => !p.gone && !p.heldBy && !p.heldByPc).map(p => p.name),
+      });
       for (const note of plan.rejected) console.warn(note);
       for (const note of plan.notes) console.log(note);
       for (const c of chars) {
@@ -983,19 +988,29 @@ export class GameLoop {
         }
       }
       const undrop = (item: string) => { this.itemsDropped = this.itemsDropped.filter(d => !sameItem(d, item)); };
+      const scene = this.state.currentScene;
+      const npcNames = this.allNpcs().map(n => n.name);
+      const partyNames = chars.map(c => c.definition.name);
       for (const m of plan.applied) {
         if (m.to.kind === 'pc') {
           undrop(m.item);
-          this.worldBible.placeItem(this.campaignId, m.item, { holderId: m.to.id });
+          this.worldBible.placeItem(this.campaignId, m.item, { holderId: m.to.id, scene });
+        } else if (m.to.kind === 'npc' && eatenByReceiver(prose, m.to.name, m.item, [...partyNames, ...npcNames])) {
+          // Handed over and eaten in the same beat (live RZBU7G: "Granola bar":
+          // Liz → Clerk 4-B, "…takes a bite"): consumed, not the clerk's to hoard.
+          undrop(m.item);
+          this.worldBible.placeItem(this.campaignId, m.item, { gone: true, scene });
+          if (m.from.kind === 'pc') this.noteItemLeft(m.item);
+          console.log(`[items] "${m.item}": ${m.to.name} eats it in the same beat — consumed, not held`);
         } else if (m.to.kind === 'world') {
-          this.worldBible.placeItem(this.campaignId, m.item, {});
+          this.worldBible.placeItem(this.campaignId, m.item, { scene });
           if (m.from.kind === 'pc') {
             if (!this.itemsDropped.some(d => sameItem(d, m.item))) this.itemsDropped.push(m.item);
             this.noteItemLeft(m.item);
           }
         } else {
           undrop(m.item);
-          this.worldBible.placeItem(this.campaignId, m.item, m.to.kind === 'npc' ? { npcName: m.to.name } : { gone: true });
+          this.worldBible.placeItem(this.campaignId, m.item, m.to.kind === 'npc' ? { npcName: m.to.name, scene } : { gone: true, scene });
           if (m.from.kind === 'pc') this.noteItemLeft(m.item);
         }
       }
@@ -1048,6 +1063,25 @@ export class GameLoop {
       return out.slice(0, 20);
     } catch (err) {
       console.error('[items] world item list failed, prompting without it:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Things the record has as eaten, used up or destroyed — gone from the
+   * world, NPCs included — for the DM's <items_on_hand> (live RZBU7G: the
+   * clerk "chewing on the granola bar he has been hoarding" after eating it).
+   */
+  private eatenItems(): string[] {
+    try {
+      const held = Array.from(this.characters.values()).flatMap(c => c.state.inventory ?? []);
+      const out: string[] = [];
+      for (const p of this.worldBible.getItemPlaces(this.campaignId)) {
+        if (p.gone && !held.some(h => sameItem(h, p.name)) && !out.some(o => sameItem(o, p.name))) out.push(p.name);
+      }
+      return out.slice(0, 20);
+    } catch (err) {
+      console.error('[items] eaten item list failed, prompting without it:', err);
       return [];
     }
   }
@@ -1429,6 +1463,7 @@ export class GameLoop {
         partyInventories: Array.from(this.characters.values()).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })),
         worldItems: this.worldItemsForPrompt(),
         goneItems: this.goneForGood(),
+        eatenItems: this.eatenItems(),
         partySize: this.characters.size || 1,
         sessionTurnCount: this.state.currentTurn,
         locationTurnCount: this.locationTurnCount,
@@ -1506,7 +1541,7 @@ export class GameLoop {
       // from Biz's fingers" registered nowhere), then the prose cross-check.
       const goneBefore = this.goneForGood();
       const before = this.inventorySnapshot();
-      const moved = narration.itemMoves && narration.itemMoves.length > 0 ? this.applyItemMoves(narration.itemMoves) : undefined;
+      const moved = narration.itemMoves && narration.itemMoves.length > 0 ? this.applyItemMoves(narration.itemMoves, narration.narration) : undefined;
       const changed = new Set<string>(moved?.changed ?? []);
       for (const cid of this.trackNarratedItems(narration.narration, undefined, [], { moves: narration.itemMoves ? moved?.applied ?? [] : undefined, goneBefore, removedFrom: this.removedSince(before) })) changed.add(cid);
       for (const cid of changed) {
@@ -2029,6 +2064,7 @@ export class GameLoop {
           missingItems: this.missingItemsFor(character, decision.chosenAction),
           worldItems: this.worldItemsForPrompt(),
           goneItems: this.goneForGood(),
+          eatenItems: this.eatenItems(),
           partyMembers: Array.from(this.characters.entries())
             .filter(([id]) => id !== characterId)
             .map(([id, c]) => ({ id, name: c.definition.name, inventory: c.state.inventory ?? [], ...(isTakenOut(c.state) ? { takenOut: true } : {}) })),
@@ -2182,7 +2218,7 @@ export class GameLoop {
       const legacy = resolution.stateChanges.filter(c => c.field === 'inventory');
       if (legacy.length > 0) console.log(`[items] the ruling sent itemMoves; its ${legacy.length} inventory stateChange(s) are set aside`);
       resolution.stateChanges = resolution.stateChanges.filter(c => c.field !== 'inventory');
-      moved = this.applyItemMoves(resolution.itemMoves);
+      moved = this.applyItemMoves(resolution.itemMoves, resolution.narration);
       for (const cid of moved.changed) affectedCharIds.add(cid);
     }
     const released = [
@@ -2415,7 +2451,7 @@ export class GameLoop {
         .then(facts => {
           const total = facts.newLocations.length + facts.newEntities.length + facts.newItems.length + facts.newEvents.length + facts.newRelationships.length;
           if (total > 0) {
-            this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true });
+            this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene });
             console.log(`[game-loop] Periodic extraction (turn ${this.state.currentTurn}): ${total} facts (${facts.newEvents.length} events, ${facts.newRelationships.length} rels, ${facts.newEntities.length} entities)`);
           }
         })
@@ -2438,7 +2474,7 @@ export class GameLoop {
 
     try {
       const facts = await this.extractor.extractFacts(toExtract, this.state.currentScene);
-      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene });
     } catch (e) {
       console.error('Mid-scene fact extraction failed:', e);
     }
@@ -2520,7 +2556,7 @@ export class GameLoop {
         events: facts.newEvents.length,
         relationships: facts.newRelationships.length,
       }));
-      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene });
     } catch (e: any) {
       console.error('[game-loop] Fact extraction failed:', e.message?.slice(0, 200));
     }

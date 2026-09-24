@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Entity, Location, Item, GameEvent, Relationship } from '../shared/types.js';
 import { npcPronounBlock, pronounsInNarration, npcKeyName, namesSameNpc, npcMentioned } from './npc-pronouns.js';
+import { itemKey, itemHead, namesOneThing } from './narrative-guards.js';
 
 export { npcKeyName };
 
@@ -18,6 +19,25 @@ function genId(): string { return randomBytes(16).toString('hex'); }
 /** SQL: an item not marked gone for good (eaten, used up, destroyed — see placeItem). */
 const goneSql = (col = 'properties') => `COALESCE(CASE WHEN json_valid(${col}) THEN json_extract(${col}, '$.gone') END, 0)`;
 const NOT_GONE = `${goneSql()} = 0`;
+
+interface ItemRow { id: string; name: string; properties: string | null; holder_id: string | null }
+
+/** An item's properties JSON, as an object ({} when missing or bad). */
+function propsOf(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const p = JSON.parse(raw);
+    return p && typeof p === 'object' && !Array.isArray(p) ? p as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Other names an item has gone by (properties.aliases). */
+function aliasesOf(raw: string | null): string[] {
+  const a = propsOf(raw).aliases;
+  return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : [];
+}
 
 function escapeRegExp(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -540,7 +560,55 @@ export class WorldBible {
 
   /** Every item the world knows of, by name — what DM prose can show someone picking up. */
   getItemNames(campaignId: string): string[] {
-    return (this.db.prepare('SELECT name FROM items WHERE campaign_id = ?').all(campaignId) as Array<{ name: string }>).map(r => r.name);
+    // "Pen" and "The Pen" filed twice by an older game are one name (live RZBU7G).
+    const out: string[] = [];
+    for (const r of this.itemRows(campaignId)) if (!out.some(n => itemKey(n) === itemKey(r.name))) out.push(r.name);
+    return out;
+  }
+
+  /** Other names the story has used for a world item ("Stamp of Clarity" for The Stamp), each with the item's own name. */
+  getItemAliases(campaignId: string): Array<{ alias: string; name: string }> {
+    return this.itemRows(campaignId).flatMap(r => aliasesOf(r.properties).map(alias => ({ alias, name: r.name })));
+  }
+
+  private itemRows(campaignId: string): ItemRow[] {
+    return this.db.prepare('SELECT id, name, properties, holder_id FROM items WHERE campaign_id = ? ORDER BY rowid').all(campaignId) as ItemRow[];
+  }
+
+  /**
+   * The world item a name means: the same name (any case); else the same
+   * normalized name — no article, any case, singular ("Pen" is "The Pen",
+   * "bottle cap" is "Bottle caps"); else an item this name is an alias of.
+   */
+  private findItemRow(campaignId: string, name: string): ItemRow | undefined {
+    const rows = this.itemRows(campaignId);
+    const key = itemKey(name);
+    return rows.find(r => r.name.trim().toLowerCase() === name.trim().toLowerCase())
+      ?? rows.find(r => itemKey(r.name) === key)
+      ?? rows.find(r => aliasesOf(r.properties).some(a => itemKey(a) === key));
+  }
+
+  /**
+   * The one item a newly extracted name is another name for, or undefined:
+   * an item not gone, in play this scene (touched this scene, or carried by
+   * a player character), that the name could be (namesOneThing: "Stamp of
+   * Clarity" or "Square Stamp" for "The Stamp", "Green Bottle Cap" for
+   * "Bottle cap") — and no other such item shares its head noun, so "Stamp"
+   * beside a Red Stamp and a Blue Stamp is nobody's alias.
+   */
+  private aliasTarget(campaignId: string, name: string, scene: number): ItemRow | undefined {
+    const head = itemHead(name);
+    if (!head) return undefined;
+    const isPc = this.db.prepare('SELECT 1 FROM characters WHERE id = ?');
+    const inPlay = this.itemRows(campaignId).filter(r => {
+      const props = propsOf(r.properties);
+      if (props.gone) return false;
+      return props.scene === scene || (!!r.holder_id && !!isPc.get(r.holder_id));
+    });
+    const sameHead = inPlay.filter(r => [r.name, ...aliasesOf(r.properties)].some(n => itemHead(n) === head));
+    if (sameHead.length !== 1) return undefined;
+    const row = sameHead[0]!;
+    return [row.name, ...aliasesOf(row.properties)].some(n => namesOneThing(n, name)) ? row : undefined;
   }
 
   /**
@@ -566,28 +634,29 @@ export class WorldBible {
    * does not know yet ("Pen" from Liz's torn tote) becomes a world item, so
    * it can be picked up again.
    */
-  placeItem(campaignId: string, itemName: string, place: { holderId?: string | null; npcName?: string | null; gone?: boolean }): void {
-    let row = this.db.prepare('SELECT id, properties FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, itemName) as { id: string; properties: string | null } | undefined;
+  placeItem(campaignId: string, itemName: string, place: { holderId?: string | null; npcName?: string | null; gone?: boolean; scene?: number }): void {
+    let row = this.findItemRow(campaignId, itemName);
     if (!row) {
-      // Only a thing set down in the world is new to it; one in someone's keeping or gone needs no record.
-      if (place.gone || place.holderId || place.npcName) return;
+      // A thing set down in the world is new to it, and so is a thing eaten
+      // or used up (the record says it is gone); one in someone's keeping needs no record.
+      if (place.holderId || place.npcName) return;
       this.addItem({ id: genId(), campaignId, name: itemName, description: null, properties: {}, holderId: null, locationId: null }, true);
-      row = this.db.prepare('SELECT id, properties FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, itemName) as { id: string; properties: string | null };
+      row = this.findItemRow(campaignId, itemName)!;
     }
     const npc = place.npcName
       ? (this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, place.npcName) as { id: string } | undefined)?.id ?? null
       : null;
-    let props: Record<string, unknown> = {};
-    try { props = row.properties ? JSON.parse(row.properties) : {}; } catch { props = {}; }
+    const props = propsOf(row.properties);
     if (place.gone) props.gone = 1; else delete props.gone;
+    if (place.scene !== undefined) props.scene = place.scene;
     this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1, properties = ? WHERE id = ?')
       .run(place.gone ? null : (place.holderId ?? npc), JSON.stringify(props), row.id);
   }
 
   updateItemHolder(campaignId: string, itemName: string, holderId: string | null): void {
     // Changing hands happens in a narrated resolution — the party has seen it.
-    this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1 WHERE campaign_id = ? AND name = ? COLLATE NOCASE')
-      .run(holderId, campaignId, itemName);
+    const row = this.findItemRow(campaignId, itemName);
+    if (row) this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1 WHERE id = ?').run(holderId, row.id);
   }
 
   /**
@@ -746,7 +815,7 @@ export class WorldBible {
    * existing, becomes known to the party. Seeding leaves it off — a seed is
    * the DM's private notes.
    */
-  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean; markKnown?: boolean; /** Seeding: the seed's NPCs are all meant — "Clerk Marni" and "Marni's Assistant" are two people. */ seeding?: boolean }): void {
+  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean; markKnown?: boolean; /** The scene the facts come from: items are marked with it, and a new name for a thing in play this scene is an alias. */ sceneNumber?: number; /** Seeding: the seed's NPCs are all meant — "Clerk Marni" and "Marni's Assistant" are two people. */ seeding?: boolean }): void {
     const allowNewLocations = opts?.allowNewLocations ?? false;
     const markKnown = opts?.markKnown ?? false;
     const tx = this.db.transaction(() => {
@@ -779,14 +848,28 @@ export class WorldBible {
           this.addEntity({ id: genId(), campaignId, type: ent.type as Entity['type'], name: ent.name, description: ent.description, disposition: ent.disposition, alive: true, locationId: null, metadata: pronouns ? { pronouns } : {}, motivation: ent.motivation ?? null, knownToParty: markKnown });
         }
       }
+      const scene = opts?.sceneNumber;
       for (const item of diff.newItems) {
-        const existingItem = this.db.prepare('SELECT id FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, item.name) as any;
+        // "Pen" is "The Pen" (normalized name, or a known alias).
+        const existingItem = this.findItemRow(campaignId, item.name);
         if (existingItem) {
-          if (item.description) this.db.prepare('UPDATE items SET description = ? WHERE id = ?').run(item.description, existingItem.id);
+          if (item.description && itemKey(existingItem.name) === itemKey(item.name)) this.db.prepare('UPDATE items SET description = ? WHERE id = ?').run(item.description, existingItem.id);
           if (markKnown) this.db.prepare('UPDATE items SET known_to_party = 1 WHERE id = ?').run(existingItem.id);
-        } else {
-          this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: item.properties ?? {}, holderId: item.holderId ?? null, locationId: item.locationId ?? null }, markKnown);
+          if (scene !== undefined) this.db.prepare('UPDATE items SET properties = ? WHERE id = ?').run(JSON.stringify({ ...propsOf(existingItem.properties), scene }), existingItem.id);
+          continue;
         }
+        // One stamp under four names (live RZBU7G): a new name for the one
+        // thing in play this scene it could be is an alias, not a new item.
+        const target = scene !== undefined ? this.aliasTarget(campaignId, item.name, scene) : undefined;
+        if (target) {
+          const props = propsOf(target.properties);
+          props.aliases = [...aliasesOf(target.properties), item.name];
+          this.db.prepare('UPDATE items SET properties = ? WHERE id = ?').run(JSON.stringify(props), target.id);
+          if (markKnown) this.db.prepare('UPDATE items SET known_to_party = 1 WHERE id = ?').run(target.id);
+          console.log(`[world-bible] "${item.name}" is another name for "${target.name}" — filed as an alias, not a new item`);
+          continue;
+        }
+        this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: { ...(item.properties ?? {}), ...(scene !== undefined ? { scene } : {}) }, holderId: item.holderId ?? null, locationId: item.locationId ?? null }, markKnown);
       }
       for (const evt of diff.newEvents) {
         if (evt.outcome) {

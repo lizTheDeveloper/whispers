@@ -531,7 +531,7 @@ Storytelling principles:
  * cap she had given away out of her tote, and a pen "eaten by the storm"
  * turned up again.
  */
-export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string[] }>, extra: { world?: Array<{ name: string; heldBy?: string | null }>; gone?: string[] } = {}): string {
+export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string[] }>, extra: { world?: Array<{ name: string; heldBy?: string | null }>; gone?: string[]; eaten?: string[] } = {}): string {
   if (party.length === 0) return '';
   const lines = party.map(p => `- ${p.name}: ${p.inventory && p.inventory.length > 0 ? p.inventory.join(', ') : 'nothing'}`);
   // Live (7RAAQ7): the world's "The Pen of Perpetual Pondering" beside Liz's
@@ -548,9 +548,15 @@ export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string
     }
     return [...holders].map(([i, who]) => `"${i}" (${who.join(', ')}) and "${w.name}" are different things: never call one by the other's name, and never put "${w.name}" in a party member's hand unless an itemMoves entry gives it to them.`);
   });
-  const gone = (extra.gone ?? []).filter(Boolean);
+  // Live (RZBU7G): the clerk ate the granola bar, then went on "chewing on
+  // the granola bar he has been hoarding". Eaten is gone from the world too.
+  // And one stamp went by four names (The Stamp, Stamp of Clarity, Square
+  // Stamp, Ink-Stained Stamp): the NAMES line.
+  const eaten = (extra.eaten ?? []).filter(Boolean);
+  const gone = (extra.gone ?? []).filter(g => g && !eaten.some(e => e.trim().toLowerCase() === g.trim().toLowerCase()));
   const goneLine = gone.length > 0 ? `\nGone for good (eaten, used up, given away, lost): ${gone.join(', ')} — no one in the party has these; never have one turn up again in anyone's hand, bag or pocket.` : '';
-  return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}${worldBlock}${goneLine}${clashes.length > 0 ? `\n${clashes.join('\n')}` : ''}\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it and the thing itself ("the pen lands in Biz's palm", not just "it" or "a soft arc of black plastic"). One from a stack (a bottle cap from "Bottle caps") is one: the giver keeps the rest. Things are held, not eaten: nobody chews or swallows a thing that is not food.\n</items_on_hand>`;
+  const eatenLine = eaten.length > 0 ? `\nEaten or used up — these no longer exist anywhere, not even with an NPC: ${eaten.join(', ')}. Never narrate anyone holding, pocketing, hoarding, chewing or offering one again.` : '';
+  return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}${worldBlock}${goneLine}${eatenLine}${clashes.length > 0 ? `\n${clashes.join('\n')}` : ''}\nNAMES: call every thing by its exact name as listed here, in prose and in itemMoves — never a new name for a thing already listed, not even a fancier or more specific one.\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it and the thing itself ("the pen lands in Biz's palm", not just "it" or "a soft arc of black plastic"). One from a stack (a bottle cap from "Bottle caps") is one: the giver keeps the rest. Things are held, not eaten: nobody chews or swallows a thing that is not food.\n</items_on_hand>`;
 }
 
 /** The last word of an item's name before "of …" or a label: "The Pen of Perpetual Pondering" → pen. */
@@ -564,7 +570,7 @@ function itemHeadWord(name: string): string {
  * The server applies these moves and nothing else; the prose is only checked
  * against them.
  */
-export const ITEM_MOVES_RULE = `ITEM MOVES: every time your narration moves a thing, list the move in "itemMoves" — someone hands it over, gives it, picks it up, takes it, catches it, drops it, sets it down, loses it, eats it, uses it up or destroys it. Each entry: {"item": "<exact name from <items_on_hand>, or a short plain name for a new thing>", "from": "<who had it>", "to": "<who has it now>"}. "from" and "to" are a player character's exact name, an NPC's name, "world" (lying in the scene: dropped, set down, scattered, or picked up from there), or null ("from": null for a thing that appears from nowhere; "to": null for a thing eaten, used up or destroyed). Add "qty": 1 to move one from a stack ("a bottle cap" from "Bottle caps"). A player character can only give what is on their line. An NPC's thing comes from that NPC — never from a player character who happens to hold one like it. Damaged is not gone: a torn bag, a bent key, a smudged form is still carried and gets no entry; what spills or scatters out of it goes to "world". Nothing moves because someone asks for, offers, points at, looks at or claims a thing — only when your narration shows it change hands. When nothing moves, "itemMoves": [].`;
+export const ITEM_MOVES_RULE = `ITEM MOVES: every time your narration moves a thing, list the move in "itemMoves" — someone hands it over, gives it, picks it up, takes it, catches it, drops it, sets it down, loses it, eats it, uses it up or destroys it. Each entry: {"item": "<exact name from <items_on_hand>, or a short plain name for a new thing>", "from": "<who had it>", "to": "<who has it now>"}. "from" and "to" are a player character's exact name, an NPC's name, "world" (lying in the scene: dropped, set down, scattered, or picked up from there), or null ("from": null for a thing that appears from nowhere; "to": null for a thing eaten, used up or destroyed). Eaten is "to": null, never a hand-over: an NPC who is given food and eats it in the same beat takes two entries (giver → NPC, then NPC → null), or one straight to null (giver → null). Use the exact name from <items_on_hand> for a thing already listed, never a new name for it. Add "qty": 1 to move one from a stack ("a bottle cap" from "Bottle caps"). A player character can only give what is on their line. An NPC's thing comes from that NPC — never from a player character who happens to hold one like it. Damaged is not gone: a torn bag, a bent key, a smudged form is still carried and gets no entry; what spills or scatters out of it goes to "world". Nothing moves because someone asks for, offers, points at, looks at or claims a thing — only when your narration shows it change hands. When nothing moves, "itemMoves": [].`;
 
 /**
  * The acting character reaches for something of theirs that is not on their
@@ -595,6 +601,8 @@ export interface ScenePacing {
   worldItems?: Array<{ name: string; heldBy?: string | null }>;
   /** Things gone for good, for <items_on_hand>. */
   goneItems?: string[];
+  /** Things eaten or used up — gone from the world, NPCs included — for <items_on_hand>. */
+  eatenItems?: string[];
   /** The narration-only opening (arrival + introductions) has just been delivered; this is the first real beat of play. */
   afterOpening?: boolean;
   /** An earlier beat the last draft repeated nearly word for word: this one must move on from it. */
@@ -763,7 +771,7 @@ export class DmAgent {
       `Pacing: ${pacingHint}${locationHint}${troubleHint}`,
       `</scene>`,
       charBlock ? `\n<party>\n${charBlock.trim()}\n</party>` : '',
-      pacing?.partyInventories ? itemsOnHandBlock(pacing.partyInventories, { world: pacing.worldItems, gone: pacing.goneItems }) : '',
+      pacing?.partyInventories ? itemsOnHandBlock(pacing.partyInventories, { world: pacing.worldItems, gone: pacing.goneItems, eaten: pacing.eatenItems }) : '',
       `\n<world>\n${ctx.worldSummary}\n</world>`,
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
@@ -864,7 +872,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean; inventory?: string[] }>; missingItems?: string[]; worldItems?: Array<{ name: string; heldBy?: string | null }>; goneItems?: string[] }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean; inventory?: string[] }>; missingItems?: string[]; worldItems?: Array<{ name: string; heldBy?: string | null }>; goneItems?: string[]; eatenItems?: string[] }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
@@ -911,7 +919,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
 
     const userMessage = [
       charBlock ? `<character>\n${charBlock.trim()}\n</character>` : '',
-      characterInfo ? itemsOnHandBlock([{ name: characterInfo.name, inventory: characterInfo.inventory }, ...(characterInfo.partyMembers ?? [])], { world: characterInfo.worldItems, gone: characterInfo.goneItems }) : '',
+      characterInfo ? itemsOnHandBlock([{ name: characterInfo.name, inventory: characterInfo.inventory }, ...(characterInfo.partyMembers ?? [])], { world: characterInfo.worldItems, gone: characterInfo.goneItems, eaten: characterInfo.eatenItems }) : '',
       characterInfo?.missingItems?.length ? itemsNotOnHandBlock(characterInfo.name, characterInfo.missingItems) : '',
       `\n<action>\n${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n</action>`,
       ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',

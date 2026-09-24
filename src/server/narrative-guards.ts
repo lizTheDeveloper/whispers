@@ -841,6 +841,39 @@ function itemNouns(name: string): string[] {
 const DESCRIPTIVE = new Set(['shiny', 'glinting', 'gleaming', 'glittering', 'glowing', 'sparkly', 'sparkling', 'cool', 'cold', 'warm', 'metal', 'metallic', 'small', 'little', 'tiny', 'big', 'large', 'heavy', 'old', 'worn', 'battered', 'dented', 'trusty', 'crumpled', 'damp', 'wet', 'sticky', 'dusty', 'dirty', 'clean', 'plain', 'simple', 'ordinary', 'cheap', 'new', 'favorite', 'favourite', 'beloved', 'sturdy', 'flimsy', 'smooth', 'squashed', 'crushed', 'bent', 'loose', 'spare', 'stray', 'lone', 'single']);
 
 /**
+ * An item's name normalized: lower case, no leading article, single spaces,
+ * its last word in the singular. "The Pen" and "pen", "Bottle caps" and
+ * "Bottle Cap" (never a stack and a single side by side, live WXKC2C) are one key.
+ */
+export function itemKey(name: string): string {
+  return singleOf(name.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' '));
+}
+
+/** The words that pick a thing out, singular and lower-case, without articles, describing words or "of": "The Green Bottle Caps" → green, bottle, cap. */
+function itemWords(name: string): string[] {
+  return name.toLowerCase().replace(/[:(),]/g, ' ').split(/\s+/)
+    .map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ''))
+    .filter(w => w && !['the', 'a', 'an', 'of'].includes(w) && !DESCRIPTIVE.has(w))
+    .map(singularWord);
+}
+
+/**
+ * Could two names be one thing: the same head noun, and one name's words all
+ * in the other's. "The Stamp" / "Stamp of Clarity" / "Square Stamp", "Bottle
+ * cap" / "Green Bottle Cap" — yes; "Orange Key" / "Brass Key", "Form 12-B" /
+ * "Form 88-B" — each has a word the other lacks, so no (live RZBU7G: one
+ * stamp under four names).
+ */
+export function namesOneThing(a: string, b: string): boolean {
+  const head = itemHead(a);
+  if (!head || head !== itemHead(b)) return false;
+  const wa = itemWords(a);
+  const wb = itemWords(b);
+  const [short, long] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+  return short.every(w => long.includes(w));
+}
+
+/**
  * Do two names mean the same item: the same words once lower-cased and
  * without a leading article, or one is the other with describing words in
  * front. Live (7MJXE5): Biz pressed the Pen into Liz's palm, then "the Shiny
@@ -848,10 +881,8 @@ const DESCRIPTIVE = new Set(['shiny', 'glinting', 'gleaming', 'glittering', 'glo
  * her a second pen.
  */
 export function sameItem(a: string, b: string): boolean {
-  // "Bottle caps" and "Bottle Cap" are one noun: never a stack and a single side by side (live WXKC2C).
-  const norm = (s: string) => singleOf(s.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' '));
-  const na = norm(a);
-  const nb = norm(b);
+  const na = itemKey(a);
+  const nb = itemKey(b);
   if (na === nb) return true;
   const [short, long] = na.length <= nb.length ? [na, nb] : [nb, na];
   if (!short || !long.endsWith(` ${short}`)) return false;
@@ -1155,6 +1186,64 @@ function showsEatenIt(sentence: string, item: string, mentions: (t: string) => s
     if (UNREAL_BEFORE.test(told) || /\b(?:ready|poised|about|going|eager|set)\s+to\b[^.!?]{0,20}$/i.test(before)) continue;
     const named = mentions(before);
     if (named.length === 1 && sameItem(named[0]!, item)) return true;
+  }
+  return false;
+}
+
+/** Eating, as a verb phrase: "takes a bite", "bites into", "chews", "swallows", "wolfs it down". Never "a bit". */
+const EAT_VERB = new RegExp(String.raw`\b(?:(?:takes?|took|taking)\s+(?:a|another|one|his|her|their|its)\s+(?:[\w-]+\s+)?(?:bite|nibble|mouthful|chomp)|(?:bites?|biting|(?<!\ba\s)bit)(?:\s+(?:into|off|down\s+on))?|eats?|ate|eating|chew(?:s|ed|ing)?|munch(?:es|ed|ing)?|nibbl(?:es?|ed|ing)|swallow(?:s|ed|ing)?|gobbl(?:es?|ed|ing)(?:\s+up)?|devour(?:s|ed|ing)?|gulp(?:s|ed|ing)?(?:\s+down)?|wolf(?:s|ed|ing)?|scarf(?:s|ed|ing)?)\b`, 'gi');
+
+/** Words that name `name` in prose: the whole name and each of its words of three letters or more ("Clerk 4-B": clerk, 4-B). */
+function nameTokens(name: string): string[] {
+  const words = name.split(/\s+/).map(w => w.replace(/['’]s$/, '')).filter(w => w.length >= 3 && !['the', 'of', 'and'].includes(w.toLowerCase()));
+  return [...new Set([name.trim(), ...words])];
+}
+
+/**
+ * Does this beat's prose show `receiver` eating `item` — the food just moved
+ * to them? Live (RZBU7G): "Granola bar": Liz → Clerk 4-B, and the ruling
+ * said "He grabs the bar with trembling fingers, takes a bite…" — recorded
+ * as a hand-over, so the clerk went on "chewing on the granola bar he has
+ * been hoarding" and the record had him holding it.
+ * Conservative: the item must be food and named in the beat; the eater is
+ * the person named last before the eating verb ("He" after "Clerk 4-B" is
+ * the clerk; "Liz takes a bite" is Liz), `others` being everyone else who
+ * could be meant; what is eaten is the item, "it", or nothing said ("takes
+ * a bite that tastes like static") — never another thing ("bites his lip");
+ * a threat or a maybe ("as if he might eat it") is not eating; quoted
+ * speech is not narration.
+ */
+export function eatenByReceiver(prose: string, receiver: string, item: string, others: string[] = []): boolean {
+  const head = itemHead(item);
+  if (!prose || !head || !(FOOD.test(head) || (FOOD.test(item) && !PORTABLE.includes(head)))) return false;
+  const text = quoteRuns(prose).filter(r => !r.quoted).map(r => r.text).join(' ');
+  const nouns = itemNouns(item);
+  const itemRe = new RegExp(`\\b${nounAlt(nouns)}\\b`, 'i');
+  const mine = nameTokens(receiver);
+  const theirs = others.filter(o => o.trim() && o.trim().toLowerCase() !== receiver.trim().toLowerCase()).flatMap(nameTokens);
+  const shared = new Set(mine.filter(t => theirs.some(o => o.toLowerCase() === t.toLowerCase())).map(t => t.toLowerCase()));
+  const tokenRe = (tokens: string[]) => {
+    const own = tokens.filter(t => !shared.has(t.toLowerCase()));
+    return own.length > 0 ? new RegExp(`(?<![\\w-])(?:${own.map(esc).join('|')})(?![\\w-])`, 'gi') : null;
+  };
+  const receiverRe = tokenRe(mine);
+  const othersRe = tokenRe(theirs);
+  if (!receiverRe) return false;
+  const lastAt = (re: RegExp | null, t: string) => (re ? [...t.matchAll(re)].map(m => m.index!).pop() ?? -1 : -1);
+  for (const m of text.matchAll(EAT_VERB)) {
+    const before = text.slice(0, m.index);
+    const sentenceBefore = before.split(SENTENCES).pop() ?? '';
+    if (UNREAL_BEFORE.test(sentenceBefore) || /\b(?:ready|poised|about|going|eager|set|hoping|wanting|trying)\s+to\b[^.!?]{0,20}$/i.test(sentenceBefore) || /\bas\s+if\b/i.test(sentenceBefore)) continue;
+    // The item named by now (or in this sentence).
+    const sentenceAfter = text.slice(m.index! + m[0].length).split(SENTENCES)[0] ?? '';
+    if (!itemRe.test(before) && !itemRe.test(sentenceAfter)) continue;
+    // Who eats: the one named last.
+    const r = lastAt(receiverRe, before);
+    if (r < 0 || lastAt(othersRe, before) > r) continue;
+    // What is eaten.
+    const object = sentenceAfter.split(/[,;:—–.!?]|\b(?:that|which|while|as|and|then|before|until|with|so|but)\b/i)[0]!.trim();
+    if (itemRe.test(object)) return true;
+    if (/^(?:(?:of|into|on|off|down|up|at|from)\s+)?(?:(?:it|them)\s+)?(?:(?:up|down)\s+)?(?:[a-z]+ly\s*)?(?:whole\s*)?$/i.test(object)) return true;
   }
   return false;
 }
@@ -1535,14 +1624,43 @@ export function optionsWithoutGoneItems<T extends { description: string }>(optio
   const kept = options.filter(o => !lost.some(g => {
     const nouns = itemNouns(g);
     if (nouns.length === 0) return false;
-    const at = o.description.search(new RegExp(`\\b${nounAlt(nouns)}\\b`, 'i'));
-    if (at < 0) return false;
-    const before = o.description.slice(0, at);
-    const clause = before.split(/[.;!?]|,\s*|\band\b|\bthen\b/i).pop() ?? '';
-    if (SEEK.test(clause)) return false;
-    return new RegExp(USE_VERB, 'i').test(clause) || /\b(?:my|our|[A-Z][\w'’-]*['’]s)\s+(?:[\w-]+\s+){0,2}$/.test(clause);
+    for (const m of o.description.matchAll(new RegExp(`\\b${nounAlt(nouns)}\\b`, 'gi'))) {
+      const at = m.index!;
+      // "the witness form", "Form 88-B" are other forms than the gone Form 12-B (live RZBU7G).
+      if (!namesOneThing(g, optionThingName(o.description, at, m[0], itemHead(g)!))) continue;
+      const before = o.description.slice(0, at);
+      const clause = before.split(/[.;!?]|,\s*|\band\b|\bthen\b/i).pop() ?? '';
+      if (SEEK.test(clause)) continue;
+      if (new RegExp(USE_VERB, 'i').test(clause) || /\b(?:my|our|[A-Z][\w'’-]*['’]s)\s+(?:[\w-]+\s+){0,2}$/.test(clause)) return true;
+    }
+    return false;
   }));
   return kept.length > 0 ? kept : options;
+}
+
+/** Words before a noun that are not part of a thing's name. */
+const NOT_A_MODIFIER = new Set(['the', 'a', 'an', 'my', 'our', 'your', 'his', 'her', 'their', 'its', 'this', 'that', 'these', 'those', 'some', 'any', 'another', 'each', 'every', 'one', 'no', 'to', 'of', 'for', 'with', 'on', 'in', 'into', 'onto', 'at', 'from', 'under', 'over', 'by', 'and', 'or', 'but', 'if', 'while', 'then', 'i', 'me', 'we', 'us', 'you', 'he', 'she', 'they', 'them', 'him', 'it', 'can', 'could', 'will', 'would', 'should', 'may', 'might', 'is', 'are', 'was', 'be', 'about', 'where', 'what', 'which', 'who', 'how', 'why', 'whether', 'again', 'still', 'just', 'also', 'up', 'down', 'out', 'back', 'off']);
+
+/**
+ * The thing an option names at a noun (`at`), with its own words: up to two
+ * words before it that are no article, pronoun, verb or preposition ("the
+ * witness form" → "witness form") and a label or "of …" after it ("Form
+ * 88-B", "Stamp of Clarity"). The noun is given as `head` so "paper" for a
+ * form compares as a form.
+ */
+function optionThingName(text: string, at: number, noun: string, head: string): string {
+  const useVerb = new RegExp(`^${USE_VERB}$`, 'i');
+  const words = text.slice(0, at).trimEnd().split(/\s+/);
+  const mods: string[] = [];
+  for (let i = words.length - 1; i >= 0 && mods.length < 2; i--) {
+    const w = words[i]!;
+    const bare = w.toLowerCase().replace(/[^a-z0-9'’-]/g, '');
+    if (!bare || /[.,;:!?"“”]$/.test(w) || /['’]s$/.test(bare) || NOT_A_MODIFIER.has(bare) || useVerb.test(bare) || /(?:ed|ing)$/.test(bare) && !DESCRIPTIVE.has(bare)) break;
+    mods.unshift(bare);
+  }
+  const after = text.slice(at + noun.length).match(/^(?:\s+(\d[\w-]*|[A-Z]{1,3}-?\d[\w-]*)|\s+of\s+((?:[A-Z][\w'’-]*\s*)+))/);
+  const label = after ? ` ${after[1] ?? `of ${after[2]!.trim()}`}` : '';
+  return `${mods.join(' ')} ${head}${label}`.trim();
 }
 
 const MOUTH_VERB = String.raw`\b(?:chew(?:s|ed|ing)?|bit(?:e|es|ing)|bit|suck(?:s|ed|ing)?|swallow(?:s|ed|ing)?|lick(?:s|ed|ing)?|nibbl(?:e|es|ed|ing)|gnaw(?:s|ed|ing)?|munch(?:es|ed|ing)?|eat(?:s|ing)?|ate|gulp(?:s|ed|ing)?|taste(?:s|d)?)\b`;
