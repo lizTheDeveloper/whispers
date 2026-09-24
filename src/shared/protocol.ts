@@ -25,7 +25,9 @@ export type ClientMessage =
   | { type: 'start-game' }
   | { type: 'end-game' }
   | { type: 'pause-game' }
-  | { type: 'resume-game' };
+  | { type: 'resume-game' }
+  // Round 20: the host sets the table's content rating (lobby or mid-game).
+  | { type: 'set-content-rating'; rating: import('./rating.js').ContentRating };
 
 /**
  * Why a table is paused. 'host' — the host pressed Pause. 'no-players' — the
@@ -58,7 +60,9 @@ export type ReplayEntry =
   // ended (the "Your Influence This Scene" card). Never broadcast.
   | { type: 'scene-stats'; sceneNumber: number; whisperStats: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
   | { type: 'whisper-echo'; text: string }
-  | { type: 'revoked-note'; text: string };
+  | { type: 'revoked-note'; text: string }
+  // Round 20: "The host set the rating to Adventure."
+  | { type: 'rating-note'; text: string };
 
 export type ServerMessage =
   | { type: 'room-joined'; campaignId: string; joinCode: string; isOwner: boolean; tableRole: import('./types.js').TableRole | null; sessionToken: string; gameName: string; playerName: string; phase: GamePhase; characterId: string | null }
@@ -131,4 +135,10 @@ export type ServerMessage =
   // the whisper box now rather than after the epilogue and closing
   // reflections arrive. The 'ended' phase-change still follows.
   | { type: 'game-ending' }
+  // Round 20: the table's content rating — sent on join/rejoin and whenever
+  // it changes. `explicit`: the host chose it (else it is the default).
+  // `childPresent`: a player character is a child (the host's control shows
+  // a notice above gentle). `line`: set only when the host changed it — the
+  // system line the table sees ("The host set the rating to Adventure.").
+  | { type: 'content-rating'; rating: import('./rating.js').ContentRating; explicit: boolean; childPresent: boolean; line?: string }
   | { type: 'error'; message: string };

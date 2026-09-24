@@ -1,6 +1,7 @@
 import type { WsClient } from './ws-client.js';
 import type { PauseReason, ServerMessage } from '../shared/protocol.js';
 import { appendMarkdown, stripMarkdown } from './markdown.js';
+import { mountRatingBadge, mountRatingControl } from './content-rating.js';
 
 // Banner copy per pause reason. 6 mirrors the server's
 // QUIET_TURNS_BEFORE_PAUSE (src/server/game-loop.ts) — keep them in step.
@@ -20,6 +21,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       </div>
       <div class="location-bar" id="location-bar" style="display:none"></div>
       <div id="pause-banner" class="pause-banner hidden" role="status"></div>
+      <div id="rating-row" class="rating-row"></div>
       <div id="system-notice" class="system-notice hidden"></div>
       <div class="narration-log" id="narration-log"></div>
       <div id="action-area"></div>
@@ -28,11 +30,14 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         <input type="text" id="whisper-text" placeholder="Whisper to your character..." maxlength="200" />
         <button id="whisper-btn">Whisper</button>
       </div>
-      ${isHost ? '<div id="dm-controls"><button id="pause-btn">Pause</button> <button id="end-game-btn">End Game</button><div id="party-controls" class="party-controls"></div></div>' : ''}
+      ${isHost ? '<div id="dm-controls"><button id="pause-btn">Pause</button> <button id="end-game-btn">End Game</button><div id="rating-controls" class="rating-controls"></div><div id="party-controls" class="party-controls"></div></div>' : ''}
     </div>
   `;
 
   const log = root.querySelector('#narration-log') as HTMLElement;
+  // Round 20: the rating badge for every seat; the host's control beside Pause and End Game.
+  mountRatingBadge(root.querySelector('#rating-row') as HTMLElement, ws);
+  if (isHost) mountRatingControl(root.querySelector('#rating-controls') as HTMLElement, ws);
   const actionArea = root.querySelector('#action-area') as HTMLElement;
   const whisperArea = root.querySelector('#whisper-area') as HTMLElement;
   const whisperInput = root.querySelector('#whisper-text') as HTMLInputElement;
@@ -646,6 +651,12 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       whisperBtn.textContent = 'Whisper';
     }
   }
+  // Round 20: "The host set the rating to Adventure." — a line in the story's log.
+  ws.on('content-rating', (msg) => {
+    if (msg.type !== 'content-rating' || !msg.line || !log.isConnected) return;
+    appendLog(msg.line, 'system');
+  });
+
   ws.on('game-paused', (msg) => {
     if (msg.type !== 'game-paused' || gameOver) return;
     showPaused(msg.paused ? (msg.reason ?? 'host') : null);
@@ -802,6 +813,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         case 'scene-stats': renderStatsCard(entry.whisperStats); break;
         case 'whisper-echo': appendLog(`You whisper: "${entry.text}"`, 'whisper'); break;
         case 'revoked-note': appendLog(entry.text, 'system'); break;
+        case 'rating-note': appendLog(entry.text, 'system'); break;
       }
     }
     log.scrollTop = log.scrollHeight;

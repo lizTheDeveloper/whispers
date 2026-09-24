@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { DmAgent, childToneRule, childrenInParty, wantsGentlePeril, describeRelationships, introduceCharacter, pronounsFor, type PartyMember } from './agents/dm.js';
+import { DmAgent, childToneRule, ratingToneRule, childrenInParty, wantsGentlePeril, describeRelationships, introduceCharacter, pronounsFor, type PartyMember } from './agents/dm.js';
 import { CharacterAgent, type PartyMemberView } from './agents/character.js';
 import type { DmNarration as DmNarrationResult, DmOpening } from './agents/schemas.js';
 import { ExtractorAgent } from './agents/extractor.js';
@@ -12,6 +12,8 @@ import { callProse, isLlmAbort, runWithLlmSignal } from './agents/llm-client.js'
 import { findPronounConflicts, ownKinNouns, repairChildNouns, repairGenderedNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
+import { campaignWantsGentlePeril, hostSetupMessages, tableRating, setStoredContentRating, storedContentRating, type TableRating } from './content-rating.js';
+import { ratingPolicy, ratingChangeLine, parseContentRating, type ContentRating, type RatingPolicy } from '../shared/rating.js';
 import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
 import { getSessionTokenForCharacter } from './room.js';
 import { trustHint as trustHintLine } from './trust-hint.js';
@@ -78,26 +80,8 @@ function getFirstName(fullName: string): string {
   return parts.find(p => !TITLES.has(p.toLowerCase())) ?? parts[0]!;
 }
 
-/**
- * Did the host ask for gentle or cozy peril? Read off what they said — their
- * setup messages and the direction written from them, all stored on the
- * campaign. Throws when the campaign cannot be read.
- */
-export function campaignWantsGentlePeril(db: Database.Database, campaignId: string): boolean {
-  const row = db.prepare('SELECT dm_instructions, dm_custom_prompt FROM campaigns WHERE id = ?').get(campaignId) as { dm_instructions?: string | null; dm_custom_prompt?: string | null } | undefined;
-  return wantsGentlePeril([...hostSetupMessages(db, campaignId), row?.dm_instructions, row?.dm_custom_prompt]);
-}
-
-/** What the host said in the setup chat, as stored on the campaign (an unreadable chat says nothing). */
-export function hostSetupMessages(db: Database.Database, campaignId: string): string[] {
-  const row = db.prepare('SELECT setup_chat FROM campaigns WHERE id = ?').get(campaignId) as { setup_chat?: string | null } | undefined;
-  try {
-    const chat = row?.setup_chat ? JSON.parse(row.setup_chat) as Array<{ role: string; content: string }> : [];
-    return Array.isArray(chat) ? chat.filter(m => m?.role === 'user' && typeof m.content === 'string').map(m => m.content) : [];
-  } catch {
-    return [];
-  }
-}
+// The gentle-peril read moved to content-rating.ts with the rating (round 20); re-exported for existing importers.
+export { campaignWantsGentlePeril, hostSetupMessages };
 
 /** Grounding for the epilogue and closing reflections, stated once so both say the same thing. */
 const ENDING_FACTS_RULE = 'Items and places: who holds an item and where something is are exactly as the lists given say — an item handed over is no longer the party\'s; a room belongs to the place the record puts it in. Never say an item was handed over, given, taken or put anywhere unless the item list or the record says so — a plan, a hope or a memory of someone eyeing it is not the item changing hands. A question listed as still open stays open: do not answer it. If you are not sure where something happened or who has an item, do not say.';
@@ -121,12 +105,15 @@ const RECENT_DROP_TURNS = 4;
  * whisper or a voice — each belongs to one player — and, at a gentle table,
  * the last images softened (softenEnding).
  */
-export function publicEnding(text: string, gentle: boolean): string {
+export function publicEnding(text: string, gentle: boolean | { soften: boolean; warmEnding: boolean }): string {
   if (!text) return text;
+  // Round 20: by the rating — the softener at gentle, the ending softener wherever endings land warm.
+  const { soften, warmEnding } = typeof gentle === 'boolean' ? { soften: gentle, warmEnding: gentle } : gentle;
   const kept = text.split(SENTENCE_SPLIT).filter(s => withoutWhisperMentions(s) === s);
   let out = kept.length > 0 ? kept.join(' ') : text;
   if (out !== text) console.log(`[guard] whisper mention removed from the ending: ${changedSpan(text, out)}`);
-  if (gentle) out = softenEnding(softenForChildren(out));
+  if (soften) out = softenForChildren(out);
+  if (warmEnding) out = softenEnding(out);
   return out;
 }
 
@@ -145,7 +132,7 @@ export function closingWords(text: string): string {
   return (bleak[bleak.length - 1] ?? sentences[sentences.length - 1] ?? text.trim()).slice(0, 200);
 }
 
-export function publicReflection(raw: string, opts: { self?: PronounMember; members: PronounMember[]; familyTable: boolean; addressTerms?: AddressTerm[]; /** Companions and what they hold: "your key" in the thought is theirs by name (round 19). */ companions?: Array<{ name: string; inventory: string[] }> }): { spoken?: string; thought?: string } {
+export function publicReflection(raw: string, opts: { self?: PronounMember; members: PronounMember[]; familyTable: boolean; /** Round 20: the ending softener (default: familyTable). */ warmEnding?: boolean; addressTerms?: AddressTerm[]; /** Companions and what they hold: "your key" in the thought is theirs by name (round 19). */ companions?: Array<{ name: string; inventory: string[] }> }): { spoken?: string; thought?: string } {
   const text = raw.trim();
   const spokenMatch = text.match(/SPOKEN:\s*"?([^"\n]+)"?/i);
   const thoughtMatch = text.match(/THOUGHT:\s*(.+)/i);
@@ -160,7 +147,8 @@ export function publicReflection(raw: string, opts: { self?: PronounMember; memb
     out = ownWordsForCompanions(out, terms);
     out = opts.self ? ownKinNouns(out, opts.self, opts.members) : out;
     out = withoutWhisperMentions(out);
-    if (opts.familyTable && out) out = softenEnding(softenForChildren(out));
+    if (opts.familyTable && out) out = softenForChildren(out);
+    if ((opts.warmEnding ?? opts.familyTable) && out) out = softenEnding(out);
     return (spoken ? spokenOrNull(out.trim()) : out.trim()) || undefined;
   };
   // The thought is a first-person monologue: "the key in your pocket" is Biz's (round 19, KAZQX3).
@@ -503,6 +491,8 @@ export class GameLoop {
    */
   async revokeCharacter(characterId: string, onEmptied?: () => void): Promise<boolean> {
     this.characters.delete(characterId);
+    // The default rating reads the party (a child PC): read it again.
+    this.ratingCache = null;
     this.state.initiativeOrder = this.state.initiativeOrder.filter(id => id !== characterId);
     this.drainWhisperQueue(characterId);
     if (this.characters.size === 0 && !this.stopped) {
@@ -539,6 +529,14 @@ export class GameLoop {
       this.state.initiativeOrder = Array.from(this.characters.keys());
       this.sceneTurnCount = checkpoint.state.sceneTurnCount ?? 0;
       this.lines.restore(checkpoint.state.stockLines);
+      // Round 20: a rating the host chose, restored from the checkpoint when
+      // the campaign row lost it (the row is the source of truth when set).
+      const checkpointRating = parseContentRating(checkpoint.state.contentRating);
+      if (checkpointRating && !storedContentRating(this.db, this.campaignId)) {
+        setStoredContentRating(this.db, this.campaignId, checkpointRating);
+        this.ratingCache = null;
+        console.log(`[game-loop] content rating ${checkpointRating} restored from the checkpoint`);
+      }
 
       if (checkpoint.transcript && checkpoint.transcript.length > 0) {
         this.transcript = checkpoint.transcript;
@@ -622,9 +620,64 @@ export class GameLoop {
     return this.gentlePerilCache;
   }
 
-  /** A child at the table, or a host who asked for gentle peril: the family-table softener applies. */
+  /** A child at the table, or a host who asked for gentle peril (before round 20, what switched the gentle path on; now the default rating's input). */
   private familyTable(): boolean {
     return childrenInParty(this.partyForDm()).length > 0 || this.gentlePeril();
+  }
+
+  private ratingCache: TableRating | null = null;
+
+  /**
+   * The table's content rating (round 20) — the one source of truth every
+   * tone path reads through policy(). The host's choice, else the default
+   * (gentle for a gentle ask or a child PC, else storybook). Cached; a
+   * change (setContentRating) or a revoke refreshes it, so it takes effect
+   * from the next DM call.
+   */
+  tableRating(): TableRating {
+    if (this.ratingCache) return this.ratingCache;
+    try {
+      this.ratingCache = tableRating(this.db, this.campaignId);
+    } catch (e) {
+      // The rating could not be read: the pre-rating switch decides (gentle for a child or a gentle ask).
+      console.error('[game-loop] could not read the content rating:', e);
+      this.ratingCache = { rating: this.familyTable() ? 'gentle' : 'storybook', explicit: false, childPresent: this.childNames().length > 0 };
+    }
+    return this.ratingCache;
+  }
+
+  /** The rating's level. */
+  rating(): ContentRating {
+    return this.tableRating().rating;
+  }
+
+  /** What the rating switches on: register, gate criteria, softeners, endings, compel lines, options and thoughts. */
+  private policy(): RatingPolicy {
+    return ratingPolicy(this.rating());
+  }
+
+  /** The gate's tier for a judge's context: only when it is not the gentle judge (which is the default). */
+  private toneTier(): { tier?: 'storybook' | 'adventure' } {
+    const gate = this.policy().gate;
+    return gate && gate !== 'gentle' ? { tier: gate } : {};
+  }
+
+  /**
+   * The host changed the rating (round 20). Persisted on the campaign row
+   * (and in every checkpoint from here on), told to the DM as a line in the
+   * transcript, and broadcast to the table with its system line — the next
+   * DM call runs at the new rating.
+   */
+  setContentRating(rating: ContentRating): TableRating {
+    setStoredContentRating(this.db, this.campaignId, rating);
+    this.ratingCache = null;
+    const now = this.tableRating();
+    this.state.contentRating = rating;
+    const line = ratingChangeLine(rating);
+    this.addTranscript('system', `[${line} From here on, run the story at this rating.]`);
+    console.log(`[game-loop] ${line}`);
+    this.broadcastFn({ type: 'content-rating', rating: now.rating, explicit: now.explicit, childPresent: now.childPresent, line });
+    return now;
   }
 
   /**
@@ -635,8 +688,9 @@ export class GameLoop {
    * guardText (softenForChildren) after this anyway.
    */
   private async toneGated<T>(kind: ToneKind, first: T, textOf: (v: T) => string, regenerate: (feedback: string) => Promise<T | null | undefined>, opts: { soften?: (v: T) => T; extraFlags?: (text: string) => string[]; label?: string; mapText?: (v: T, edit: (text: string) => string) => T } = {}): Promise<T> {
-    if (!this.familyTable()) return first;
-    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames(), people: this.partyPeople() }, judge: GameLoop.toneJudge });
+    // Round 20: the rating decides whether this kind is judged, and by which criteria.
+    if (!this.policy().gates(kind)) return first;
+    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames(), people: this.partyPeople(), ...this.toneTier() }, judge: GameLoop.toneJudge });
     return result.value;
   }
 
@@ -710,7 +764,7 @@ export class GameLoop {
       // An NPC's fixed pronoun, where nobody else could be meant.
       fixed = this.fixNpcPronouns(fixed);
       // A table with a child: the few images that read as horror, softened.
-      if (this.familyTable()) fixed = softenForChildren(fixed);
+      if (this.policy().soften) fixed = softenForChildren(fixed);
       // Quotes the model left unbalanced (`in ink!', The air`, `"taxation.'`).
       fixed = tidyQuotes(fixed);
       // "a engine" (NUMMRL) — the model's, or a substitution's above.
@@ -781,7 +835,7 @@ export class GameLoop {
   private memoryRepair = (text: string): string => {
     const fixed = fixIndefiniteArticles(repairChildNouns(this.fixNpcPronouns(text, { speech: true }), this.pronounMembers(), { npcNames: this.knownNpcNames() }));
     // Round 17 (5YHBZS): "…revealing their impatience and lack of fine motor control" — no reading of anyone's character at a family table.
-    return this.familyTable() ? softenForChildren(withoutCharacterReading(fixed)) : fixed;
+    return this.policy().soften ? softenForChildren(withoutCharacterReading(fixed)) : fixed;
   };
 
   /**
@@ -1316,6 +1370,7 @@ export class GameLoop {
         // The opening alone also reads backstories: where they come from decides how they arrive.
         party: this.partyForDm({ withBackstory: true }),
         gentlePeril: this.gentlePeril(),
+        rating: this.rating(),
       };
     const openingOpts = {
         premise, scenarioOpening, places, arrivalExpected,
@@ -1598,6 +1653,7 @@ export class GameLoop {
         influences: getInfluences(this.db, this.campaignId),
         party: this.partyForDm(),
         gentlePeril: this.gentlePeril(),
+        rating: this.rating(),
         metNpcs: this.metNpcNames(),
       },
       pacing: {
@@ -1929,9 +1985,13 @@ export class GameLoop {
     // judged in one short call, and a flagged option dropped — never rewritten.
     // Round 18 (39PF4D): a grown-up's options too ("Sneak a pen behind my back
     // to threaten The Dust Bunny with a formal audit"), under the grown-up's rule.
-    if (this.familyTable()) {
-      const child = this.isChild(character);
-      if (child) {
+    // Round 20: the rating decides — the child's options from storybook
+    // down, a grown-up's at gentle only; softened at gentle only.
+    const optionsPolicy = this.policy();
+    const optionsChild = this.isChild(character);
+    if (optionsChild ? optionsPolicy.childOptions : optionsPolicy.adultOptions) {
+      const child = optionsChild;
+      if (child && optionsPolicy.soften) {
         for (const a of proposals.actions) {
           a.description = softenForChildren(a.description);
           if (a.reasoning) a.reasoning = softenForChildren(a.reasoning);
@@ -1940,8 +2000,8 @@ export class GameLoop {
       const options = proposals.actions;
       const gated = await this.haltable(
         () => gateChildOptions(options.map(a => a.description), child
-          ? { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name }
-          : { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: 'adult', label: character.definition.name }),
+          ? { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name, ...this.toneTier() }
+          : { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: 'adult', label: character.definition.name, ...this.toneTier() }),
         (e) => { console.error('[tone-gate] options gate failed — kept as written:', e); return { keep: options.map((_, i) => i), dropped: [] }; },
       );
       if (!gated) return;
@@ -2058,8 +2118,8 @@ export class GameLoop {
         decision.innerThought = ownKinNouns(decision.innerThought, speaker, members);
       }
       // "…before the crowd eats us": a family table's words, the character's
-      // own included, keep to gentle peril.
-      if (this.familyTable()) {
+      // own included, keep to gentle peril (round 20: at the gentle rating).
+      if (this.policy().soften) {
         if (decision.spokenWords) decision.spokenWords = softenForChildren(decision.spokenWords);
         decision.chosenAction = softenForChildren(decision.chosenAction);
         // The thought is read by the player — at WXKC2C, a ten-year-old: "before Unit 7-G swallows us whole".
@@ -2166,11 +2226,12 @@ export class GameLoop {
     // "she looks so stressed with that wound"): softened, judged, a flagged
     // sentence out. Round 17 (5YHBZS): the child's own fear ("I'm too scared
     // to lose Mom again" — their aspect) is theirs: kept, softened at most.
-    if (this.familyTable() && this.isChild(character)) {
+    const thoughtPolicy = this.policy();
+    if (thoughtPolicy.childThought && this.isChild(character)) {
       const thought = decision.innerThought;
       const gated = await this.haltable(
-        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), people: this.thoughtPeople(character), label: character.definition.name }),
-        (e) => { console.error('[tone-gate] thought gate failed — kept softened:', e); return softenForChildren(thought); },
+        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), people: this.thoughtPeople(character), label: character.definition.name, soften: thoughtPolicy.soften, ...this.toneTier() }),
+        (e) => { console.error('[tone-gate] thought gate failed — kept softened:', e); return thoughtPolicy.soften ? softenForChildren(thought) : thought; },
       );
       if (gated === null) return;
       decision.innerThought = gated;
@@ -2261,6 +2322,7 @@ export class GameLoop {
       influences: getInfluences(this.db, this.campaignId),
       party: this.partyForDm(),
       gentlePeril: this.gentlePeril(),
+      rating: this.rating(),
       metNpcs: this.metNpcNames(),
     };
     // A gentle table: the ruling passes the tone gate (tone-gate.ts) before
@@ -2609,11 +2671,13 @@ export class GameLoop {
           // Round 18 (39PF4D): the child at a gentle table hears a warm line —
           // never "How many times now? "Wanders off…", again", never their
           // trouble quoted back at them.
-          const gentleChild = this.familyTable() && this.isChild(character);
+          // Round 20: warm for the child from storybook down, for everyone at gentle.
+          const compels = this.policy().compels;
+          const gentleChild = compels !== 'standard' && this.isChild(character);
           // Round 19 (KAZQX3): the grown-up at a gentle table too — never
           // `Guess who is back? "Worries about Biz too much". Liz pays for it
           // now and collects later.` (the sheet quoted, the economy said aloud).
-          const gentleAdult = this.familyTable() && !gentleChild;
+          const gentleAdult = compels === 'gentle' && !gentleChild;
           const compelLine = gentleChild
             ? this.lines.pick('compel-gentle', gentleCompelLines(compelFirst), this.recentStoryText(), { whenSpent: 'skip' })
             : gentleAdult
@@ -2712,6 +2776,9 @@ export class GameLoop {
     this.state.sceneTurnCount = this.sceneTurnCount;
     // The stock lines said this game, so a resumed game does not say them again (template-lines.ts).
     this.state.stockLines = this.lines.snapshot();
+    // Round 20: the host's rating rides in every checkpoint.
+    const chosen = this.tableRating().explicit ? this.rating() : undefined;
+    if (chosen) this.state.contentRating = chosen; else delete this.state.contentRating;
     saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state, this.transcript);
 
     if ((this.state.currentTurn ?? 0) % 4 === 0) {
@@ -2918,7 +2985,8 @@ export class GameLoop {
     ].filter(Boolean).join('\n\n');
 
     const facts = this.endingFacts();
-    const toneRule = childToneRule(this.partyForDm(), { gentlePeril: this.gentlePeril(), ending: true });
+    // Round 20: the rating's register and ending rule.
+    const toneRule = ratingToneRule(this.rating(), this.partyForDm(), { gentlePeril: this.gentlePeril(), ending: true });
 
     const presetVoices: Record<string, string> = {
       professor: 'You are an academic storyteller. End with a teaching moment — what did the characters (and the players) learn? Reference a specific rule or mechanic that shaped the story. Warm, slightly pedantic, like a favorite teacher closing a lesson.',
@@ -2928,13 +2996,17 @@ export class GameLoop {
     const voiceHint = presetVoices[campaign?.dm_preset] ?? 'Write in the DM\'s voice — warm, reflective, slightly bittersweet.';
 
     let epilogueText = '';
-    const gentle = this.familyTable();
+    // Round 20: gentle wants a warm, settled close; storybook a hopeful last
+    // note (a thread may stay open); adventure and mature, whatever the story earned.
+    const endingPolicy = this.policy();
+    const gentle = endingPolicy.endings === 'warm-closed';
+    const hopeful = endingPolicy.endings === 'warm';
     // Everyone's pronouns, and "never son, boy…" for a they/them kid (round 13).
     const cast = this.castPronouns();
     try {
       const baseMessages = [
           { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Credit every deed to whoever did it in the record — what an NPC did, opened or revealed is never a party member's doing. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. Never mention the whispers, "the voice" or any voice the characters heard — each is private to one player. ${EPILOGUE_RECORD_RULE} ${ENDING_FACTS_RULE}${cast ? ` ${cast}` : ''}${toneRule ? ` ${toneRule}` : ''}` },
-          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${this.endingItems()}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.${gentle ? ' This is a gentle table: end somewhere safe and hopeful. A thread still open is named before the end, never as the last words: the closing lines are warm and settled — the party together and safe, the day\'s trouble done enough to rest — never a question left hanging, a wait, or something still pulsing or unsettled.' : ''}` },
+          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${this.endingItems()}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.${gentle ? ' This is a gentle table: end somewhere safe and hopeful. A thread still open is named before the end, never as the last words: the closing lines are warm and settled — the party together and safe, the day\'s trouble done enough to rest — never a question left hanging, a wait, or something still pulsing or unsettled.' : hopeful ? ' This is a storybook table: let the last note be hopeful. A thread may stay open for next time, and the ending may be bittersweet, but nobody ends in doom, despair, or lost or alone for good.' : ''}` },
         ];
       const write = (messages: Array<{ role: string; content: string }>) => callProse({
         messages,
@@ -2958,20 +3030,20 @@ export class GameLoop {
       // written fresh once with the flagged phrases as feedback — never
       // rewritten — and the one kept is softened by publicEnding.
       let epilogue = await write(baseMessages);
-      if (gentle && epilogue.trim()) {
+      if (endingPolicy.gates('epilogue') && epilogue.trim()) {
         epilogue = await this.toneGated('epilogue', epilogue, t => t,
           feedback => write([baseMessages[0]!, { ...baseMessages[1]!, content: `${baseMessages[1]!.content}\n\n${feedback}` }]),
-          {
+          gentle ? {
             extraFlags: t => (bleakEnding(t) ? [closingWords(t)] : []),
             // Round 15 (RZBU7G): both drafts flagged, and the kept one still
             // ended "…remains open for another day, but for now…". The
             // threads left hanging at the end go, or the warm close is added.
             soften: t => closeOpenEnding(t, Array.from(this.characters.values()).map(c => getFirstName(c.definition.name))),
-          });
+          } : {});
       }
       // Public text: no whisper or voice, and at a gentle table an ending
       // that lands safe (see publicEnding).
-      const text = publicEnding((await this.consistentProse(epilogue.trim())).trim(), gentle);
+      const text = publicEnding((await this.consistentProse(epilogue.trim())).trim(), { soften: endingPolicy.soften, warmEnding: endingPolicy.endings !== 'open' });
       if (text && text.length > 20) {
         epilogueText = text;
         this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
@@ -3061,7 +3133,8 @@ export class GameLoop {
       const trustArc = trustPct >= 70 ? 'You trusted your instincts, and they mostly served you well.'
         : trustPct >= 40 ? 'You second-guessed yourself often, and sometimes you were right to.'
         : 'You learned to rely on your own judgment above anything else.';
-      const toneRule = this.familyTable() ? childToneRule(this.partyForDm(), { gentlePeril: this.gentlePeril(), ending: true }) : '';
+      const reflectionPolicy = this.policy();
+      const toneRule = ratingToneRule(reflectionPolicy.rating, this.partyForDm(), { gentlePeril: this.gentlePeril(), ending: true });
       const cast = this.castPronouns();
 
       try {
@@ -3083,10 +3156,10 @@ export class GameLoop {
         // flag (WXKC2C: "even if we are stuck here until the violet puddle
         // dries"). A flagged one is written fresh once, with the phrases as
         // feedback; publicReflection softens whatever is kept.
-        if (this.familyTable() && reflection.trim()) {
+        if (reflectionPolicy.gates('reflection') && reflection.trim()) {
           reflection = await this.toneGated('reflection', reflection, t => t,
             feedback => write([reflectionMessages[0]!, { ...reflectionMessages[1]!, content: `${reflectionMessages[1]!.content}\n\n${feedback} Same format.` }]),
-            { extraFlags: t => (bleakEnding(t) ? [closingWords(t)] : []), label: char.definition.name });
+            { extraFlags: reflectionPolicy.endings === 'warm-closed' ? (t => (bleakEnding(t) ? [closingWords(t)] : [])) : undefined, label: char.definition.name });
         }
 
         // The character's own words: what they call a companion ("Mom"), their
@@ -3095,7 +3168,7 @@ export class GameLoop {
         const members = this.pronounMembers();
         const self = members.find(m => this.namesMatch(m.name, char.definition.name));
         const companions = Array.from(this.characters.values()).filter(c => c.id !== charId).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] }));
-        const reflectOpts = { self, members, familyTable: this.familyTable(), addressTerms: this.addressTermsOf(charId), companions };
+        const reflectOpts = { self, members, familyTable: reflectionPolicy.soften, warmEnding: reflectionPolicy.endings !== 'open', addressTerms: this.addressTermsOf(charId), companions };
         const reflected = publicReflection(reflection, reflectOpts);
         const spoken = reflected.spoken ? this.fixNpcPronouns(reflected.spoken, { speech: true }) : reflected.spoken;
         const thought = reflected.thought ? this.fixNpcPronouns(reflected.thought, { speech: true }) : reflected.thought;

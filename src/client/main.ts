@@ -6,10 +6,13 @@ import { renderDmLobby } from './dm-lobby.js';
 import { renderWaitingRoom } from './waiting-room.js';
 import { getStoredSession, saveSession, removeSession, parseRoute, setRoute } from './session-store.js';
 import { renderKey, screenFor } from './render-key.js';
+import { trackContentRating } from './content-rating.js';
 import type { GamePhase, TableRole } from '../shared/types.js';
 
 const root = document.getElementById('app')!;
 const ws = new WsClient();
+// Round 20: the table's rating, remembered for whichever view mounts next.
+trackContentRating(ws);
 
 /**
  * Routing lives here and nowhere else. Every view used to register its own

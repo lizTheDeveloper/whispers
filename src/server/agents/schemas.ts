@@ -1,3 +1,4 @@
+import { parseContentRating } from '../../shared/rating.js';
 import { z } from 'zod';
 import { parseItemMoves } from '../item-moves.js';
 
@@ -132,6 +133,10 @@ export const DmSetupReplySchema = z.object({
   influences: z.array(z.string()).nullable().default(null),
   dmInstructions: z.union([z.string(), z.record(z.unknown()).transform(v => JSON.stringify(v))]).nullable().default(null),
   dmCustomPrompt: z.union([z.string(), z.record(z.unknown()).transform(v => JSON.stringify(v))]).nullable().default(null),
+  // Round 20: the content rating the host asked for in this reply, when they
+  // did. Anything that is not one of the four levels reads as not set —
+  // never a retry, never a guess.
+  contentRating: z.unknown().optional().transform(v => parseContentRating(v)),
 });
 export type DmSetupReply = z.infer<typeof DmSetupReplySchema>;
 

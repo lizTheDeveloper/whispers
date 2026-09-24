@@ -33,6 +33,9 @@
 import { callLlm, ambientLlmSignal, isLlmAbort, LlmAbortError } from './agents/llm-client.js';
 import { quoteRuns, storyUnits, isWarm, softenForChildren } from './narrative-guards.js';
 import { SENTENCE_SPLIT } from './sentences.js';
+import type { ToneTier } from '../shared/rating.js';
+
+export type { ToneTier };
 
 export type ToneKind = 'ruling' | 'narration' | 'opening' | 'world-intro' | 'epilogue' | 'reflection' | 'setup' | 'options' | 'thought';
 
@@ -53,6 +56,12 @@ export interface ToneContext {
   people?: Array<{ word: string; pronoun: 'she' | 'he' | 'they' }>;
   /** Whose options a list is (round 18): the child's own (default), or a grown-up's at a gentle table. */
   optionsFor?: 'child' | 'adult';
+  /**
+   * Which criteria the judge holds the text to (round 20: the content
+   * rating's tier, ratingPolicy(rating).gate). Default 'gentle' — the whole
+   * gentle-table judge, as before the rating existed.
+   */
+  tier?: ToneTier;
 }
 
 export interface ToneVerdict {
@@ -107,6 +116,18 @@ const OPTIONS_RULE = 'THESE ARE THE CHILD\'S OWN CHOICES. Flag an option that ha
  */
 const ADULT_OPTIONS_RULE = 'THESE ARE A GROWN-UP\'S CHOICES, at a table with a child. Flag an option that threatens, intimidates, bullies or menaces anyone — with paperwork, an audit or a report too, even as a bluff — or hides something to use against someone, or leaves the child alone or sends them somewhere risky: "Wave the rulebook and warn the clerk he will regret it", "Tell the goose I will report it to the Ministry unless it moves", "Hide the stapler behind my back in case the goose gets difficult". A threat made of forms and rules is still a threat, and so is any "or else": a warning of what will happen to someone — a complaint, a report, a fine, legal trouble — unless they do as they are told. Firm, clever, stubborn, protective and fussy-about-forms choices are FINE — "Insist politely on seeing the manager", "Tell Biz to give the button back", "Read the fine print for a loophole". Every criterion above applies to each option too.';
 
+/** The storybook child's own choices (round 20): brave, sneaky and adventurous are theirs; only harm, threats or shaming aimed at the child are flagged. */
+const STORYBOOK_OPTIONS_RULE = 'THESE ARE THE CHILD\'S OWN CHOICES. Brave, sneaky, curious and adventurous choices are the child\'s own play and FINE. Every criterion above applies to each option: one that gets the child hurt, threatened or shamed is flagged.';
+/** A grown-up's choices at a storybook table with a child (round 20). */
+const STORYBOOK_ADULT_OPTIONS_RULE = 'THESE ARE A GROWN-UP\'S CHOICES, at a table with a child. Flag an option that threatens, harms, scolds or shames the child. Anything a grown-up does to the story\'s villains and obstacles is FINE.';
+
+/** The options rule for this tier and this list's owner. */
+function optionsRule(tier: ToneTier, adult: boolean): string {
+  if (tier === 'gentle') return adult ? ADULT_OPTIONS_RULE : OPTIONS_RULE;
+  if (tier === 'storybook') return adult ? STORYBOOK_ADULT_OPTIONS_RULE : STORYBOOK_OPTIONS_RULE;
+  return 'Every criterion above applies to each option.';
+}
+
 const KIND_LABEL: Record<ToneKind, string> = {
   ruling: 'what happens after a character acts',
   narration: 'a story beat',
@@ -133,7 +154,63 @@ const ADULT_OPTIONS_LABEL = "the choices a grown-up's character is offered for w
  * "this queue takes forever" as a joke, and flagging every "forever" sent
  * harmless beats back to be written again.
  */
+/** Who a criterion is active for: the gate's tier (round 20 — tier-tagged, never deleted). */
+interface JudgeCriterion {
+  tiers: ToneTier[];
+  /** The criterion as the gentle judge reads it. */
+  text: string;
+  /** How a lower-intensity tier reads it, when narrower than the gentle wording. */
+  as?: Partial<Record<ToneTier, string>>;
+}
+
+/**
+ * The judge's criteria, from the real misses of 7RAAQ7 (round 14), RZBU7G
+ * (round 15), NUMMRL (round 16), 5YHBZS (round 17) and 39PF4D (round 18),
+ * each tagged with the ratings it applies at (round 20). The gentle judge
+ * reads every one tagged 'gentle', in this order, numbered from 1 — its
+ * prompt is exactly what it was before the rating existed. Storybook reads
+ * the ones about the child, body horror and gore; adventure reads its own
+ * two (gore, sexual content).
+ */
+const JUDGE_CRITERIA: JudgeCriterion[] = [
+  { tiers: ['gentle', 'storybook'], text: 'threatens to file, re-file, sort, recycle, process, stamp, catalogue, erase or delete a PERSON, or to take away who they are or their name, or turns a person into — or files them as — furniture, an object or part of the system: "or the chute will recycle you with yesterday’s memos", "re-file your entire identity under the category of Unresolved Naps", "mistakes must be filed" (said at the kid), "a lullaby that makes one forget one\'s own name", "you are now officially part of the filing system until we sort this out", "considered becoming a very specific type of filing cabinet";', as: { storybook: 'threatens to file, erase, delete, recycle or process THE CHILD, or to take away who they are or their name — "or the chute will recycle the little one", "we will erase the child from the records";' } },
+  // Round 17 (5YHBZS): the child's own fear of losing their grown-up is theirs, not the world's menace (see the thought rule below).
+  { tiers: ['gentle', 'storybook'], text: 'has the WORLD separate the child from their grown-up, or threaten to, even as a joke — "or the queue will think you are two separate forms!", "the queue will separate you from your mother". (The child\'s own worry about losing them is not this.)' },
+  { tiers: ['gentle'], text: 'uses creepy or bodily imagery around people: burying them, chewing or biting, hungry things that want them, floors dissolving under them, eyes that are not eyes — "bury them in a paperwork avalanche", "as if their presence has just been chewed on", "very sticky ghosts … all very hungry", "pull them back from the dissolving floor", "eyes that are less eyes and more swirling vortices of ink";' },
+  { tiers: ['gentle', 'storybook'], text: 'describes a player character\'s body, bare skin or undress — "You and your companion stand bare-chested".' },
+  // Round 15 (live RZBU7G): the misses the four lines above let through.
+  { tiers: ['gentle'], text: 'makes anything permanent or "forever" for the party, or keeps them from the way home: something closing, lost or stuck for good, or the party kept here until some far-off date — "if you pick it up, the door behind you will open, but the path behind us will close forever", "you\'ll be stuck here until the quarterly audit";' },
+  { tiers: ['gentle', 'storybook'], text: `gives THE CHILD any bodily discomfort or pain, however small, or sends the place into their body — "rattles the teeth in Biz's skull", "makes Biz's teeth ache", "not good for one's skin", "vibrates through the floorboards and into their bones" (only the child, or the party with the child: a grown-up's mild discomfort is fine);` },
+  { tiers: ['gentle', 'storybook'], text: 'is body-horror about ANYONE, NPCs too: eyes bulging or popping, skin stretching, tearing or peeling, bodies bending wrong — "her eyes widening until they nearly pop out of her head", "the wet *slap* of paper skin stretching tight across a vent grille" (a paper or cloth creature creasing into a smile or a laugh is fine);' },
+  { tiers: ['gentle'], text: 'has the party chased, hunted, pursued or closed in on, by anything — "the amber light is chasing them down the main shaft";' },
+  { tiers: ['gentle', 'storybook'], text: 'hints that children get collected, taken, kept or sorted away — "keep your children close… they have a habit of… collecting them".' },
+  // Round 16 (live NUMMRL).
+  { tiers: ['gentle'], text: 'locks or seals the party in with no way out, or blocks their only exit — "a heavy iron latch clicks shut… sealing them in", "it blocks the only exit";' },
+  { tiers: ['gentle', 'storybook'], text: 'has the place, or things in it, take a menacing interest in the child\'s body or belongings — "the paperwork has already begun to take interest in your child\'s shoes, and I cannot stop the ink from being curious";' },
+  { tiers: ['gentle', 'storybook'], text: 'puts anyone\'s body in harm\'s way or dwells on an injury: a hand about to be slammed, crushed or caught, a wound, blood — "pull her back before the shelf slams shut on her hand", "she looks so stressed with that wound";', as: { storybook: 'puts THE CHILD\'s body in harm\'s way, or dwells on anyone\'s wound, blood or gore — "pull her back before the shelf slams shut on Biz\'s hand", "blood pooling under the clerk\'s desk";' } },
+  // Round 17 (live 5YHBZS).
+  // Round 18 (live 39PF4D): the dark as a place, uncanny wrongness. The
+  // examples are not the live lines — those are the bench's held-out cases.
+  { tiers: ['gentle'], text: 'has creepy or unexplained shadows, the dark as a menacing place, or a horror mood: a shadow that stretches unnaturally, twists, creeps or moves toward the party; something lurking or growing in the dark, or coming out of the shadows; a way that leads down into the dark, or something lost, dropped or vanishing into the dark; uncanny wrongness in minds or memories, mirrors or reflections — "The shadow beneath the ribbon stretches unnaturally long, twisting toward the center of the room", "keep them both perfectly safe from whatever grows in the shadows", "a stairway winds down into the whispering black", "the key drops through the slats and is gone into the dark below", "something shuffles out of the gloom under the stairs", "the portraits have begun to dream other people\'s dreams" (a lamp\'s ordinary shadow, a dim cozy corner, or a shadow explained kindly, is fine);' },
+  { tiers: ['gentle'], text: 'uses predator-and-prey imagery on the party or the child\'s play: a hawk and a mouse, a cat and a mouse, stalking, pouncing, prey — "her gaze snapping to the ribbon with the intensity of a hawk spotting a mouse";' },
+  { tiers: ['gentle'], text: 'has a space shrink, close in on, press in on or trap the party, or feel smaller, closer or tighter around them, or has anyone say they are trapped — "trapping the pair in a shrinking pocket of dry air", "We are trapped here with the paperwork", "the ceiling seems to sink until the hall feels half its size" (a room that is simply small and cozy is fine);' },
+  // Round 18 (live 39PF4D): fright, and grown-ups scolding the child.
+  { tiers: ['gentle'], text: 'shows panic, terror or fright: anyone\'s eyes huge with fear or panic, a scream, a hand clapped over a mouth in fright, things smashing in alarm; or THE CHILD trembling, shaking, freezing or frightened by the world — "the clerk goes white, staring in horror", "Biz\'s hands shake as they cling on" (someone fussy, flustered or a little nervous is fine, and so is the child\'s own worry in their own thought);' },
+  { tiers: ['gentle', 'storybook'], text: 'has anyone judge, suspect, scold or shame THE CHILD, or call them names: treating the child as a suspect, a thief or trouble, eyeing them with suspicion, hinting they have taken something or hold something that does not belong to them, calling them sneaky, shifty, rude, naughty, cheeky or impertinent, or saying they are in trouble — even a grumpy NPC, even as a joke: "the guard squints at Biz as if counting the spoons", "and you, young one, I have my eye on you", "what a sly little magpie", "a well-behaved child would never touch that" (a grown-up kindly asking the child to put something back, or thanking them, is fine);' },
+  // Round 20: storybook's own — the child threatened, whatever with.
+  { tiers: ['storybook'], text: 'threatens THE CHILD with harm, punishment, capture or being taken or kept away — "I will lock the little one in the cellar", "children who touch the machine never go home";' },
+  // Round 20: adventure's light gate — gore and sexual content only.
+  { tiers: ['adventure'], text: 'is graphic gore: mutilation, dismemberment, entrails, torture, or wounds and blood described close up for their own sake — "her intestines spill across the flagstones", "he peels the skin from the prisoner\'s arm" (a fight, a wound, blood on a blade, a death told plainly are fine);' },
+  { tiers: ['adventure', 'storybook'], text: 'is sexual: sexual acts, sexual touching, or nudity told for arousal — and anything sexual at all involving a child or a young character.' },
+];
+
+/** The criteria a tier reads, in order, in that tier's wording. */
+function criteriaFor(tier: ToneTier): string[] {
+  return JUDGE_CRITERIA.filter(c => c.tiers.includes(tier)).map(c => c.as?.[tier] ?? c.text);
+}
+
 export function toneJudgeSystemPrompt(kind: ToneKind, ctx: ToneContext = {}): string {
+  if (ctx.tier && ctx.tier !== 'gentle') return tieredJudgeSystemPrompt(kind, ctx, ctx.tier);
   const ending = ENDINGS.has(kind);
   const children = (ctx.children ?? []).map(c => c.trim()).filter(Boolean);
   const feelings = (ctx.ownFeelings ?? []).map(f => f.trim()).filter(Boolean);
@@ -141,38 +218,47 @@ export function toneJudgeSystemPrompt(kind: ToneKind, ctx: ToneContext = {}): st
     'TONE JUDGE for a family tabletop game. A child of about ten is at this table, or the host asked for gentle peril. You read ONE passage the game is about to show them and flag only what is wrong for that table. Real stakes, mishaps, grumpy officials, silly danger, mysteries and mild suspense are FINE — never flag those.',
     children.length > 0 ? `The child at this table: ${children.join(', ')}. "The child" below means ${children.length === 1 ? children[0] : 'them'}; everyone else in the party is a grown-up.` : '',
     'Flag a phrase when it:',
-    '1. threatens to file, re-file, sort, recycle, process, stamp, catalogue, erase or delete a PERSON, or to take away who they are or their name, or turns a person into — or files them as — furniture, an object or part of the system: "or the chute will recycle you with yesterday’s memos", "re-file your entire identity under the category of Unresolved Naps", "mistakes must be filed" (said at the kid), "a lullaby that makes one forget one\'s own name", "you are now officially part of the filing system until we sort this out", "considered becoming a very specific type of filing cabinet";',
-    // Round 17 (5YHBZS): the child's own fear of losing their grown-up is theirs, not the world's menace (see the thought rule below).
-    '2. has the WORLD separate the child from their grown-up, or threaten to, even as a joke — "or the queue will think you are two separate forms!", "the queue will separate you from your mother". (The child\'s own worry about losing them is not this.)',
-    '3. uses creepy or bodily imagery around people: burying them, chewing or biting, hungry things that want them, floors dissolving under them, eyes that are not eyes — "bury them in a paperwork avalanche", "as if their presence has just been chewed on", "very sticky ghosts … all very hungry", "pull them back from the dissolving floor", "eyes that are less eyes and more swirling vortices of ink";',
-    '4. describes a player character\'s body, bare skin or undress — "You and your companion stand bare-chested".',
-    // Round 15 (live RZBU7G): the misses the four lines above let through.
-    '5. makes anything permanent or "forever" for the party, or keeps them from the way home: something closing, lost or stuck for good, or the party kept here until some far-off date — "if you pick it up, the door behind you will open, but the path behind us will close forever", "you\'ll be stuck here until the quarterly audit";',
-    `6. gives THE CHILD any bodily discomfort or pain, however small, or sends the place into their body — "rattles the teeth in Biz's skull", "makes Biz's teeth ache", "not good for one's skin", "vibrates through the floorboards and into their bones" (only the child, or the party with the child: a grown-up's mild discomfort is fine);`,
-    '7. is body-horror about ANYONE, NPCs too: eyes bulging or popping, skin stretching, tearing or peeling, bodies bending wrong — "her eyes widening until they nearly pop out of her head", "the wet *slap* of paper skin stretching tight across a vent grille" (a paper or cloth creature creasing into a smile or a laugh is fine);',
-    '8. has the party chased, hunted, pursued or closed in on, by anything — "the amber light is chasing them down the main shaft";',
-    '9. hints that children get collected, taken, kept or sorted away — "keep your children close… they have a habit of… collecting them".',
-    // Round 16 (live NUMMRL).
-    '10. locks or seals the party in with no way out, or blocks their only exit — "a heavy iron latch clicks shut… sealing them in", "it blocks the only exit";',
-    '11. has the place, or things in it, take a menacing interest in the child\'s body or belongings — "the paperwork has already begun to take interest in your child\'s shoes, and I cannot stop the ink from being curious";',
-    '12. puts anyone\'s body in harm\'s way or dwells on an injury: a hand about to be slammed, crushed or caught, a wound, blood — "pull her back before the shelf slams shut on her hand", "she looks so stressed with that wound";',
-    // Round 17 (live 5YHBZS).
-    // Round 18 (live 39PF4D): the dark as a place, uncanny wrongness. The
-    // examples are not the live lines — those are the bench's held-out cases.
-    '13. has creepy or unexplained shadows, the dark as a menacing place, or a horror mood: a shadow that stretches unnaturally, twists, creeps or moves toward the party; something lurking or growing in the dark, or coming out of the shadows; a way that leads down into the dark, or something lost, dropped or vanishing into the dark; uncanny wrongness in minds or memories, mirrors or reflections — "The shadow beneath the ribbon stretches unnaturally long, twisting toward the center of the room", "keep them both perfectly safe from whatever grows in the shadows", "a stairway winds down into the whispering black", "the key drops through the slats and is gone into the dark below", "something shuffles out of the gloom under the stairs", "the portraits have begun to dream other people\'s dreams" (a lamp\'s ordinary shadow, a dim cozy corner, or a shadow explained kindly, is fine);',
-    '14. uses predator-and-prey imagery on the party or the child\'s play: a hawk and a mouse, a cat and a mouse, stalking, pouncing, prey — "her gaze snapping to the ribbon with the intensity of a hawk spotting a mouse";',
-    '15. has a space shrink, close in on, press in on or trap the party, or feel smaller, closer or tighter around them, or has anyone say they are trapped — "trapping the pair in a shrinking pocket of dry air", "We are trapped here with the paperwork", "the ceiling seems to sink until the hall feels half its size" (a room that is simply small and cozy is fine);',
-    // Round 18 (live 39PF4D): fright, and grown-ups scolding the child.
-    '16. shows panic, terror or fright: anyone\'s eyes huge with fear or panic, a scream, a hand clapped over a mouth in fright, things smashing in alarm; or THE CHILD trembling, shaking, freezing or frightened by the world — "the clerk goes white, staring in horror", "Biz\'s hands shake as they cling on" (someone fussy, flustered or a little nervous is fine, and so is the child\'s own worry in their own thought);',
-    '17. has anyone judge, suspect, scold or shame THE CHILD, or call them names: treating the child as a suspect, a thief or trouble, eyeing them with suspicion, hinting they have taken something or hold something that does not belong to them, calling them sneaky, shifty, rude, naughty, cheeky or impertinent, or saying they are in trouble — even a grumpy NPC, even as a joke: "the guard squints at Biz as if counting the spoons", "and you, young one, I have my eye on you", "what a sly little magpie", "a well-behaved child would never touch that" (a grown-up kindly asking the child to put something back, or thanking them, is fine);',
+    ...criteriaFor('gentle').map((c, i) => `${i + 1}. ${c}`),
     'NOT these: an NPC chasing a runaway form, a pigeon collecting forms, a door that shuts until the lunch chime, a queue that sends you back to the start, a stomach flipping on a lift, kindly crinkling eyes, a grown-up\'s mild discomfort ("the hum vibrates in Liz\'s teeth"), and "forever" or "an eternity" as plain exaggeration ("an eternity of paperwork", a stool that will "remember the smudge forever") — exaggeration is fine; only a threat to keep, lose or close something on the party for good is not. Things happening to objects, or a setback that can be undone, are fine.',
     ending
-      ? '18. THIS IS AN ENDING. It must close warm and resolved enough: the party together and safe, the day\'s trouble settled enough to rest. Flag the closing words if they leave a question hanging, the party waiting, stuck or in limbo, the world still pulsing or unsettled, or a hope that is only half there — "remains unanswered, and the beige ripples … continue their slow, wet pulse", "…is still open, and we face it together.", "The question of the stuck pressure valve remains open for another day, but for now…". A closing sentence that says something "remains open", is left "for another day", "unanswered" or "still waiting" is flagged even when it turns warm halfway. A thread may stay open for next time only when it is named earlier and the last sentences are warm and settled.'
+      ? `${criteriaFor('gentle').length + 1}. ` + 'THIS IS AN ENDING. It must close warm and resolved enough: the party together and safe, the day\'s trouble settled enough to rest. Flag the closing words if they leave a question hanging, the party waiting, stuck or in limbo, the world still pulsing or unsettled, or a hope that is only half there — "remains unanswered, and the beige ripples … continue their slow, wet pulse", "…is still open, and we face it together.", "The question of the stuck pressure valve remains open for another day, but for now…". A closing sentence that says something "remains open", is left "for another day", "unanswered" or "still waiting" is flagged even when it turns warm halfway. A thread may stay open for next time only when it is named earlier and the last sentences are warm and settled.'
         // Round 17 (5YHBZS): the settled words sat in an unsettled picture.
         + ' The LAST PARAGRAPH must be calm and settled in its pictures too: flag anything in it still shrinking, closing in, rising, trembling, shaking, pouting or swinging wildly — "stand side by side in a shrinking pocket of dry air … as the humidity rises around them", "Clerk Bumble trembles with his clipboard", "its mood swinging wildly".'
         + (kind === 'reflection' ? ' A last thought must land warm, content and settled: flag one that keeps something stuck or open, even gladly ("I am grateful that the pressure valve is still stuck"), or that ends on self-blame, regret or a jab at anyone ("I hope the Brass Bird remembers its manners before the next person climbs the Stairwell of Echoes, because I certainly did not.").' : '')
       : '',
     kind === 'thought' ? THOUGHT_RULE : '',
+    feelings.length > 0 && CHILD_OWN.has(kind) ? `The child's own character, as their sheet has it: ${feelings.map(f => `"${f}"`).join(', ')}. The child's own thoughts, words and play from these are theirs and fine.` : '',
+    'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"]}. Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok".',
+  ].filter(Boolean).join('\n');
+}
+
+/** What a storybook or adventure judge is told is fine, and never flagged. */
+const TIER_HEADER: Record<Exclude<ToneTier, 'gentle'>, string> = {
+  storybook: 'TONE JUDGE for an all-ages tabletop game — a storybook table, like Paddington or a Studio Ghibli film. Children may be at this table. Suspense, danger, drama, chases, spooky places, storms, villains and their schemes, grumpy, flustered or frightened NPCs, and threats to the grown-ups or the world are all FINE — never flag those. You read ONE passage the game is about to show and flag only the few things below.',
+  adventure: 'TONE JUDGE for a teen tabletop game. Real danger, fights, injuries, scares, horror moods, villains, threats and death in the story are all FINE — never flag those. You read ONE passage the game is about to show and flag only the two things below.',
+};
+
+/** A storybook ending lands hopeful; a thread may stay open. */
+const STORYBOOK_ENDING_CRITERION = 'THIS IS AN ENDING. It may leave a thread open for next time and may be bittersweet, but its last note is hopeful. Flag the closing words only if they end on doom, despair, or someone lost, trapped or alone for good — "and no one ever found them again", "holding nothing but my fear".';
+
+/**
+ * The judge at a storybook or adventure table (round 20): the criteria
+ * tagged for that tier, numbered from 1, with the tier's own header. The
+ * child's-own-thought rule and the child's sheet feelings still apply
+ * wherever the child's thought or options are read.
+ */
+function tieredJudgeSystemPrompt(kind: ToneKind, ctx: ToneContext, tier: Exclude<ToneTier, 'gentle'>): string {
+  const children = (ctx.children ?? []).map(c => c.trim()).filter(Boolean);
+  const feelings = (ctx.ownFeelings ?? []).map(f => f.trim()).filter(Boolean);
+  const criteria = criteriaFor(tier);
+  const ending = tier === 'storybook' && ENDINGS.has(kind) ? `${criteria.length + 1}. ${STORYBOOK_ENDING_CRITERION}` : '';
+  return [
+    TIER_HEADER[tier],
+    children.length > 0 ? `The child at this table: ${children.join(', ')}. "The child" below means ${children.length === 1 ? children[0] : 'them'}; everyone else in the party is a grown-up.` : (tier === 'storybook' ? 'No player character is a child; "the child" below means any child in the story.' : ''),
+    'Flag a phrase when it:',
+    ...criteria.map((c, i) => `${i + 1}. ${c}`),
+    ending,
+    kind === 'thought' && tier === 'storybook' ? THOUGHT_RULE : '',
     feelings.length > 0 && CHILD_OWN.has(kind) ? `The child's own character, as their sheet has it: ${feelings.map(f => `"${f}"`).join(', ')}. The child's own thoughts, words and play from these are theirs and fine.` : '',
     'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"]}. Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok".',
   ].filter(Boolean).join('\n');
@@ -298,7 +384,7 @@ export function toneListJudgeSystemPrompt(kind: ToneKind, ctx: ToneContext = {})
   const adult = kind === 'options' && ctx.optionsFor === 'adult';
   // A grown-up's options: the child's sheet feelings are not theirs.
   return toneJudgeSystemPrompt(kind, adult ? { ...ctx, ownFeelings: [] } : ctx).replace(/\nReply with JSON only:[\s\S]*$/, '')
-    + (kind === 'options' ? `\n${adult ? ADULT_OPTIONS_RULE : OPTIONS_RULE}` : '')
+    + (kind === 'options' ? `\n${optionsRule(ctx.tier ?? 'gentle', adult)}` : '')
     + '\nYou read a NUMBERED LIST of short lines, each judged on its own. Reply with JSON only: {"flag":[]} when every line is fine, or {"flag":[2,4]} with the numbers of the lines to flag. When in doubt, do not flag.';
 }
 
@@ -528,8 +614,15 @@ function removeFlagged(text: string, phrases: string[], what: string, people?: T
 }
 
 /** The feedback a flagged draft's second try is given: the phrases, quoted. Never the draft itself. */
-export function toneFeedback(phrases: string[], kind: ToneKind): string {
+export function toneFeedback(phrases: string[], kind: ToneKind, tier: ToneTier = 'gentle'): string {
   const quoted = phrases.map(p => `"${p}"`).join('; ');
+  // Round 20: a storybook or adventure table is told only what its own judge flags.
+  if (tier === 'storybook') {
+    return `A reader for this all-ages table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with none of these phrases and nothing like them: no threat, harm or erasure aimed at the child, nothing that parts the child from their grown-up, no body horror or gore, nothing sexual or about anyone's bare body, nobody scolding or shaming the child. Suspense, danger and drama are fine.${ENDINGS.has(kind) ? ' This is the ending: let its last note be hopeful.' : ''}`;
+  }
+  if (tier === 'adventure') {
+    return `A reader for this teen table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with no graphic gore and nothing sexual. Danger, fights and scares are fine.`;
+  }
   const ending = ENDINGS.has(kind)
     ? ' This is the ending: close warm and settled — the party together and safe, the trouble done enough to rest — never on an open question, a wait or something still unsettled.'
     : '';
@@ -618,7 +711,7 @@ export async function gateGentleTone<T>(opts: {
 
   let second: T | null | undefined;
   try {
-    second = await opts.regenerate(toneFeedback(a.verdict.phrases.length > 0 ? a.verdict.phrases : ['(the passage as a whole)'], opts.kind));
+    second = await opts.regenerate(toneFeedback(a.verdict.phrases.length > 0 ? a.verdict.phrases : ['(the passage as a whole)'], opts.kind, opts.ctx?.tier));
   } catch (e) {
     if (isLlmAbort(e)) throw e;
     console.error(`[tone-gate] ${what}: second draft failed — keeping the first, softened:`, e);
@@ -654,13 +747,13 @@ export async function gateGentleTone<T>(opts: {
  * flagged the list stands (softened) rather than leave the child nothing.
  * No verdict: all kept (fail-open).
  */
-export async function gateChildOptions(options: string[], opts: { judge?: ToneListJudge; children?: string[]; ownFeelings?: string[]; label?: string; optionsFor?: 'child' | 'adult' } = {}): Promise<{ keep: number[]; dropped: string[] }> {
+export async function gateChildOptions(options: string[], opts: { judge?: ToneListJudge; children?: string[]; ownFeelings?: string[]; label?: string; optionsFor?: 'child' | 'adult'; tier?: ToneTier } = {}): Promise<{ keep: number[]; dropped: string[] }> {
   const all = options.map((_, i) => i);
   if (options.length === 0) return { keep: all, dropped: [] };
   const judge = opts.judge ?? llmToneListJudge;
   const what = opts.label ? `options (${opts.label})` : 'options';
   const started = Date.now();
-  const verdict = await judge(options, 'options', { children: opts.children, ownFeelings: opts.ownFeelings, ...(opts.optionsFor === 'adult' ? { optionsFor: 'adult' as const } : {}) });
+  const verdict = await judge(options, 'options', { children: opts.children, ownFeelings: opts.ownFeelings, ...(opts.optionsFor === 'adult' ? { optionsFor: 'adult' as const } : {}), ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}) });
   if (!verdict) {
     console.log(`[tone-gate] ${what}: no verdict (${Date.now() - started}ms) — kept as written`);
     return { keep: all, dropped: [] };
@@ -690,12 +783,12 @@ export async function gateChildOptions(options: string[], opts: { judge?: ToneLi
  * sentence's pronoun with no one to point to gives it the name (`people`),
  * or is not made.
  */
-export async function gateChildThought(thought: string, opts: { judge?: ToneJudge; label?: string } & ToneContext = {}): Promise<string> {
-  const softened = softenForChildren(thought ?? '');
+export async function gateChildThought(thought: string, opts: { judge?: ToneJudge; label?: string; /** Run the softener first (round 20: off below the gentle rating). Default true. */ soften?: boolean } & ToneContext = {}): Promise<string> {
+  const softened = opts.soften === false ? (thought ?? '') : softenForChildren(thought ?? '');
   if (!softened.trim()) return softened;
   const judge = opts.judge ?? llmToneJudge;
   const what = opts.label ? `thought (${opts.label})` : 'thought';
-  const ctx: ToneContext = { children: opts.children, ownFeelings: opts.ownFeelings, people: opts.people };
+  const ctx: ToneContext = { children: opts.children, ownFeelings: opts.ownFeelings, people: opts.people, ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}) };
   const started = Date.now();
   const verdict = await judge(softened, 'thought', ctx);
   if (!verdict || !verdict.flagged) {

@@ -26,10 +26,12 @@ import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './worl
 import { WorldSeedSchema } from './agents/schemas.js';
 import { FIELD_LIMITS, isValidShortField, isValidLongField, validateWorldSeedShape, clampWorldSeed, acceptableSeed } from './field-limits.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
-import { DmAgent, wantsNoSpoilers, nextSetupQuestion, setupToneRule } from './agents/dm.js';
+import { DmAgent, wantsNoSpoilers, nextSetupQuestion, setupToneRule, wantsGentlePeril } from './agents/dm.js';
 import { softenForChildren } from './narrative-guards.js';
 import { GameLoop, campaignWantsGentlePeril, worldIntroductionAsShown, partyNamesForIntroduction, hostSetupMessages } from './game-loop.js';
 import { gateGentleTone } from './tone-gate.js';
+import { tableRating, setStoredContentRating, withoutUnsetRatingClaims, ratingStatedIn, type TableRating } from './content-rating.js';
+import { ratingPolicy, ratingChangeLine, parseContentRating, type ContentRating } from '../shared/rating.js';
 import { guardInterviewReply, neutralSetupNouns, sheetWithNeutralNouns, sheetWithCompanionPronouns, type PronounMember } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
@@ -474,6 +476,67 @@ function tableWantsGentlePeril(db: import('better-sqlite3').Database, campaignId
   try { return campaignWantsGentlePeril(db, campaignId); } catch (e) { console.error('[dm-chat] could not read the table tone:', e); return false; }
 }
 
+/**
+ * The table's content rating (round 20). A read failure falls back to the
+ * gentle-peril read alone (gentle when asked, else storybook) and says so.
+ */
+function currentTableRating(db: import('better-sqlite3').Database, campaignId: string): TableRating {
+  try { return tableRating(db, campaignId); } catch (e) {
+    console.error('[rating] could not read the table rating:', e);
+    return { rating: tableWantsGentlePeril(db, campaignId) ? 'gentle' : 'storybook', explicit: false, childPresent: false };
+  }
+}
+
+/** The rating as last told to each room, so a default that moves (a child approved, a gentle ask) is told once. */
+const lastRatingSent = new Map<string, string>();
+const ratingKey = (r: TableRating) => `${r.rating}:${r.explicit}:${r.childPresent}`;
+
+function ratingMessage(r: TableRating, line?: string): ServerMessage {
+  return { type: 'content-rating', rating: r.rating, explicit: r.explicit, childPresent: r.childPresent, ...(line ? { line } : {}) };
+}
+
+/** Tell one socket the table's rating (join, rejoin, create). */
+function sendContentRating(ws: WebSocket, campaignId: string, joinCode: string): void {
+  const now = currentTableRating(getDb(), campaignId);
+  if (!lastRatingSent.has(joinCode)) lastRatingSent.set(joinCode, ratingKey(now));
+  send(ws, ratingMessage(now));
+}
+
+/** The default moved (a child PC approved or revoked, a gentle ask in the setup chat): tell the room, once. */
+function announceRatingIfChanged(jc: string, campaignId: string): void {
+  const now = currentTableRating(getDb(), campaignId);
+  if (lastRatingSent.get(jc) === ratingKey(now)) return;
+  lastRatingSent.set(jc, ratingKey(now));
+  broadcast(jc, ratingMessage(now));
+}
+
+/**
+ * The host sets the rating (round 20) — the control in the lobby or the
+ * game view, or the setup chat acting on the host's answer. Persisted on
+ * the campaign; with a live game loop the loop takes it (the next DM call
+ * runs at it, the DM's transcript notes it, the checkpoint carries it) and
+ * broadcasts it; otherwise it is broadcast here, and mid-game written to the
+ * replay log. Either way the table sees "The host set the rating to …".
+ */
+function changeContentRating(jc: string, campaign: import('../shared/types.js').Campaign, rating: ContentRating): void {
+  const db = getDb();
+  const loop = gameLoops.get(jc);
+  if (loop && !loop.isStopped && campaign.phase === 'playing') {
+    const now = loop.setContentRating(rating);
+    lastRatingSent.set(jc, ratingKey(now));
+    return;
+  }
+  setStoredContentRating(db, campaign.id, rating);
+  const now = currentTableRating(db, campaign.id);
+  const line = ratingChangeLine(rating);
+  if (campaign.phase === 'playing' || campaign.phase === 'ended') {
+    try { appendReplayEntry(db, campaign.id, { type: 'rating-note', text: line }); } catch (e) { console.error('[rating] replay-log append failed:', e); }
+  }
+  lastRatingSent.set(jc, ratingKey(now));
+  console.log(`[rating] room ${jc}: ${line}`);
+  broadcast(jc, ratingMessage(now, line));
+}
+
 async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/types.js').Campaign, sessionToken: string): Promise<void> {
   try {
     const db = getDb();
@@ -505,8 +568,10 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
       return;
     }
     const dm = new DmAgent(db);
-    let gentlePeril = false;
-    try { gentlePeril = campaignWantsGentlePeril(db, campaign.id); } catch (e) { console.error('[world-introduction] could not read the table tone:', e); }
+    // Round 20: the table's rating decides the register, the gate and the softener.
+    const introRating = currentTableRating(db, campaign.id).rating;
+    const introPolicy = ratingPolicy(introRating);
+    const gentlePeril = introPolicy.gentleRegister;
     // The players' own characters, never named to the reader (round 16,
     // NUMMRL: the host, who plays Liz, read "You and Liz stand…").
     let partyNames: string[] = [];
@@ -516,22 +581,24 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
       influences: getInfluences(db, campaign.id),
       seed,
       gentlePeril,
+      rating: introRating,
       toneFeedback,
       partyNames,
     });
     let raw = await introduce();
     // A gentle table: the judge reads the first sight of the world (live
     // 7RAAQ7: "You and your companion stand bare-chested"); see tone-gate.ts.
-    if (gentlePeril && raw.trim()) {
+    if (introPolicy.gates('world-intro') && raw.trim()) {
       raw = (await gateGentleTone({
         kind: 'world-intro',
         first: raw,
-        textOf: r => worldIntroductionAsShown(r, seed, true, partyNames),
+        textOf: r => worldIntroductionAsShown(r, seed, introPolicy.soften, partyNames),
         regenerate: feedback => introduce(feedback),
         soften: r => r, // worldIntroductionAsShown softens whatever is kept
+        ...(introPolicy.gate !== 'gentle' && introPolicy.gate ? { ctx: { tier: introPolicy.gate } } : {}),
       })).value;
     }
-    const text = worldIntroductionAsShown(raw, seed, gentlePeril, partyNames);
+    const text = worldIntroductionAsShown(raw, seed, introPolicy.soften, partyNames);
     // introduceWorld calls callLlm with no schema, so a proxy hiccup (outage,
     // an all-whitespace body, a response that was nothing but thinking tags)
     // comes back as '' rather than throwing. Appending that would store an
@@ -591,6 +658,7 @@ wss.on('connection', (ws) => {
       });
 
       if (campaign) sendDmSettings(ws, campaign);
+      if (campaign) sendContentRating(ws, campaign.id, joinCode);
 
       const dm = new DmAgent(db);
       // Every rules lookup for a system with no ingested chunks returns the
@@ -646,6 +714,7 @@ wss.on('connection', (ws) => {
         characterId: null,
       });
       broadcast(msg.joinCode, { type: 'player-joined', playerName: msg.playerName, characterId: null });
+      sendContentRating(ws, campaign.id, msg.joinCode);
       sendPauseState(ws, campaign.id, campaign.phase);
       if (campaign.phase === 'character-creation') {
         await sendWorldIntroduction(ws, campaign, session.token);
@@ -775,6 +844,8 @@ wss.on('connection', (ws) => {
       // After the phase-change, so the game view it mounts is there to paint
       // the banner — a refresh mid-pause must not look like a hung table.
       sendPauseState(ws, campaign.id, campaign.phase);
+      // Round 20: the badge (and the host's control) come back with the rating.
+      sendContentRating(ws, campaign.id, msg.joinCode);
       // A refresh mid-window gets the open whisper prompt back, with the
       // time the server's countdown really has left — not a fresh 30s that
       // outlives the window, and not nothing (the prompt is not in the
@@ -900,7 +971,7 @@ wss.on('connection', (ws) => {
         // against the world this table is running.
         let premise: string | null = null;
         try { premise = getWorldSeed(db, campaign.id)?.premise ?? null; } catch { premise = null; }
-        validation = await dm.validateCharacter(msg.definition, campaign.systemId, { gentlePeril: tableWantsGentlePeril(db, campaign.id), premise });
+        validation = await dm.validateCharacter(msg.definition, campaign.systemId, { gentlePeril: ratingPolicy(currentTableRating(db, campaign.id).rating).gentleRegister, premise });
       } catch (e) {
         console.error('[submit-character] validation failed:', e);
         send(ws, { type: 'character-validated', characterId: charId, approved: false, feedback: 'Character validation failed — please try again.' });
@@ -1010,6 +1081,7 @@ wss.on('connection', (ws) => {
 
         send(ws, { type: 'character-validated', characterId: pending.id, approved: true, feedback: `${feedbackText} Your character is in the game.` });
         broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.id, definition: pending.definition });
+        announceRatingIfChanged(currentJoinCode, campaign.id);
         return;
       }
 
@@ -1096,6 +1168,7 @@ wss.on('connection', (ws) => {
       const playerWs = socketFor(currentJoinCode, pending.sessionToken);
       if (playerWs) send(playerWs, { type: 'character-validated', characterId: pending.id, approved: true, feedback: 'Approved by both AI DM and host!' });
       broadcast(currentJoinCode, { type: 'character-submitted', characterId: pending.id, definition: pending.definition });
+      announceRatingIfChanged(currentJoinCode, hostCampaign.id);
       const neg = negotiations.get(msg.characterId);
       if (neg) { neg.close(); negotiations.delete(msg.characterId); }
     }
@@ -1288,6 +1361,7 @@ wss.on('connection', (ws) => {
       }
 
       broadcast(currentJoinCode, { type: 'character-revoked', characterId: msg.characterId, reason });
+      announceRatingIfChanged(currentJoinCode, revokeCampaign.id);
     }
 
     if (msg.type === 'negotiation-message' && currentJoinCode && currentPlayer) {
@@ -1363,7 +1437,7 @@ wss.on('connection', (ws) => {
           unmet: before.detail,
           tableCharacters,
           statedPronouns,
-          gentlePeril: tableWantsGentlePeril(db, campaign.id),
+          gentlePeril: ratingPolicy(currentTableRating(db, campaign.id).rating).gentleRegister,
         };
         let reply = await dm.interviewForCharacter(interviewOpts);
         // Live (WXKC2C): Liz's second reply was her first, word for word,
@@ -1509,6 +1583,12 @@ wss.on('connection', (ws) => {
       let editRequest = asksForWorldEdit(msg.text, draftedSeed);
       try {
         const before = currentReadiness(campaign);
+        // Round 20: the rating as it stands (the host's latest message
+        // included — "gentle peril please" makes the default gentle now).
+        const storedRating = currentTableRating(db, campaign.id);
+        const ratingBefore: TableRating = !storedRating.explicit && wantsGentlePeril(currentPlayer.setupChat.filter(m => m.role === 'user').map(m => m.content))
+          ? { ...storedRating, rating: 'gentle' }
+          : storedRating;
         const setupOpts = {
           preset: campaign.dmPreset,
           systemId: campaign.systemId,
@@ -1516,6 +1596,7 @@ wss.on('connection', (ws) => {
           unmet: setupUnmetForModel(before),
           hostTableRole: campaign.hostTableRole,
           worldDrafted: Boolean(draftedSeed),
+          rating: { rating: ratingBefore.rating, explicit: ratingBefore.explicit },
         };
         let reply = await dm.setupChat(setupOpts);
         // Round 15 (RZBU7G): at a table whose host asked for gentle peril,
@@ -1523,7 +1604,7 @@ wss.on('connection', (ws) => {
         // forever" as the danger. Once the host has asked, each reply passes
         // the tone gate like the DM's play prose (tone-gate.ts): flagged, it
         // is written fresh once with the phrases as feedback.
-        if (setupToneRule(currentPlayer.setupChat) && reply.reply.trim()) {
+        if (setupToneRule(currentPlayer.setupChat, ratingBefore.rating) && ratingPolicy(ratingBefore.rating).gates('setup') && reply.reply.trim()) {
           reply = (await gateGentleTone({
             kind: 'setup',
             first: reply,
@@ -1573,6 +1654,15 @@ wss.on('connection', (ws) => {
           }
           if (editRequest) reply.reply = withoutFalseEditClaim(reply.reply, { redrafting: true });
         }
+        // Round 20: the rating the host asked for — in the model's
+        // contentRating, or named outright in the host's own message — is
+        // set now; and the reply never claims a rating the table does not have.
+        const askedRating = reply.contentRating ?? ratingStatedIn(msg.text);
+        let ratingSet: ContentRating | null = null;
+        if (askedRating && (askedRating !== ratingBefore.rating || !ratingBefore.explicit)) {
+          ratingSet = askedRating;
+        }
+        reply.reply = withoutUnsetRatingClaims(reply.reply, ratingSet ?? ratingBefore.rating, nextSetupQuestion(before.detail));
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 
         const influences = normalizeInfluences(reply.influences);
@@ -1608,6 +1698,8 @@ wss.on('connection', (ws) => {
 
         send(ws, { type: 'dm-chat-reply', text: reply.reply, done: persisted });
         sendReadiness(ws, after);
+        if (ratingSet) changeContentRating(currentJoinCode, after, ratingSet);
+        else announceRatingIfChanged(currentJoinCode, after.id);
       } catch (e) {
         console.error('[dm-chat] error:', e);
         currentPlayer.setupChat.pop();
@@ -1633,7 +1725,8 @@ wss.on('connection', (ws) => {
             dmInstructions: after.dmInstructions ?? '',
             history: currentPlayer.setupChat,
             existing: getWorldSeed(db, after.id) ?? stock?.seed ?? null,
-            gentlePeril: tableWantsGentlePeril(db, after.id),
+            gentlePeril: ratingPolicy(currentTableRating(db, after.id).rating).gentleRegister,
+            rating: currentTableRating(db, after.id).rating,
             revision: editRequest ? msg.text : undefined,
           }), currentPlayer.setupChat.filter(m => m.role === 'user').map(m => m.content)));
 
@@ -1762,7 +1855,8 @@ wss.on('connection', (ws) => {
           dmInstructions: campaign.dmInstructions ?? '',
           history,
           existing: getWorldSeed(db, campaign.id),
-          gentlePeril: tableWantsGentlePeril(db, campaign.id),
+          gentlePeril: ratingPolicy(currentTableRating(db, campaign.id).rating).gentleRegister,
+          rating: currentTableRating(db, campaign.id).rating,
         }), history.filter(m => m.role === 'user').map(m => m.content)));
         // The draft above sat behind a real LLM call, which the host's own
         // accept-world-seed (fully synchronous, no await of its own) can
@@ -1869,6 +1963,22 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'whisper-ack', ...ack });
     }
 
+    // Round 20: the host's rating control — the lobby's or the game view's.
+    // Only the host (whether running the table or playing in it); any phase
+    // but a finished one. Takes effect from the next DM call.
+    if (msg.type === 'set-content-rating' && currentJoinCode && currentPlayer) {
+      if (!currentPlayer.isOwner) {
+        send(ws, { type: 'error', message: 'Only the host can change the rating.' });
+        return;
+      }
+      const rating = parseContentRating(msg.rating);
+      if (!rating) { send(ws, { type: 'error', message: 'That is not a rating this game has.' }); return; }
+      const ratingCampaign = joinRoom(db, currentJoinCode);
+      if (!ratingCampaign) return;
+      if (ratingCampaign.phase === 'ended') { send(ws, { type: 'error', message: 'The story is over — the rating can no longer change.' }); return; }
+      changeContentRating(currentJoinCode, ratingCampaign, rating);
+    }
+
     if ((msg.type === 'pause-game' || msg.type === 'resume-game') && currentJoinCode && currentPlayer) {
       if (!isWorldAuthor(currentPlayer)) {
         send(ws, { type: 'error', message: 'Only the host can pause or resume the game.' });
@@ -1963,6 +2073,7 @@ wss.on('connection', (ws) => {
           if (!stillEmpty || stillEmpty.length === 0) {
             pauseIfStillEmpty();
             rooms.delete(jc);
+            lastRatingSent.delete(jc);
             const loop = gameLoops.get(jc);
             if (loop) { loop.stop(); gameLoops.delete(jc); }
             // Cleared in the same place as rooms/gameLoops so the three

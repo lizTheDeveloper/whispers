@@ -1,4 +1,5 @@
 import type { WsClient } from './ws-client.js';
+import { mountRatingBadge } from './content-rating.js';
 
 /**
  * Shown to a player who arrives while the host is still building the world.
@@ -10,6 +11,7 @@ export function renderWaitingRoom(root: HTMLElement, ws: WsClient, gameName: str
       <h1 id="waiting-room-title"></h1>
       <p class="subtitle">You're in. The DM is building the world.</p>
       <div id="ws-status" class="ws-status ws-connected">Connected</div>
+      <div id="rating-row" class="rating-row"></div>
 
       <div class="panel waiting-panel">
         <div class="waiting-pulse" aria-hidden="true"></div>
@@ -25,6 +27,7 @@ export function renderWaitingRoom(root: HTMLElement, ws: WsClient, gameName: str
   `;
 
   (root.querySelector('#waiting-room-title') as HTMLElement).textContent = gameName || 'Whispers';
+  mountRatingBadge(root.querySelector('#rating-row') as HTMLElement, ws);
 
   const list = root.querySelector('#waiting-player-list') as HTMLUListElement;
 

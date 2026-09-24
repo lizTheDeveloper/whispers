@@ -3,6 +3,7 @@ import type { CharacterDefinition, CharacterReadiness, TableRole } from '../shar
 import { parseOneCharacter, parseCharacters } from '../shared/markdown-parser.js';
 import { renderNegotiationChat } from './negotiation-chat.js';
 import { appendMarkdown } from './markdown.js';
+import { mountRatingBadge, mountRatingControl } from './content-rating.js';
 
 const FATE_SKILLS = [
   'Athletics', 'Burglary', 'Contacts', 'Crafts', 'Deceive', 'Drive',
@@ -64,11 +65,13 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
     <div class="character-creator">
       <h2>Create Your Character</h2>
       <p>Join code: <strong id="creator-join-code"></strong></p>
+      <div id="rating-row" class="rating-row"></div>
 
       ${isWorldAuthor ? `
       <div id="host-start-panel" class="host-start-panel">
         <button id="start-game-btn">Start Game</button>
         <p class="paste-hint" id="start-game-hint"></p>
+        <div id="rating-controls" class="rating-controls"></div>
       </div>` : ''}
 
       <div id="world-intro" class="world-introduction hidden">
@@ -169,6 +172,9 @@ Quick Fingers: +2 to Stealth when picking locks
       <div id="dm-feedback" class="feedback hidden"></div>
     </div>
   `;
+  // Round 20: the rating badge; the host's control in their panel.
+  mountRatingBadge(root.querySelector('#rating-row') as HTMLElement, ws);
+  if (isWorldAuthor) mountRatingControl(root.querySelector('#rating-controls') as HTMLElement, ws);
 
   // joinCode reaches here via the WebSocket protocol (room-joined/
   // phase-change), not a hardcoded server constant — set with textContent

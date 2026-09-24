@@ -59,6 +59,10 @@ export function recordReplayBroadcast(db: Database.Database, campaignId: string,
     case 'scene-end':
       appendReplayEntry(db, campaignId, msg);
       break;
+    // Round 20: a rating change is a line in the log ("The host set the rating to Adventure.").
+    case 'content-rating':
+      if (msg.line) appendReplayEntry(db, campaignId, { type: 'rating-note', text: msg.line });
+      break;
   }
 }
 

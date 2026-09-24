@@ -1723,3 +1723,35 @@ button:disabled {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.9em;
 }
+
+/* Round 20: the content rating — a small badge for every seat, the host's control. */
+.rating-row { display: flex; justify-content: flex-end; margin: 4px 0; }
+.rating-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--signal);
+  color: var(--signal);
+  background: var(--signal-dim);
+}
+.rating-badge[data-rating="gentle"] { border-color: var(--biolume); color: var(--biolume); background: var(--biolume-dim); }
+.rating-badge[data-rating="adventure"] { border-color: var(--ember); color: var(--ember); background: var(--ember-glow); }
+.rating-badge[data-rating="mature"] { border-color: var(--gene-pink); color: var(--gene-pink); background: var(--gene-pink-dim); }
+.rating-badge.hidden { display: none; }
+.rating-controls { margin-top: 8px; }
+.rating-control { display: flex; flex-direction: column; gap: 4px; }
+.rating-label { font-size: 0.9rem; color: var(--text-dim); }
+.rating-select {
+  margin-left: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--surface-glow);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  font: inherit;
+}
+.rating-child-notice { font-size: 0.8rem; color: var(--ember); }
+.rating-child-notice.hidden { display: none; }

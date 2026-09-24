@@ -196,4 +196,6 @@ export interface RoomState {
   sceneTurnCount?: number;
   /** Server-side: the stock-line variants said this game, per family (LineRotation.snapshot), so a resume keeps them. */
   stockLines?: Record<string, number[]>;
+  /** The content rating the host chose (round 20), carried in every checkpoint so a resume restores it. Unset: not chosen. */
+  contentRating?: import('./rating.js').ContentRating;
 }

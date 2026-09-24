@@ -14,6 +14,7 @@ import { SENTENCE_SPLIT } from '../sentences.js';
 import { publicDisposition } from '../world-seed.js';
 import { seedLimitsForPrompt } from '../field-limits.js';
 import type Database from 'better-sqlite3';
+import { CONTENT_RATINGS, RATING_BLURB, ratingLabel, type ContentRating } from '../../shared/rating.js';
 import type { CharacterDefinition, CharacterRelationship, TranscriptMessage, DiceResult, WorldSeed, TableRole } from '../../shared/types.js';
 
 const presetCache = new Map<string, string>();
@@ -419,6 +420,44 @@ export function childToneRule(party: PartyMember[], opts: { gentlePeril?: boolea
   return `FAMILY TABLE: ${who}, playing at this table.${asked} Peril and stakes are fine, in the ${GENTLE_PERIL_REGISTER} Never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die. Keep the imagery a ten-year-old can read, for EVERYONE in the scene, NPCs included: no nooses or hanging, no bones cracking or breaking, no blood, wounds or gore, no death imagery (corpses, skulls, "dying" light, graves), no branding or burning skin, nothing "terrifying" or "horrifying".${ending}`;
 }
 
+/** The never-cross lines, at every rating — mature included (round 20). */
+export const SAFETY_FLOOR = 'SAFETY FLOOR, at every rating: never any sexual content involving a child, a minor or a young character, and never sexualise one in any way; nothing sexual is ever explicit — romance fades to black.';
+
+/** How a storybook table is run (round 20): all ages, like Paddington or a Studio Ghibli film. */
+const STORYBOOK_REGISTER = 'STORYBOOK register (all ages, like Paddington or a Studio Ghibli film): real suspense, danger, drama, chases, spooky places, storms, villains with schemes and grumpy, flustered or frightened NPCs are welcome, and failure matters. Never: a threat, harm or erasure aimed at a child; body horror, gore, or lingering on wounds or blood; the world or an NPC separating a child from their grown-up; a grown-up scolding, suspecting or shaming a child; anything sexual. Villains threaten plans, places and grown-ups, never a child\'s body.';
+const STORYBOOK_ENDING = 'ENDING at a storybook table: the last note is hopeful — a thread may stay open for next time and the ending may be bittersweet, but nobody ends in doom, despair, or lost, trapped or alone for good.';
+/** How an adventure table is run (round 20): teen. */
+const ADVENTURE_REGISTER = 'ADVENTURE register (teen): real danger, fights, injuries, scares and dark moods are welcome, and failure has teeth. No gore: wounds and deaths are told plainly, never dwelt on in graphic detail (no mutilation, entrails or torture close up). No sexual content.';
+/** How a mature table is run (round 20): adults. */
+const MATURE_REGISTER = 'MATURE register (adults): dark themes, horror, violence and moral weight are welcome, as far as the host\'s direction for this table takes them.';
+
+/**
+ * The tone rule for a table at a content rating (round 20) — the one place
+ * the register is chosen. Gentle is childToneRule exactly as before (the
+ * family-table rule with a child, the gentle-peril rule without). The
+ * others name the rating, the register and the safety floor; a child PC is
+ * named too, since the host may pick a higher rating for a child character
+ * that an adult plays.
+ */
+export function ratingToneRule(rating: ContentRating, party: PartyMember[], opts: { gentlePeril?: boolean; ending?: boolean } = {}): string {
+  const kids = childrenInParty(party);
+  if (rating === 'gentle') {
+    // The host chose gentle: without a child at the table, that is the gentle-peril rule.
+    return `${childToneRule(party, { gentlePeril: opts.gentlePeril || kids.length === 0, ending: opts.ending })} ${SAFETY_FLOOR}`;
+  }
+  const who = kids.length === 0 ? '' : kids.length === 1 ? ` ${kids[0]} is a child character.` : ` ${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]} are child characters.`;
+  if (rating === 'storybook') return `CONTENT RATING: STORYBOOK.${who} Run every scene in the ${STORYBOOK_REGISTER}${opts.ending ? ` ${STORYBOOK_ENDING}` : ''} ${SAFETY_FLOOR}`;
+  if (rating === 'adventure') return `CONTENT RATING: ADVENTURE.${who} Run every scene in the ${ADVENTURE_REGISTER}${opts.ending ? ' The ending may be open, bittersweet or bleak, as the story earned it.' : ''} ${SAFETY_FLOOR}`;
+  return `CONTENT RATING: MATURE.${who} Run every scene in the ${MATURE_REGISTER}${opts.ending ? ' The ending may be open, bittersweet or bleak, as the story earned it.' : ''} ${SAFETY_FLOOR}`;
+}
+
+/** The tone rule for a DM context: by its rating when it has one, else the pre-rating rule (a child or a gentle-peril ask). */
+function contextToneRule(ctx: { party?: PartyMember[]; gentlePeril?: boolean; rating?: ContentRating }, opts: { ending?: boolean } = {}): string {
+  return ctx.rating
+    ? ratingToneRule(ctx.rating, ctx.party ?? [], { gentlePeril: ctx.gentlePeril, ending: opts.ending })
+    : childToneRule(ctx.party ?? [], { gentlePeril: ctx.gentlePeril, ending: opts.ending });
+}
+
 /**
  * The setup chat once the host has asked for gentle peril (round 15,
  * RZBU7G): the chat sat outside the register and offered the host "the
@@ -449,9 +488,30 @@ export function validationFeedbackAsShown(feedback: string, opts: { gentlePeril?
   return out;
 }
 
-export function setupToneRule(history: Array<{ role: string; content: string }>): string {
-  if (!wantsGentlePeril(history.filter(m => m.role === 'user').map(m => m.content))) return '';
+export function setupToneRule(history: Array<{ role: string; content: string }>, rating?: ContentRating): string {
+  // Round 20: the rating decides. A host who asked for gentle peril and
+  // then set the rating higher gets the rating they set.
+  const asked = wantsGentlePeril(history.filter(m => m.role === 'user').map(m => m.content));
+  if (rating !== undefined && rating !== 'gentle') return '';
+  if (rating === 'gentle' && !asked) {
+    return `\n\nGENTLE PERIL: the table is rated Gentle. Everything you write — "reply", dmInstructions and dmCustomPrompt, and every example dangers you offer the host to choose from — stays in the ${GENTLE_PERIL_REGISTER}`;
+  }
+  if (!asked) return '';
   return `\n\nGENTLE PERIL: the host asked for gentle peril. Everything you write — "reply", dmInstructions and dmCustomPrompt, and every example dangers you offer the host to choose from — stays in the ${GENTLE_PERIL_REGISTER}`;
+}
+
+/**
+ * The setup chat's word on the content rating (round 20): what it is now,
+ * the four levels, and — while the host has not chosen — one natural
+ * question about how intense the game should get. The model sets it only
+ * through "contentRating", and never claims a rating it did not set.
+ */
+export function setupRatingBlock(current: { rating: ContentRating; explicit: boolean }): string {
+  const levels = CONTENT_RATINGS.map(r => `"${r}" (${ratingLabel(r)}: ${RATING_BLURB[r]})`).join('; ');
+  const ask = current.explicit
+    ? ''
+    : ' The host has not chosen one yet: somewhere natural in the conversation — once, in your own words, never as a form — ask how intense this should get, and offer the levels in plain words.';
+  return `\n\nCONTENT RATING: this table is rated ${ratingLabel(current.rating)} ${current.explicit ? '(the host chose it)' : '(a default — the host has not chosen)'}. The levels: ${levels}.${ask} When the host tells you how intense they want it, set "contentRating" to the matching level; otherwise leave "contentRating" null. Never say in "reply" that the rating is or will be a level unless you set "contentRating" to that level in this same reply, or it is already the current rating.`;
 }
 
 const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
@@ -497,6 +557,8 @@ export function assembleSystemPrompt(input: {
   influences: string[];
   /** The host asked for gentle or cozy peril (wantsGentlePeril). */
   gentlePeril?: boolean;
+  /** The table's content rating (round 20): picks the register. Unset: the pre-rating rule. */
+  rating?: ContentRating;
   /** The live party. When present, it is stated as authoritative and setup-invented PCs are dropped from the direction. */
   party?: PartyMember[];
 }): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
@@ -549,7 +611,7 @@ Storytelling principles:
   if (dmInstructions) prompt += `\nDM direction: ${dmInstructions}\n`;
   const partyBlock = describeParty(input.party ?? []);
   if (partyBlock) prompt += `\n${partyBlock}\n`;
-  const toneRule = childToneRule(input.party ?? [], { gentlePeril: input.gentlePeril });
+  const toneRule = contextToneRule(input);
   if (toneRule) prompt += `\n${toneRule}\n`;
 
   if (input.campaignMaterials) {
@@ -669,6 +731,12 @@ interface DmContext {
   /** The host asked for gentle or cozy peril: the tone rule goes into every turn's prompt, not only the system prompt. */
   gentlePeril?: boolean;
   /**
+   * The table's content rating (round 20), read fresh for every call: a
+   * change mid-game takes effect from the next DM call. Unset: the
+   * pre-rating rule (a child or a gentle-peril ask).
+   */
+  rating?: ContentRating;
+  /**
    * The tone gate flagged the last draft (tone-gate.ts): the phrases,
    * quoted, for this one fresh try. Never the draft itself.
    */
@@ -686,7 +754,7 @@ interface DmContext {
  * host who asked for gentle peril). '' when the table has neither.
  */
 function turnToneBlock(ctx: DmContext): string {
-  const rule = childToneRule(ctx.party ?? [], { gentlePeril: ctx.gentlePeril });
+  const rule = contextToneRule(ctx);
   const feedback = ctx.toneFeedback?.trim() ? `\n<tone_feedback>\n${ctx.toneFeedback.trim()}\n</tone_feedback>` : '';
   return (rule ? `\n<tone>\n${rule}\n</tone>` : '') + feedback;
 }
@@ -1012,6 +1080,8 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     toneFeedback?: string;
     /** A world is drafted and waiting on the host's card. */
     worldDrafted?: boolean;
+    /** The table's content rating as it stands, and whether the host chose it (round 20). */
+    rating?: { rating: ContentRating; explicit: boolean };
   }): Promise<DmSetupReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'setting tone genre campaign');
     const unmetBlock = opts.unmet.length > 0
@@ -1049,7 +1119,7 @@ A WORLD IS DRAFTED and on the host's card. You cannot edit it from this chat. Wh
 PLAYER CHARACTERS: never give the host's player characters a gender the host has not stated — not in "reply", dmInstructions, dmCustomPrompt or anywhere else. Use the host's own relation words: if the host says "my kid Biz", write "her kid Biz" or "Biz", never "son", "daughter", "boy" or "girl"; if the host gave no pronouns for a character, use their name.${spoilerBlock}
 ${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` : ''}${unmetBlock}
 
-Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }${setupToneRule(opts.history)}${opts.toneFeedback?.trim() ? `\n\n<tone_feedback>\n${opts.toneFeedback.trim()}\n</tone_feedback>` : ''}`;
+Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null${opts.rating ? ', "contentRating": null' : ''} }${opts.rating ? setupRatingBlock(opts.rating) : ''}${setupToneRule(opts.history, opts.rating?.rating)}${opts.toneFeedback?.trim() ? `\n\n<tone_feedback>\n${opts.toneFeedback.trim()}\n</tone_feedback>` : ''}`;
 
     // The greeting (no history yet) has a user turn of its own: Qwen's chat
     // template refuses a request without one, and live the greeting failed
@@ -1126,6 +1196,8 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
     existing: WorldSeed | null;
     /** The host asked for gentle peril: the premise, NPCs and hooks are drafted in the register too. */
     gentlePeril?: boolean;
+    /** The table's content rating (round 20): above gentle, its register instead. */
+    rating?: ContentRating;
     /** The host's request for a change to the existing draft, made in the setup chat. */
     revision?: string;
   }): Promise<WorldSeed> {
@@ -1166,7 +1238,7 @@ PLAYER CHARACTERS: never give the host's player characters a gender the host has
 
 NO SPOILERS: The host reads every field of this world on a card before play — the premise, the location and NPC descriptions, dispositions and motivations, the plotHooks and the items — and the host may be playing. None of it may reveal or hint at a twist, a culprit, who is responsible for anything, who is behind anything, a hidden motive, or the answer to a mystery. Not even obliquely: no "rumors hint at a deliberate cover-up", no "someone wants the truth buried", no "it was no accident". Motivations say what an NPC openly wants; plotHooks say what is happening on the surface, as open questions. If the conversation asks something the story should answer ("whose mistake brought us here?"), leave it an open question — the answers belong to the DM's private direction, never to this world.
 
-${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for the premise, every NPC's motivation and every plot hook: they are the dangers the story will be made of.\n\n` : ''}Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"...","pronouns":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
+${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for the premise, every NPC's motivation and every plot hook: they are the dangers the story will be made of.\n\n` : opts.rating && opts.rating !== 'gentle' ? `${ratingToneRule(opts.rating, [])} This holds for the premise, every NPC's motivation and every plot hook.\n\n` : ''}Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"...","pronouns":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
 
     return callLlm({
       messages: [
@@ -1195,7 +1267,7 @@ ${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for
    * briefing — they should want to be somewhere in it before they are asked
    * who they are. Keep the influences in the prose and out of the content.
    */
-  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed; /** The host asked for gentle peril: the register holds from the first sight of the world. */ gentlePeril?: boolean; /** The tone gate's feedback on the last draft (tone-gate.ts). */ toneFeedback?: string; /** The players' own characters, as far as the setup knows (never named to the reader). */ partyNames?: string[] }): Promise<string> {
+  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed; /** The host asked for gentle peril: the register holds from the first sight of the world. */ gentlePeril?: boolean; /** The table's content rating (round 20): above gentle, its register instead. */ rating?: ContentRating; /** The tone gate's feedback on the last draft (tone-gate.ts). */ toneFeedback?: string; /** The players' own characters, as far as the setup knows (never named to the reader). */ partyNames?: string[] }): Promise<string> {
     // Plot hooks (and NPC motivations) are DM secrets and are deliberately
     // not given to this prompt: whatever it knows, the player may read.
     const places = opts.seed.locations.slice(0, 4).map(l => `${l.name}: ${l.description}`).join('\n');
@@ -1208,7 +1280,7 @@ ${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for
     // Live (7MJXE5): Barnaby's seed said it/its and both players' first
     // sight of the world said "his oversized briefcase… He looks you in the eye".
     const pronounRule = npcPronounBlock(pronouns);
-    const toneRule = opts.gentlePeril ? `\n\n${childToneRule([], { gentlePeril: true })}` : '';
+    const toneRule = opts.gentlePeril ? `\n\n${childToneRule([], { gentlePeril: true })}` : opts.rating && opts.rating !== 'gentle' ? `\n\n${ratingToneRule(opts.rating, [])}` : '';
     const feedback = opts.toneFeedback?.trim() ? `\n\n${opts.toneFeedback.trim()}` : '';
     // Round 16 (NUMMRL): the host, who plays Liz, read "You and Liz stand…".
     const party = (opts.partyNames ?? []).filter(Boolean);
@@ -1450,6 +1522,7 @@ SOMEONE ELSE IN THE SHEET: the personality, backstory, aspects and trouble are a
       influences: ctx.influences,
       party: ctx.party,
       gentlePeril: ctx.gentlePeril,
+      rating: ctx.rating,
     });
   }
 

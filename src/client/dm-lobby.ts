@@ -4,6 +4,7 @@ import { dmUrl, playUrl } from './session-store.js';
 import type { GamePhase, TableRole, WorldReadiness, WorldSeed, WorldSeedItem, WorldSeedLocation, WorldSeedNpc } from '../shared/types.js';
 import { appendMarkdown } from './markdown.js';
 import { wantsNoSpoilers } from '../shared/spoilers.js';
+import { mountRatingControl } from './content-rating.js';
 
 /** Mirrors MIN_INFLUENCES in src/server/world-readiness.ts — display only, the server owns the actual gate. */
 const MIN_INFLUENCES = 3;
@@ -37,6 +38,11 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
             <button id="role-player-btn" class="role-btn ghost-btn">I'm playing in it</button>
           </div>
           <p class="role-current" id="role-current-line"></p>
+        </div>
+
+        <div class="sidebar-section" id="rating-section">
+          <h3>Content Rating</h3>
+          <div id="rating-control-slot"></div>
         </div>
 
         <div class="sidebar-section">
@@ -85,6 +91,8 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
   `;
 
   const chatLog = root.querySelector('#dm-chat-log') as HTMLElement;
+  // Round 20: the host's rating control; a change shows in the chat as a note.
+  mountRatingControl(root.querySelector('#rating-control-slot') as HTMLElement, ws);
   const chatInput = root.querySelector('#dm-chat-input') as HTMLInputElement;
   const chatSend = root.querySelector('#dm-chat-send') as HTMLButtonElement;
   const fileInput = root.querySelector('#material-upload') as HTMLInputElement;
@@ -242,6 +250,11 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
 
   ws.on('dm-settings', (msg) => {
     if (msg.type === 'dm-settings') uploadToken = msg.uploadToken;
+  });
+
+  ws.on('content-rating', (msg) => {
+    if (msg.type !== 'content-rating' || !msg.line || !chatLog.isConnected) return;
+    addSystemNotice(msg.line);
   });
 
   ws.on('dm-chat-reply', (msg) => {

@@ -329,6 +329,11 @@ export function migrate(db: Database.Database): void {
   if (!colNames.has('paused_reason')) {
     db.exec('ALTER TABLE campaigns ADD COLUMN paused_reason TEXT');
   }
+  // Round 20: the host's content rating. NULL: not chosen — the default
+  // (gentle for a gentle ask or a child PC, else storybook) applies.
+  if (!colNames.has('content_rating')) {
+    db.exec('ALTER TABLE campaigns ADD COLUMN content_rating TEXT');
+  }
 
   // The interview's sheet-so-far: every field the player has stated, kept
   // across turns. `definition` stays the finished sheet only, since it is what
