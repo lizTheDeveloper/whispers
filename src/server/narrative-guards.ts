@@ -748,10 +748,29 @@ function itemNouns(name: string): string[] {
   return head ? [head, ...(ITEM_KIN[head] ?? [])] : [];
 }
 
-/** An item's name for comparing: lower case, no leading article, no trailing parenthetical. */
+/**
+ * Words that only describe a thing, never pick one out: "the Shiny Pen" is
+ * the pen. Colours, materials and names ("Orange Key", "Brass Key",
+ * "Fading Form", "Recall Form") are not here — those tell things apart.
+ */
+const DESCRIPTIVE = new Set(['shiny', 'glinting', 'gleaming', 'glittering', 'glowing', 'sparkly', 'sparkling', 'cool', 'cold', 'warm', 'metal', 'metallic', 'small', 'little', 'tiny', 'big', 'large', 'heavy', 'old', 'worn', 'battered', 'dented', 'trusty', 'crumpled', 'damp', 'wet', 'sticky', 'dusty', 'dirty', 'clean', 'plain', 'simple', 'ordinary', 'cheap', 'new', 'favorite', 'favourite', 'beloved', 'sturdy', 'flimsy', 'smooth', 'squashed', 'crushed', 'bent', 'loose', 'spare', 'stray', 'lone', 'single']);
+
+/**
+ * Do two names mean the same item: the same words once lower-cased and
+ * without a leading article, or one is the other with describing words in
+ * front. Live (7MJXE5): Biz pressed the Pen into Liz's palm, then "the Shiny
+ * Pen in Liz’s hand" (a world item the extractor had named "Shiny Pen") gave
+ * her a second pen.
+ */
 export function sameItem(a: string, b: string): boolean {
   const norm = (s: string) => s.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' ');
-  return norm(a) === norm(b);
+  const na = norm(a);
+  const nb = norm(b);
+  if (na === nb) return true;
+  const [short, long] = na.length <= nb.length ? [na, nb] : [nb, na];
+  if (!short || !long.endsWith(` ${short}`)) return false;
+  const extra = long.slice(0, long.length - short.length - 1).split(/[\s,]+/).filter(Boolean);
+  return extra.length > 0 && extra.every(w => DESCRIPTIVE.has(w));
 }
 
 const unquotedSentences = (text: string) => quoteRuns(text).filter(r => !r.quoted).map(r => r.text).join(' ').split(SENTENCES);
@@ -915,6 +934,9 @@ function showsTakenByOther(sentence: string, prev: string, holder: string, nouns
   return false;
 }
 
+/** A mouth closing on something: "beak snaps shut on", "jaws clamp around". */
+const EATING_MOUTH = String.raw`(?:beak|bill|jaws|jaw|mouth|teeth|maw|fangs)\s+(?:snaps?|snapped|clamps?|clamped|closes?|closed|shuts?|crunch(?:es)?|crunched|chomps?|chomped)\s+(?:shut\s+|down\s+)?(?:on|around|over|onto)`;
+
 /**
  * Words that say a thing is gone for good: destroyed, eaten, swallowed,
  * torn to uselessness, stolen, confiscated, lost. Completed forms only —
@@ -922,11 +944,22 @@ function showsTakenByOther(sentence: string, prev: string, holder: string, nouns
  */
 const LOSS = new RegExp([
   String.raw`\b(?:has|have|had|is|was|are|were|gets|got)\s+(?:just\s+|already\s+|now\s+|been\s+|completely\s+|utterly\s+)*(?:swallowed|eaten|devoured|gobbled(?:\s+up)?|destroyed|shredded|burned\s+up|burnt\s+up|stolen|confiscated|lost|ruined|torn\s+(?:apart|to\s+(?:shreds|pieces|bits)|in\s+(?:two|half)))`,
-  String.raw`\b(?:swallows|swallowed|devours|devoured|gobbles(?:\s+up)?|gobbled(?:\s+up)?|eats|ate|shreds|shredded|destroys|destroyed|steals|stole|confiscates|confiscated)\s+(?:up\s+)?(?:the|her|his|their|[A-Z][\w-]*['’]s)\b`,
+  String.raw`\b(?:swallows|swallowed|devours|devoured|gobbles(?:\s+up)?|gobbled(?:\s+up)?|eats|ate|chomps|chomped|munches|munched|crunches|crunched|wolfs(?:\s+down)?|wolfed(?:\s+down)?|gulps(?:\s+down)?|gulped(?:\s+down)?|shreds|shredded|destroys|destroyed|steals|stole|confiscates|confiscated)\s+(?:up\s+|down\s+)?(?:on\s+)?(?:the|her|his|their|[A-Z][\w-]*['’]s)\b`,
+  // "Barnaby's beak snaps shut on the granola bar"
+  String.raw`\b${EATING_MOUTH}\s+(?:the|her|his|their|[A-Z][\w-]*['’]s)\b`,
   String.raw`\b(?:tear|tears|tearing|tore|torn|rip|rips|ripping|ripped)\s+(?:it\s+|itself\s+)?(?:completely|apart|clean\s+through|to\s+(?:shreds|pieces|bits)|in\s+(?:two|half))`,
   String.raw`\buseless\s+(?:smear|pulp|scrap|mess|lump|shreds)`,
   String.raw`\b(?:crumbles?|crumbled|crumbling)\s+(?:in)?to\s+(?:dust|ash|ashes)`,
 ].join('|'), 'i');
+/**
+ * Words that say someone ate "it" — the thing named just before. Live
+ * (7MJXE5): "Liz snatches the granola bar … and hurls it …, just before
+ * Barnaby’s beak snaps shut on it with a satisfying *crunch*".
+ */
+const EAT_IT = new RegExp([
+  String.raw`\b(?:swallows|swallowed|devours|devoured|gobbles|gobbled|eats|ate|chomps|chomped|munches|munched|crunches|crunched|wolfs|wolfed|gulps|gulped)\s+(?:(?:down|up)\s+)?(?:on\s+)?it\b`,
+  String.raw`\b${EATING_MOUTH}\s+it\b`,
+].join('|'), 'gi');
 /** Before a loss word: it has not happened (yet). */
 const UNREAL_BEFORE = /\b(?:not|never|almost|nearly|if|unless|would|could|might|may|will|shall|['’]ll|about\s+to|threatens?\s+to|tries\s+to|trying\s+to|wants?\s+to|before|or)\b[^.!?]{0,30}$/i;
 
@@ -945,6 +978,23 @@ function showsLoss(sentence: string, nouns: string[]): boolean {
     const start = m.index!;
     const end = start + m[0].length;
     if (at.some(i => (i < start && start - i <= 60) || (i >= start && i - end <= 30))) return true;
+  }
+  return false;
+}
+
+/**
+ * Something ate "it", and the one item named before it in the sentence is
+ * `item` (see EAT_IT). Two things named before it, or none, and nothing is
+ * lost; a threat ("ready to gobble it up") is not a loss.
+ */
+function showsEatenIt(sentence: string, item: string, mentions: (t: string) => string[]): boolean {
+  for (const m of sentence.matchAll(EAT_IT)) {
+    const before = sentence.slice(0, m.index);
+    // "just before Barnaby’s beak snaps shut on it" happened; "before the goose eats it" has not.
+    const told = before.replace(/\b(?:just|right|moments?|seconds?|an\s+instant|a\s+heartbeat)\s+before\b/gi, ' ');
+    if (UNREAL_BEFORE.test(told) || /\b(?:ready|poised|about|going|eager|set)\s+to\b[^.!?]{0,20}$/i.test(before)) continue;
+    const named = mentions(before);
+    if (named.length === 1 && sameItem(named[0]!, item)) return true;
   }
   return false;
 }
@@ -1022,7 +1072,7 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
       const heldLike = [...inv].flatMap(([o, items]) => items.filter(i => itemNouns(i).some(n => nouns.includes(n))).map(() => o));
       // Two held keys: only a sentence naming the holder can say whose.
       if (heldLike.length > 1 && !new RegExp(`\\b${esc(firstName(owner))}\\b`).test(sentence)) continue;
-      if (showsLoss(sentence, nouns) || showsGivenAway(unquoted, owner, nouns, names) || showsTakenByOther(unquoted, prev, owner, nouns, names, mentions, item)) {
+      if (showsLoss(sentence, nouns) || showsEatenIt(unquoted, item, mentions) || showsGivenAway(unquoted, owner, nouns, names) || showsTakenByOther(unquoted, prev, owner, nouns, names, mentions, item)) {
         inv.set(owner, inv.get(owner)!.filter(i => i !== item));
         events.push({ kind: 'loss', from: owner, item });
       }
@@ -1058,6 +1108,31 @@ export function declaredTakes(action: string, candidates: string[]): string[] {
         && new RegExp(`^\\s+(?:up\\s+)?${DET}${ADJS}(?:${nouns.map(esc).join('|')})s?\\b`, 'i').test(after);
     });
     for (const c of named) if (!out.some(o => sameItem(o, c))) out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Known items a player's action reaches for as their own — "my granola bar",
+ * "the granola bar from my tote" — that are not on their line. Live
+ * (7MJXE5): the goose ate Liz's granola bar, then "I jam the granola bar
+ * from my tote into the Shiny Pen's glint…" was ruled as if she still had
+ * it. The action is not refused; the ruling is told it is gone. Something
+ * with the same head noun on hand ("my pen" with the Shiny Pen) is not
+ * missing. `known` in order of preference for the name reported.
+ */
+export function usesMissingItems(action: string, held: string[], known: string[]): string[] {
+  if (!action) return [];
+  const out: string[] = [];
+  for (const item of known) {
+    const nouns = itemNouns(item);
+    if (nouns.length === 0) continue;
+    const same = (o: string) => sameItem(o, item) || itemHead(o) === itemHead(item);
+    if (held.some(same) || out.some(same)) continue;
+    const N = `(?:${nouns.map(esc).join('|')})s?`;
+    const mine = new RegExp(`\\b(?:my|our)\\s+${ADJS}${N}\\b`, 'i');
+    const fromMine = new RegExp(`\\b(?:the|a|an|this|that|some)\\s+${ADJS}${N}\\s+(?:from|out\\s+of|in|inside)\\s+(?:my|our)\\b`, 'i');
+    if (mine.test(action) || fromMine.test(action)) out.push(item);
   }
   return out;
 }

@@ -527,6 +527,18 @@ export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string
   return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it.\n</items_on_hand>`;
 }
 
+/**
+ * The acting character reaches for something of theirs that is not on their
+ * line (usesMissingItems). Live (7MJXE5): the goose ate Liz's granola bar,
+ * then "I jam the granola bar from my tote into…" and the ruling went along
+ * with it. The action stands; the ruling redirects it gently.
+ */
+export function itemsNotOnHandBlock(name: string, items: string[]): string {
+  if (items.length === 0) return '';
+  const list = items.length === 1 ? `the ${items[0]}` : `${items.slice(0, -1).map(i => `the ${i}`).join(', ')} and the ${items[items.length - 1]}`;
+  return `\n<items_not_on_hand>\n${name}'s action reaches for ${list}, which is not on ${name}'s line in <items_on_hand>: it is gone — eaten, used up, given away or lost earlier in the story. Do not refuse the action, and do not let the item turn up: narrate ${name} reaching for it and finding it gone (a gentle beat, not a scolding), then resolve what they were trying to do with what they do have or with a quick improvisation.\n</items_not_on_hand>`;
+}
+
 export interface ScenePacing {
   sceneNumber: number;
   sceneTurnCount: number;
@@ -727,6 +739,8 @@ export class DmAgent {
     places: Array<{ name: string; description: string | null }>;
     /** The premise or backstories transport the party here: the arrival beat is required. */
     arrivalExpected?: boolean;
+    /** What each character carries (their starting kit): the only props the opening may put on them. */
+    inventories?: Array<{ name: string; inventory: string[] }>;
   }): Promise<DmOpening> {
     const { systemPrompt, criticalReminder } = this.buildSystemPrompt(ctx);
     const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
@@ -749,6 +763,9 @@ export class DmAgent {
         ? `\n<where they come from>\n${party.filter(p => p.backstory?.trim()).map(p => `- ${p.name}: ${clip(p.backstory!.trim(), 400)}`).join('\n')}\n</where they come from>`
         : '',
       placeList ? `\n<places>\n${placeList}\n</places>` : '',
+      // Live (7MJXE5): with no record in the prompt, the opening put a coffee
+      // mug in Liz's hand and a juice box in Biz's — neither was theirs.
+      opts.inventories ? itemsOnHandBlock(opts.inventories) : '',
       `\n<task>`,
       arrivalExpected
         ? `0. arrival: REQUIRED — 1-2 sentences of the moment of arrival itself, happening to ${names}: the lurch or fall or flash, landing or waking up here, blinking, disoriented, realising a moment ago they were somewhere else entirely. This is about THEM, not the place — it must never be scenery alone. The transport is told HERE and only here; the narration below picks up right after it.`
@@ -758,8 +775,10 @@ export class DmAgent {
         : arrivalExpected
         ? `1. narration: 3-5 vivid sentences that begin AFTER the arrival above, told from the characters' point of view. ${names} have ALREADY landed and are here now — do NOT narrate the transport again: no flash, no fall, no being pulled, hurled or swept out of anywhere, no "one moment… the next". Describe where they now stand and what hits them first, the strangeness of this world landing on people who have never seen it before — not scenery with nobody in it. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`
         : `1. narration: 3-5 vivid sentences told from the characters' point of view, at the exact moment the premise puts them here. Read the premise and where they come from: if they have just been transported, summoned, isekaied, shipwrecked or otherwise pulled out of their old lives, this scene IS their arrival — the moment they land or wake up here, disoriented, the strangeness of this world hitting people who have never seen it before. If they already belong here, open on them as the situation begins. Show the place as it lands on THEM — not just scenery or a description of the place with nobody in it. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`,
-      `2. introductions: one per party member, 1-2 sentences each, describing that character as the others would see them on first glance — look, bearing, manner — and stating what they are to each other exactly as the party block says (e.g. "Liz, Biz's mother, ..."). Never invent a relationship that is not stated, and never a gender: use only the relation words and pronouns the party block gives, and where it says gender is not stated, use the name or "they" and words like kid or child. Do not narrate what anyone calls anyone — that shows in their own dialogue. Use the party members' exact names.`,
-      `3. currentLocationName: copy one exact name from <places> if the party is at one of them, otherwise "".${personalityReminder}`,
+      `2. introductions: one per party member, 1-2 sentences each, describing that character as the others would see them on first glance — look, bearing, manner — and stating what they are to each other exactly as the party block says (e.g. "Liz, Biz's mother, ..."). Never invent a relationship that is not stated, and never a gender: use only the relation words and pronouns the party block gives, and where it says gender is not stated, use the name or "they" and words like kid or child. Do not narrate what anyone calls anyone — that shows in their own dialogue. Use the party members' exact names. If you show what someone is holding or carrying, show only what <items_on_hand> lists for them.`,
+      `3. currentLocationName: copy one exact name from <places> if the party is at one of them, otherwise "".`,
+      opts.inventories ? `PROPS: in the arrival, the narration and the introductions, a character holds, carries or was just holding only what <items_on_hand> lists for them — never invent a prop for them (a mug, a drink, a phone, a snack, a toy), not even one from the life they came from. Empty hands are fine.` : '',
+      personalityReminder.trim(),
       `Respond as JSON: { "arrival": "${arrivalExpected ? '...' : ''}", "narration": "...", "introductions": [{ "name": "exact character name", "text": "..." }], "currentLocationName": "..." }`,
       `</task>`,
     ].filter(Boolean).join('\n');
@@ -774,7 +793,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean; inventory?: string[] }> }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean; inventory?: string[] }>; missingItems?: string[] }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
@@ -822,6 +841,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     const userMessage = [
       charBlock ? `<character>\n${charBlock.trim()}\n</character>` : '',
       characterInfo ? itemsOnHandBlock([{ name: characterInfo.name, inventory: characterInfo.inventory }, ...(characterInfo.partyMembers ?? [])]) : '',
+      characterInfo?.missingItems?.length ? itemsNotOnHandBlock(characterInfo.name, characterInfo.missingItems) : '',
       `\n<action>\n${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n</action>`,
       ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',
       `\n<context>\n${recentTranscript}\n</context>`,

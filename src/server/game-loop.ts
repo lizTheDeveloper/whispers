@@ -27,10 +27,11 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, changedSpan, softenForChildren, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, changedSpan, softenForChildren, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
+import { startingKit } from './starting-kit.js';
 
 /**
  * Consecutive turns with no whisper from any human before the table pauses
@@ -787,6 +788,24 @@ export class GameLoop {
     return changed;
   }
 
+  /**
+   * Things the action reaches for as the character's own that are not in
+   * their inventory: their starting kit and the world's items, when the
+   * action says "my granola bar" or "the granola bar from my tote". The
+   * ruling is told they are gone (itemsNotOnHandBlock); nothing is blocked.
+   */
+  private missingItemsFor(c: Character, action: string): string[] {
+    try {
+      const known = [...startingKit(c.definition), ...this.worldBible.getItemNames(this.campaignId)];
+      const missing = usesMissingItems(action, c.state.inventory ?? [], known);
+      if (missing.length > 0) console.log(`[items] ${c.definition.name}'s action reaches for ${missing.map(m => `"${m}"`).join(', ')}, not on hand — the ruling is told it is gone`);
+      return missing;
+    } catch (err) {
+      console.error('[items] missing-item check failed, ruling without it:', err);
+      return [];
+    }
+  }
+
   private applyDeclaredTakenOut(prose: string): void {
     for (const c of this.characters.values()) {
       if (isTakenOut(c.state)) continue;
@@ -852,7 +871,10 @@ export class GameLoop {
         // The opening alone also reads backstories: where they come from decides how they arrive.
         party: this.partyForDm({ withBackstory: true }),
         gentlePeril: this.gentlePeril(),
-      }, { premise, scenarioOpening, places, arrivalExpected }), (e) => {
+      }, {
+        premise, scenarioOpening, places, arrivalExpected,
+        inventories: Array.from(this.characters.values()).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })),
+      }), (e) => {
       console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
       return null;
     });
@@ -1678,6 +1700,7 @@ export class GameLoop {
           stress: character.state.stress, consequences: character.state.consequences, fatePoints: character.state.fatePoints,
           aspects: character.definition.aspects, highConcept: character.definition.highConcept, trouble: character.definition.trouble,
           inventory: character.state.inventory,
+          missingItems: this.missingItemsFor(character, decision.chosenAction),
           partyMembers: Array.from(this.characters.entries())
             .filter(([id]) => id !== characterId)
             .map(([id, c]) => ({ id, name: c.definition.name, inventory: c.state.inventory ?? [], ...(isTakenOut(c.state) ? { takenOut: true } : {}) })),

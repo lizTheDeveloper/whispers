@@ -9,7 +9,9 @@ import type { CharacterDefinition } from '../shared/types.js';
  *
  * Deterministic and conservative: only an aspect (or the high concept) that
  * says the character carries something — "Carrying …", "Armed with …",
- * "Never without …", "<a bag> with …", "<a pocket> full of …" — and only
+ * "Never without …", "<a bag> with …", "<a pocket> full of …", "<a bag>
+ * contains/holds …" (live 7MJXE5: "Tote bag contains a granola bar", "Tote
+ * bag contains a pen" seeded only the canvas tote) — and only
  * concrete things: "the weight of the world", "a grudge", "a heavy heart"
  * are not kit.
  */
@@ -17,7 +19,11 @@ export function startingKit(def: Pick<CharacterDefinition, 'aspects' | 'highConc
   const kit: string[] = [];
   const add = (item: string) => {
     const name = item.charAt(0).toUpperCase() + item.slice(1);
-    if (!kit.some(k => k.toLowerCase() === name.toLowerCase())) kit.push(name);
+    const lower = name.toLowerCase();
+    // "Canvas tote bag" and "Tote bag" are one bag: keep the fuller name.
+    const same = kit.findIndex(k => { const l = k.toLowerCase(); return l === lower || l.endsWith(` ${lower}`) || lower.endsWith(` ${l}`); });
+    if (same < 0) kit.push(name);
+    else if (name.length > kit[same]!.length) kit[same] = name;
   };
   for (const phrase of [...(def.aspects ?? []), def.highConcept ?? '']) {
     for (const item of kitIn(phrase)) add(item);
@@ -25,7 +31,7 @@ export function startingKit(def: Pick<CharacterDefinition, 'aspects' | 'highConc
   return kit;
 }
 
-const CONTAINER = String.raw`(?:tote\s+bag|bag|backpack|rucksack|satchel|pouch|purse|pack|knapsack|basket|box|tin|case|briefcase|suitcase|pocket|pockets|apron|belt|bandolier|toolbelt|tool\s+belt|lunchbox)`;
+const CONTAINER = String.raw`(?:tote\s+bag|tote|bag|backpack|rucksack|satchel|pouch|purse|pack|knapsack|basket|box|tin|case|briefcase|suitcase|pocket|pockets|apron|belt|bandolier|toolbelt|tool\s+belt|lunchbox)`;
 const CARRY = /\b(?:carrying|carries|carry|packing|packs|armed\s+with|equipped\s+with|never\s+without|always\s+has|has\s+(?:a|an|her|his|their|my)\b)/i;
 /** Heads that are never a thing in the hand. */
 const ABSTRACT = new Set(['weight', 'burden', 'burdens', 'grudge', 'grudges', 'secret', 'secrets', 'heart', 'hope', 'hopes', 'dream', 'dreams', 'memory', 'memories', 'past', 'guilt', 'grief', 'sorrow', 'pride', 'fear', 'fears', 'shame', 'name', 'reputation', 'debt', 'debts', 'promise', 'promises', 'curse', 'chip', 'torch' /* "carrying a torch for" */, 'attitude', 'temper', 'smile', 'plan', 'plans', 'score', 'vendetta', 'mission', 'purpose', 'destiny', 'responsibility', 'responsibilities', 'doubt', 'doubts', 'wound', 'wounds', 'scar', 'scars', 'grin', 'mind', 'soul', 'voice', 'luck', 'knack', 'gift', 'talent', 'way', 'lot', 'history', 'reason', 'point']);
@@ -52,6 +58,14 @@ function kitIn(phrase: string): string[] {
     if (inBag) return [...things(inBag[1]!), ...list(inBag[2]!)];
     return list(lead + rest);
   }
+  // "Tote bag contains a pen", "My backpack holds a flashlight and a map",
+  // "A tote bag with a pen and a granola bar inside".
+  const holds = text.match(new RegExp(String.raw`^(?:(?:a|an|the|her|his|their|my)\s+)?((?:[\w-]+\s+){0,2}?${CONTAINER})\s+(?:contains?|containing|holds?|holding|with)\s+(.+)$`, 'i'));
+  if (holds) {
+    if (!/^pockets?$/i.test(holds[1]!)) out.push(...things(holds[1]!));
+    out.push(...list(holds[2]!));
+    return out;
+  }
   // A container named with its contents anywhere else: "…with a tote bag holding a pen".
   const bag = text.match(new RegExp(String.raw`\b((?:a|an|her|his|their|my)\s+(?:[\w-]+\s+)?${CONTAINER})\s+(?:with|holding|containing)\s+(.+)$`, 'i'));
   if (bag) return [...things(bag[1]!), ...list(bag[2]!)];
@@ -60,7 +74,7 @@ function kitIn(phrase: string): string[] {
 
 /** "a granola bar and a pen", "a rusty sword, a wooden shield" → each thing. */
 function list(text: string): string[] {
-  const clause = text.split(/[;.:!?—–(]|\s-\s|\b(?:that|which|who|because|since|for|to|from|in|at|on|while|but)\b/i)[0]!;
+  const clause = text.split(/[;.:!?—–(]|\s-\s|\b(?:that|which|who|because|since|for|to|from|in|inside|within|at|on|while|but)\b/i)[0]!;
   return clause.split(/,\s*(?:and\s+)?|\s+and\s+|\s+&\s+/i).flatMap(things);
 }
 
