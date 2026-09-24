@@ -76,9 +76,14 @@ describe('2. an adjective variant is the item already held', () => {
     expect(narratedItemEvents(GOOSE_EYES_PEN, party, WORLD_ITEMS)).toEqual([]);
   });
 
-  it('"the Shiny Pen in Liz’s hand" while Biz holds the Pen moves that pen, not a new one', () => {
+  // Relaxed in round 14: this used to move Biz's pen to Liz from prose that
+  // never names Biz — the same inference that moved Liz's granola bar to Biz
+  // when "Mama Pigeon … offers a granola bar to Biz" (live 7RAAQ7). A
+  // companion's thing now moves from prose only when that companion is named;
+  // otherwise the DM's itemMoves say who gave it. Still never a second pen.
+  it('"the Shiny Pen in Liz’s hand" while Biz holds the Pen: no new pen, and Biz\'s moves only by itemMoves (Biz is not named)', () => {
     const party = [{ name: 'Liz', inventory: ['Canvas tote bag'] }, { name: 'Biz', inventory: ['Bottle caps', 'Pen'] }];
-    expect(narratedItemEvents(GOOSE_EYES_PEN, party, WORLD_ITEMS)).toEqual([{ kind: 'gain', to: 'Liz', item: 'Pen', from: 'Biz' }]);
+    expect(narratedItemEvents(GOOSE_EYES_PEN, party, WORLD_ITEMS)).toEqual([]);
   });
 });
 

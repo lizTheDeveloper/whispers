@@ -34,6 +34,7 @@ import {
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
 import { startingKit } from './starting-kit.js';
+import { planItemMoves, endingItemsBlock, type ItemMove, type AppliedMove } from './item-moves.js';
 import { SENTENCE_SPLIT } from './sentences.js';
 
 /**
@@ -197,6 +198,13 @@ export class GameLoop {
    * gone anyway (goneItems).
    */
   private itemsLeftParty: string[] = [];
+  /**
+   * Things a party member set down in the world by an itemMove (Liz's pen
+   * scattered from her torn tote, the Silver Key slipping from Biz's
+   * fingers): no longer on hand, but not gone for good — they can be picked
+   * up again. Volatile, like itemsLeftParty.
+   */
+  private itemsDropped: string[] = [];
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private pendingWhisperCharacterId: string | null = null;
   // Out-of-window whispers wait here for their character's next decision
@@ -820,7 +828,7 @@ export class GameLoop {
    * lost, taken or given away leaves its holder. Returns the characters
    * whose inventory changed.
    */
-  private trackNarratedItems(prose: string, actorId?: string, released: Array<{ from: string; item: string }> = []): Set<string> {
+  private trackNarratedItems(prose: string, actorId?: string, released: Array<{ from: string; item: string }> = [], check: { moves?: AppliedMove[]; goneBefore?: string[]; removedFrom?: Map<string, string[]> } = {}): Set<string> {
     const changed = new Set<string>();
     if (!prose || this.characters.size === 0) return changed;
     try {
@@ -832,7 +840,32 @@ export class GameLoop {
         c.state.inventory = before.filter(i => !sameItem(i, item));
         if (c.state.inventory.length !== before.length) changed.add(c.id);
       };
+      // The DM's itemMoves are the record; the prose only cross-checks them.
+      const moves = check.moves;
+      const moved = (item: string) => (moves ?? []).filter(m => sameItem(m.item, item));
+      const goneBefore = check.goneBefore ?? [];
       for (const e of narratedItemEvents(prose, party, this.worldBible.getItemNames(this.campaignId), { released })) {
+        const said = e.kind === 'gain' ? `${e.to} gains "${e.item}"${e.from ? ` from ${e.from}` : ''}` : `${e.from} loses "${e.item}"`;
+        const same = moved(e.item);
+        if (same.length > 0) {
+          const agrees = e.kind === 'gain'
+            ? same.some(m => m.to.kind === 'pc' && m.to.name === e.to)
+            : same.some(m => m.from.kind === 'pc' && m.from.name === e.from && m.to.kind !== 'pc');
+          if (!agrees) console.log(`[items] cross-check: the prose reads as "${said}", the DM's itemMoves say otherwise — keeping the moves`);
+          continue;
+        }
+        // Gone is gone: an item eaten, used up or given away before this beat,
+        // or taken from this member by this very ruling, never comes back from
+        // prose alone (live 7RAAQ7: the clerk ate Biz's bar, then "Biz now
+        // holds 'Granola Bar'" off the extractor's world item of that name).
+        if (e.kind === 'gain' && !e.from) {
+          const to = byName(e.to);
+          if (goneBefore.some(g => sameItem(g, e.item)) || (to && (check.removedFrom?.get(to.id) ?? []).some(r => sameItem(r, e.item)))) {
+            console.log(`[items] cross-check: the prose reads as "${said}", but it is gone — only an itemMove can bring it back`);
+            continue;
+          }
+        }
+        if (moves) console.log(`[items] cross-check: the DM's itemMoves left out "${said}"; the prose shows it plainly, applying it`);
         if (e.kind === 'gain') {
           const to = byName(e.to);
           if (!to) continue;
@@ -862,6 +895,7 @@ export class GameLoop {
         for (const claim of claims) {
           const heldBy = chars.find(o => (o.state.inventory ?? []).some(i => sameItem(i, claim.item)));
           if (heldBy) continue; // someone has it now: the claim is settled
+          if (goneBefore.some(g => sameItem(g, claim.item))) continue;
           if (confirmsClaim(prose, c.definition.name, claim.item, { ownRuling: cid === actorId, party: partyNames, pronouns: this.ownPronouns(c) ?? c.definition.pronouns })) {
             c.state.inventory = [...(c.state.inventory ?? []), claim.item];
             changed.add(cid);
@@ -893,6 +927,96 @@ export class GameLoop {
       return missing;
     } catch (err) {
       console.error('[items] missing-item check failed, ruling without it:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Apply the DM's itemMoves (see item-moves.ts): each is checked against the
+   * real inventories, refused when it does not fit, and the world bible
+   * follows. Returns who changed and the moves that stood.
+   */
+  private applyItemMoves(moves: ItemMove[]): { changed: Set<string>; applied: AppliedMove[] } {
+    const changed = new Set<string>();
+    try {
+      const chars = Array.from(this.characters.values());
+      const plan = planItemMoves(moves, chars.map(c => ({ id: c.id, name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })), { worldItems: this.worldBible.getItemNames(this.campaignId) });
+      for (const note of plan.rejected) console.warn(note);
+      for (const note of plan.notes) console.log(note);
+      for (const c of chars) {
+        const before = c.state.inventory ?? [];
+        const after = plan.inventories.get(c.id) ?? before;
+        if (after.length !== before.length || after.some((x, i) => x !== before[i])) {
+          c.state.inventory = after;
+          changed.add(c.id);
+        }
+      }
+      const undrop = (item: string) => { this.itemsDropped = this.itemsDropped.filter(d => !sameItem(d, item)); };
+      for (const m of plan.applied) {
+        if (m.to.kind === 'pc') {
+          undrop(m.item);
+          this.worldBible.placeItem(this.campaignId, m.item, { holderId: m.to.id });
+        } else if (m.to.kind === 'world') {
+          this.worldBible.placeItem(this.campaignId, m.item, {});
+          if (m.from.kind === 'pc') {
+            if (!this.itemsDropped.some(d => sameItem(d, m.item))) this.itemsDropped.push(m.item);
+            this.noteItemLeft(m.item);
+          }
+        } else {
+          undrop(m.item);
+          this.worldBible.placeItem(this.campaignId, m.item, m.to.kind === 'npc' ? { npcName: m.to.name } : { gone: true });
+          if (m.from.kind === 'pc') this.noteItemLeft(m.item);
+        }
+      }
+      return { changed, applied: plan.applied };
+    } catch (err) {
+      console.error('[items] applying the DM\'s itemMoves failed, inventories left as they were:', err);
+      return { changed, applied: [] };
+    }
+  }
+
+  /** Each member's inventory by id, for noting what a beat took away. */
+  private inventorySnapshot(): Map<string, string[]> {
+    return new Map(Array.from(this.characters.values()).map(c => [c.id, [...(c.state.inventory ?? [])]]));
+  }
+
+  /** What each member held in `before` and no longer holds. */
+  private removedSince(before: Map<string, string[]>): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    for (const [id, items] of before) {
+      const now = this.characters.get(id)?.state.inventory ?? [];
+      const gone = items.filter(i => !now.some(n => sameItem(n, i)));
+      if (gone.length > 0) out.set(id, gone);
+    }
+    return out;
+  }
+
+  /**
+   * Gone for good: what left the party (goneItems) except things set down in
+   * the world, which can still be picked up. For the DM's <items_on_hand>,
+   * and so prose alone never brings one back.
+   */
+  private goneForGood(): string[] {
+    return this.goneItems().filter(g => !this.itemsDropped.some(d => sameItem(d, g)));
+  }
+
+  /**
+   * The world's items no party member holds, with the NPC holding each (if
+   * the record names one), for the DM's <items_on_hand>. Gone things and
+   * things a member holds under that name are left out.
+   */
+  private worldItemsForPrompt(): Array<{ name: string; heldBy: string | null }> {
+    try {
+      const held = Array.from(this.characters.values()).flatMap(c => c.state.inventory ?? []);
+      const gone = this.goneForGood();
+      const out: Array<{ name: string; heldBy: string | null }> = [];
+      for (const p of this.worldBible.getItemPlaces(this.campaignId)) {
+        if (p.gone || held.some(h => sameItem(h, p.name)) || gone.some(g => sameItem(g, p.name)) || out.some(o => sameItem(o.name, p.name))) continue;
+        out.push({ name: p.name, heldBy: p.heldBy });
+      }
+      return out.slice(0, 20);
+    } catch (err) {
+      console.error('[items] world item list failed, prompting without it:', err);
       return [];
     }
   }
@@ -1264,6 +1388,8 @@ export class GameLoop {
         sceneTurnCount: this.sceneTurnCount,
         characterSummaries: this.getCharacterSummaries(),
         partyInventories: Array.from(this.characters.values()).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })),
+        worldItems: this.worldItemsForPrompt(),
+        goneItems: this.goneForGood(),
         partySize: this.characters.size || 1,
         sessionTurnCount: this.state.currentTurn,
         locationTurnCount: this.locationTurnCount,
@@ -1284,7 +1410,7 @@ export class GameLoop {
       return narration;
     }, (e) => {
       console.error('[game-loop] narration failed:', e);
-      return { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [] as string[], isSceneEnd: false };
+      return { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [] as string[], isSceneEnd: false, itemMoves: undefined } as DmNarrationResult;
     });
     if (!narration) return;
     const checkedNarration = await this.checkedProse(narration.narration);
@@ -1330,7 +1456,14 @@ export class GameLoop {
       this.applyDeclaredTakenOut(narration.narration);
       // A narration beat can hand things over or destroy them too (live:
       // "'The Alphabet has swallowed the key,' he hisses").
-      for (const cid of this.trackNarratedItems(narration.narration)) {
+      // The beat's own itemMoves first (live 7RAAQ7: "the Silver Key slips
+      // from Biz's fingers" registered nowhere), then the prose cross-check.
+      const goneBefore = this.goneForGood();
+      const before = this.inventorySnapshot();
+      const moved = narration.itemMoves && narration.itemMoves.length > 0 ? this.applyItemMoves(narration.itemMoves) : undefined;
+      const changed = new Set<string>(moved?.changed ?? []);
+      for (const cid of this.trackNarratedItems(narration.narration, undefined, [], { moves: narration.itemMoves ? moved?.applied ?? [] : undefined, goneBefore, removedFrom: this.removedSince(before) })) changed.add(cid);
+      for (const cid of changed) {
         const c = this.characters.get(cid);
         if (!c) continue;
         this.sendStateUpdate(cid, c.state);
@@ -1840,6 +1973,8 @@ export class GameLoop {
           aspects: character.definition.aspects, highConcept: character.definition.highConcept, trouble: character.definition.trouble,
           inventory: character.state.inventory,
           missingItems: this.missingItemsFor(character, decision.chosenAction),
+          worldItems: this.worldItemsForPrompt(),
+          goneItems: this.goneForGood(),
           partyMembers: Array.from(this.characters.entries())
             .filter(([id]) => id !== characterId)
             .map(([id, c]) => ({ id, name: c.definition.name, inventory: c.state.inventory ?? [], ...(isTakenOut(c.state) ? { takenOut: true } : {}) })),
@@ -1981,6 +2116,20 @@ export class GameLoop {
     // add was dropped and the pen vanished), and one from a stack is a single
     // (see reconcileItemChanges).
     const partyBefore = Array.from(this.characters.values()).map(c => ({ id: c.id, name: c.definition.name, inventory: [...(c.state.inventory ?? [])] }));
+    const goneBefore = this.goneForGood();
+    const inventoriesBefore = this.inventorySnapshot();
+    // The ruling's itemMoves are the record (see item-moves.ts). When it sent
+    // any, its inventory stateChanges — the older way of saying the same —
+    // are set aside so nothing moves twice; with none, those stateChanges
+    // are reconciled as before.
+    let moved: { changed: Set<string>; applied: AppliedMove[] } | undefined;
+    if (resolution.itemMoves && resolution.itemMoves.length > 0) {
+      const legacy = resolution.stateChanges.filter(c => c.field === 'inventory');
+      if (legacy.length > 0) console.log(`[items] the ruling sent itemMoves; its ${legacy.length} inventory stateChange(s) are set aside`);
+      resolution.stateChanges = resolution.stateChanges.filter(c => c.field !== 'inventory');
+      moved = this.applyItemMoves(resolution.itemMoves);
+      for (const cid of moved.changed) affectedCharIds.add(cid);
+    }
     const released = [
       ...resolution.stateChanges.filter(c => c.field === 'inventory' && c.action === 'remove' && typeof c.value === 'string' && c.characterId && this.characters.has(c.characterId))
         .map(c => ({ from: this.characters.get(c.characterId!)!.definition.name, item: c.value as string })),
@@ -2053,13 +2202,13 @@ export class GameLoop {
     // "The Fading Form in her grip shudders").
     if (resolution.outcome !== 'failure') {
       const holds = (item: string) => Array.from(this.characters.values()).some(c => (c.state.inventory ?? []).some(i => sameItem(i, item)));
-      const claims = declaredTakes(decision.chosenAction, this.worldBible.getItemNames(this.campaignId)).filter(item => !holds(item));
+      const claims = declaredTakes(decision.chosenAction, this.worldBible.getItemNames(this.campaignId)).filter(item => !holds(item) && !goneBefore.some(g => sameItem(g, item)));
       if (claims.length > 0) {
         const kept = (this.itemClaims.get(characterId) ?? []).filter(c => !claims.some(n => sameItem(n, c.item)));
         this.itemClaims.set(characterId, [...kept, ...claims.map(item => ({ item, beats: 6 }))]);
       }
     }
-    for (const cid of this.trackNarratedItems(resolution.narration, characterId, released)) affectedCharIds.add(cid);
+    for (const cid of this.trackNarratedItems(resolution.narration, characterId, released, { moves: resolution.itemMoves ? moved?.applied ?? [] : undefined, goneBefore, removedFrom: this.removedSince(inventoriesBefore) })) affectedCharIds.add(cid);
     for (const item of partyBefore.flatMap(p => p.inventory)) this.noteItemLeft(item);
 
     for (const cid of affectedCharIds) {
@@ -2418,7 +2567,7 @@ export class GameLoop {
     try {
       const baseMessages = [
           { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Credit every deed to whoever did it in the record — what an NPC did, opened or revealed is never a party member's doing. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. Never mention the whispers, "the voice" or any voice the characters heard — each is private to one player. ${EPILOGUE_RECORD_RULE} ${ENDING_FACTS_RULE}${cast ? ` ${cast}` : ''}${toneRule ? ` ${toneRule}` : ''}` },
-          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.${gentle ? ' This is a gentle table: end somewhere safe and hopeful.' : ''}` },
+          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${this.endingItems()}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.${gentle ? ' This is a gentle table: end somewhere safe and hopeful.' : ''}` },
         ];
       const write = (messages: Array<{ role: string; content: string }>) => callProse({
         messages,
@@ -2463,6 +2612,15 @@ export class GameLoop {
     }
 
     await this.generateCharacterClosingReflections(scenes, currentScene, facts, epilogueText);
+  }
+
+  /**
+   * What each member holds at the end and what is gone, for the epilogue and
+   * the closing reflections (live 7RAAQ7: "I will keep the granola bar in my
+   * pocket for later" — the clerk had eaten it).
+   */
+  private endingItems(): string {
+    return endingItemsBlock(Array.from(this.characters.values()).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })), this.goneForGood());
   }
 
   /** The last few rulings, verbatim — unless the unfinished scene's story already carries them. */
@@ -2539,7 +2697,7 @@ export class GameLoop {
       try {
         const reflectionMessages = [
             { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Both lines are shown to everyone at the table: never mention a whisper, "the voice" or any voice you heard. ${cast}${toneRule ? ` ${toneRule}` : ''} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your inner reflection` },
-            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nLooking back: ${trustArc}\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.${where}\n\nWhat happened: ${sceneSummaries}${ending}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. Your memories include plans and hopes, not only things that happened: only the record and the ending say what happened. One line each. ${ENDING_FACTS_RULE}${facts}` },
+            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nLooking back: ${trustArc}\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.${where}\n\nWhat happened: ${sceneSummaries}${ending}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. Your memories include plans and hopes, not only things that happened: only the record and the ending say what happened. One line each. ${ENDING_FACTS_RULE}${this.endingItems()}${facts}` },
           ];
         const write = (messages: Array<{ role: string; content: string }>) => callProse({
           messages,
@@ -2748,7 +2906,8 @@ export class GameLoop {
     const state = char.state as unknown as Record<string, unknown>;
     if (action === 'set') {
       if (Array.isArray(state[field]) && !Array.isArray(value)) {
-        (state[field] as unknown[]).push(value);
+        const arr = state[field] as unknown[];
+        if (!(field === 'inventory' && typeof value === 'string' && arr.some(i => typeof i === 'string' && sameItem(i, value)))) arr.push(value);
       } else {
         state[field] = value;
       }

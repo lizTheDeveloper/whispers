@@ -15,6 +15,10 @@ export interface WorldBibleDiff {
 
 function genId(): string { return randomBytes(16).toString('hex'); }
 
+/** SQL: an item not marked gone for good (eaten, used up, destroyed — see placeItem). */
+const goneSql = (col = 'properties') => `COALESCE(CASE WHEN json_valid(${col}) THEN json_extract(${col}, '$.gone') END, 0)`;
+const NOT_GONE = `${goneSql()} = 0`;
+
 function escapeRegExp(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 /** Whole-word (letter/digit-bounded) occurrence of `needle` in `text`. */
@@ -344,7 +348,7 @@ export class WorldBible {
       ).join(', '));
     }
 
-    const unusedItems = this.db.prepare('SELECT name, description FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL').all(campaignId) as any[];
+    const unusedItems = this.db.prepare(`SELECT name, description FROM items WHERE campaign_id = ? AND holder_id IS NULL AND location_id IS NULL AND ${NOT_GONE}`).all(campaignId) as any[];
     if (unusedItems.length > 0) {
       parts.push('Unclaimed items: ' + unusedItems.map((i: any) => i.name).join(', '));
     }
@@ -393,8 +397,8 @@ export class WorldBible {
       }
     }
     const unclaimedItems = locationId
-      ? this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND (location_id = ? OR location_id IS NULL) LIMIT 5').all(campaignId, locationId) as any[]
-      : this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL LIMIT 5').all(campaignId) as any[];
+      ? this.db.prepare(`SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND (location_id = ? OR location_id IS NULL) AND ${NOT_GONE} LIMIT 5`).all(campaignId, locationId) as any[]
+      : this.db.prepare(`SELECT name FROM items WHERE campaign_id = ? AND holder_id IS NULL AND ${NOT_GONE} LIMIT 5`).all(campaignId) as any[];
     if (unclaimedItems.length > 0) {
       parts.push('Items you could pick up: ' + unclaimedItems.map((i: any) => i.name).join(', '));
     }
@@ -471,8 +475,8 @@ export class WorldBible {
     }
 
     const items = locationId
-      ? this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND known_to_party = 1 AND holder_id IS NULL AND (location_id = ? OR location_id IS NULL) LIMIT 5').all(campaignId, locationId) as any[]
-      : this.db.prepare('SELECT name FROM items WHERE campaign_id = ? AND known_to_party = 1 AND holder_id IS NULL LIMIT 5').all(campaignId) as any[];
+      ? this.db.prepare(`SELECT name FROM items WHERE campaign_id = ? AND known_to_party = 1 AND holder_id IS NULL AND (location_id = ? OR location_id IS NULL) AND ${NOT_GONE} LIMIT 5`).all(campaignId, locationId) as any[]
+      : this.db.prepare(`SELECT name FROM items WHERE campaign_id = ? AND known_to_party = 1 AND holder_id IS NULL AND ${NOT_GONE} LIMIT 5`).all(campaignId) as any[];
     if (items.length > 0) {
       parts.push('Items you have seen: ' + items.map((i: any) => i.name).join(', '));
     }
@@ -512,15 +516,17 @@ export class WorldBible {
       `SELECT i.name,
               COALESCE(e.name, json_extract(c.definition, '$.name')) AS holder_name,
               i.holder_id AS holder_id,
-              l.name AS location_name
+              l.name AS location_name,
+              ${goneSql('i.properties')} AS gone
        FROM items i
        LEFT JOIN entities e ON i.holder_id = e.id
        LEFT JOIN characters c ON i.holder_id = c.id
        LEFT JOIN locations l ON i.location_id = l.id
        WHERE i.campaign_id = ? AND i.known_to_party = 1
        ORDER BY i.name`
-    ).all(campaignId) as Array<{ name: string; holder_name: string | null; holder_id: string | null; location_name: string | null }>).map(i =>
-      i.holder_name ? `${i.name} — last held by ${i.holder_name}`
+    ).all(campaignId) as Array<{ name: string; holder_name: string | null; holder_id: string | null; location_name: string | null; gone: number }>).map(i =>
+      i.gone ? `${i.name} — gone (eaten, used up or destroyed); nobody has it`
+        : i.holder_name ? `${i.name} — last held by ${i.holder_name}`
         : i.holder_id ? `${i.name} — held by someone the record does not name`
         : i.location_name ? `${i.name} — last seen at ${i.location_name}, not carried by the party`
         : `${i.name} — not carried by anyone in the party`);
@@ -535,6 +541,47 @@ export class WorldBible {
   /** Every item the world knows of, by name — what DM prose can show someone picking up. */
   getItemNames(campaignId: string): string[] {
     return (this.db.prepare('SELECT name FROM items WHERE campaign_id = ?').all(campaignId) as Array<{ name: string }>).map(r => r.name);
+  }
+
+  /**
+   * Every item and where it is: the NPC holding it (by name), whether a player
+   * character holds it on record, and whether it is gone for good. For the
+   * DM's <items_on_hand> world list.
+   */
+  getItemPlaces(campaignId: string): Array<{ name: string; heldBy: string | null; heldByPc: boolean; gone: boolean }> {
+    return (this.db.prepare(
+      `SELECT i.name, e.name AS npc, c.id AS pc, ${goneSql('i.properties')} AS gone
+       FROM items i
+       LEFT JOIN entities e ON i.holder_id = e.id
+       LEFT JOIN characters c ON i.holder_id = c.id
+       WHERE i.campaign_id = ?`
+    ).all(campaignId) as Array<{ name: string; npc: string | null; pc: string | null; gone: number }>)
+      .map(r => ({ name: r.name, heldBy: r.npc, heldByPc: !!r.pc, gone: !!r.gone }));
+  }
+
+  /**
+   * Put an item where the DM's itemMoves say it is (see item-moves.ts): with
+   * a player character (holderId), with an NPC (npcName), lying in the world
+   * (neither), or gone for good. A thing set down in the world that the world
+   * does not know yet ("Pen" from Liz's torn tote) becomes a world item, so
+   * it can be picked up again.
+   */
+  placeItem(campaignId: string, itemName: string, place: { holderId?: string | null; npcName?: string | null; gone?: boolean }): void {
+    let row = this.db.prepare('SELECT id, properties FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, itemName) as { id: string; properties: string | null } | undefined;
+    if (!row) {
+      // Only a thing set down in the world is new to it; one in someone's keeping or gone needs no record.
+      if (place.gone || place.holderId || place.npcName) return;
+      this.addItem({ id: genId(), campaignId, name: itemName, description: null, properties: {}, holderId: null, locationId: null }, true);
+      row = this.db.prepare('SELECT id, properties FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, itemName) as { id: string; properties: string | null };
+    }
+    const npc = place.npcName
+      ? (this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, place.npcName) as { id: string } | undefined)?.id ?? null
+      : null;
+    let props: Record<string, unknown> = {};
+    try { props = row.properties ? JSON.parse(row.properties) : {}; } catch { props = {}; }
+    if (place.gone) props.gone = 1; else delete props.gone;
+    this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1, properties = ? WHERE id = ?')
+      .run(place.gone ? null : (place.holderId ?? npc), JSON.stringify(props), row.id);
   }
 
   updateItemHolder(campaignId: string, itemName: string, holderId: string | null): void {

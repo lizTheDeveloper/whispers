@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import { parseItemMoves } from '../item-moves.js';
+
+/**
+ * Every move of a thing the DM's prose makes, as data (see item-moves.ts).
+ * Absent (undefined) when the DM sent no itemMoves field at all.
+ */
+const ItemMoves = z.unknown().optional().transform(parseItemMoves);
 
 export const DmNarrationSchema = z.object({
   narration: z.string().min(1),
@@ -8,6 +15,7 @@ export const DmNarrationSchema = z.object({
     z.object({ name: z.string() }).passthrough().transform(o => o.name),
   ])),
   isSceneEnd: z.boolean().default(false),
+  itemMoves: ItemMoves,
 });
 export type DmNarration = z.infer<typeof DmNarrationSchema>;
 
@@ -40,6 +48,7 @@ export const DmResolutionSchema = z.object({
   stateChanges: z.array(StateChangeItem).default([]).transform(items =>
     items.filter((item): item is Exclude<typeof item, string> => typeof item !== 'string')
   ),
+  itemMoves: ItemMoves,
 });
 export type DmResolution = z.infer<typeof DmResolutionSchema>;
 

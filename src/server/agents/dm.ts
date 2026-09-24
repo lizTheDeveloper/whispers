@@ -531,11 +531,40 @@ Storytelling principles:
  * cap she had given away out of her tote, and a pen "eaten by the storm"
  * turned up again.
  */
-export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string[] }>): string {
+export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string[] }>, extra: { world?: Array<{ name: string; heldBy?: string | null }>; gone?: string[] } = {}): string {
   if (party.length === 0) return '';
   const lines = party.map(p => `- ${p.name}: ${p.inventory && p.inventory.length > 0 ? p.inventory.join(', ') : 'nothing'}`);
-  return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it and the thing itself ("the pen lands in Biz's palm", not just "it" or "a soft arc of black plastic"). One from a stack (a bottle cap from "Bottle caps") is one: the giver keeps the rest. Things are held, not eaten: nobody chews or swallows a thing that is not food.\n</items_on_hand>`;
+  // Live (7RAAQ7): the world's "The Pen of Perpetual Pondering" beside Liz's
+  // and Biz's "Pen" — the DM put the world's pen "in Liz's hand". World
+  // things are listed as nobody's in the party, and a shared word is spelled out.
+  const world = extra.world ?? [];
+  const worldBlock = world.length > 0
+    ? `\nNot held by anyone in the party (in the world, or kept by the NPC named):\n${world.map(w => `- ${w.name} — ${w.heldBy ? `held by ${w.heldBy}` : 'not held by anyone in the party'}`).join('\n')}`
+    : '';
+  const clashes = world.flatMap(w => {
+    const holders = new Map<string, string[]>();
+    for (const p of party) for (const i of p.inventory ?? []) {
+      if (itemHeadWord(i) && itemHeadWord(i) === itemHeadWord(w.name) && i.trim().toLowerCase() !== w.name.trim().toLowerCase()) holders.set(i, [...(holders.get(i) ?? []), p.name]);
+    }
+    return [...holders].map(([i, who]) => `"${i}" (${who.join(', ')}) and "${w.name}" are different things: never call one by the other's name, and never put "${w.name}" in a party member's hand unless an itemMoves entry gives it to them.`);
+  });
+  const gone = (extra.gone ?? []).filter(Boolean);
+  const goneLine = gone.length > 0 ? `\nGone for good (eaten, used up, given away, lost): ${gone.join(', ')} — no one in the party has these; never have one turn up again in anyone's hand, bag or pocket.` : '';
+  return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}${worldBlock}${goneLine}${clashes.length > 0 ? `\n${clashes.join('\n')}` : ''}\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it and the thing itself ("the pen lands in Biz's palm", not just "it" or "a soft arc of black plastic"). One from a stack (a bottle cap from "Bottle caps") is one: the giver keeps the rest. Things are held, not eaten: nobody chews or swallows a thing that is not food.\n</items_on_hand>`;
 }
+
+/** The last word of an item's name before "of …" or a label: "The Pen of Perpetual Pondering" → pen. */
+function itemHeadWord(name: string): string {
+  const words = name.split(/[:(]/)[0]!.replace(/\s+of\s+.*$/i, '').toLowerCase().match(/[a-z][a-z'’-]*/g) ?? [];
+  return (words[words.length - 1] ?? '').replace(/s$/, '');
+}
+
+/**
+ * Items as data, for every ruling and narration beat (see item-moves.ts).
+ * The server applies these moves and nothing else; the prose is only checked
+ * against them.
+ */
+export const ITEM_MOVES_RULE = `ITEM MOVES: every time your narration moves a thing, list the move in "itemMoves" — someone hands it over, gives it, picks it up, takes it, catches it, drops it, sets it down, loses it, eats it, uses it up or destroys it. Each entry: {"item": "<exact name from <items_on_hand>, or a short plain name for a new thing>", "from": "<who had it>", "to": "<who has it now>"}. "from" and "to" are a player character's exact name, an NPC's name, "world" (lying in the scene: dropped, set down, scattered, or picked up from there), or null ("from": null for a thing that appears from nowhere; "to": null for a thing eaten, used up or destroyed). Add "qty": 1 to move one from a stack ("a bottle cap" from "Bottle caps"). A player character can only give what is on their line. An NPC's thing comes from that NPC — never from a player character who happens to hold one like it. Damaged is not gone: a torn bag, a bent key, a smudged form is still carried and gets no entry; what spills or scatters out of it goes to "world". Nothing moves because someone asks for, offers, points at, looks at or claims a thing — only when your narration shows it change hands. When nothing moves, "itemMoves": [].`;
 
 /**
  * The acting character reaches for something of theirs that is not on their
@@ -562,6 +591,10 @@ export interface ScenePacing {
   isFinale?: boolean;
   /** Each player character's inventory, for <items_on_hand>. */
   partyInventories?: Array<{ name: string; inventory: string[] }>;
+  /** Items no party member holds (world items, NPCs' things), for <items_on_hand>. */
+  worldItems?: Array<{ name: string; heldBy?: string | null }>;
+  /** Things gone for good, for <items_on_hand>. */
+  goneItems?: string[];
   /** The narration-only opening (arrival + introductions) has just been delivered; this is the first real beat of play. */
   afterOpening?: boolean;
   /** An earlier beat the last draft repeated nearly word for word: this one must move on from it. */
@@ -708,7 +741,7 @@ export class DmAgent {
       `Pacing: ${pacingHint}${locationHint}${troubleHint}`,
       `</scene>`,
       charBlock ? `\n<party>\n${charBlock.trim()}\n</party>` : '',
-      pacing?.partyInventories ? itemsOnHandBlock(pacing.partyInventories) : '',
+      pacing?.partyInventories ? itemsOnHandBlock(pacing.partyInventories, { world: pacing.worldItems, gone: pacing.goneItems }) : '',
       `\n<world>\n${ctx.worldSummary}\n</world>`,
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
@@ -718,7 +751,8 @@ export class DmAgent {
       `\n<task>`,
       `Narrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. VARY YOUR OPENING — don't start with the character's name every time. Try starting with: a sound, an NPC speaking, a sensory detail, a shift in the environment, or an action in progress. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.\nNPC INITIATIVE: If activeNpcs are present, at least one NPC must SPEAK or ACT in the narration — they approach the party, ask a question, block a path, offer information, make a demand, or reveal something. "The foreman steps from the shadows, voice hoarse: 'You shouldn't be down here.'" NPCs who initiate create drama the characters MUST respond to.${partyHint}`,
       `currentLocationName MUST be COPIED EXACTLY from the <valid_locations> list above. NEVER invent a new location name. If no <valid_locations> section exists, you may introduce a new name.${personalityReminder}`,
-      `Respond as JSON: { "narration": "2-4 vivid sentences.${narrationHint}", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false }`,
+      pacing?.partyInventories ? ITEM_MOVES_RULE : '',
+      `Respond as JSON: { "narration": "2-4 vivid sentences.${narrationHint}", "currentLocationName": "...", "activeNpcs": ["name1", ...], "isSceneEnd": true|false${pacing?.partyInventories ? ', "itemMoves": [{"item": "<exact name>", "from": "<who had it>", "to": "<who has it now>"}]' : ''} }`,
       `</task>`,
     ].filter(Boolean).join('\n');
 
@@ -807,7 +841,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean; inventory?: string[] }>; missingItems?: string[] }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean; inventory?: string[] }>; missingItems?: string[]; worldItems?: Array<{ name: string; heldBy?: string | null }>; goneItems?: string[] }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
@@ -854,7 +888,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
 
     const userMessage = [
       charBlock ? `<character>\n${charBlock.trim()}\n</character>` : '',
-      characterInfo ? itemsOnHandBlock([{ name: characterInfo.name, inventory: characterInfo.inventory }, ...(characterInfo.partyMembers ?? [])]) : '',
+      characterInfo ? itemsOnHandBlock([{ name: characterInfo.name, inventory: characterInfo.inventory }, ...(characterInfo.partyMembers ?? [])], { world: characterInfo.worldItems, gone: characterInfo.goneItems }) : '',
       characterInfo?.missingItems?.length ? itemsNotOnHandBlock(characterInfo.name, characterInfo.missingItems) : '',
       `\n<action>\n${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n</action>`,
       ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',
@@ -872,9 +906,10 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       `NPC DIALOGUE: If the action involves talking to, questioning, persuading, or confronting an NPC, the narration MUST include the NPC's spoken response in quotation marks. NPCs who respond with actual words create real drama — "I'll tell you nothing, sellsword" hits harder than "the merchant refuses."`,
       `COOPERATIVE ACTIONS: If the action references a party member by name (coordinating, protecting, assisting), lower the difficulty by 1 and narrate how the teamwork helps. If the action HARMS or abandons a party member, add stress to BOTH characters — betrayal costs everyone.`,
       `PARTY DIALOGUE: If the action includes spoken words addressed to a companion (quoted dialogue), show a BRIEF physical reaction from that companion in your narration — a nod, a glare, a flinch, a skeptical eyebrow, a hand on their weapon. Do NOT put words in the companion's mouth (they speak on their own turn), but show they HEARD and REACTED. Dead-eyed companions who ignore each other kill immersion. A companion who is TAKEN OUT does not react, speak or act at all — they are down until they recover.`,
-      `INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If an item a party member holds is used up, destroyed, lost, taken, stolen, eaten or swallowed, torn to uselessness, or given away — theirs or a companion's (use that companion's id) — add {"characterId":"<holder's id>","field":"inventory","action":"remove","value":"<exact item name>"} to stateChanges. When an item passes between party members, remove it from the giver AND add it to the receiver. When ONE thing passes from a stack ("a bottle cap" from "Bottle caps"), add the single ("Bottle cap") to the receiver and remove nothing from the giver. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"} — and only then: the narration must show them taking it, picking it up or being handed it. Saying an item is theirs, asking for it or claiming it in words is NOT gaining it; an item someone else holds stays theirs unless your narration shows it change hands.`,
+      `INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. Items never go in stateChanges: every thing that changes hands, is picked up, dropped, eaten, used up or destroyed in your narration — this character's, a companion's or an NPC's — goes in "itemMoves". If the action takes, picks up, hands over or drops something and your ruling lets it happen, that is a move too.`,
+      ITEM_MOVES_RULE,
       `FATE POINT ECONOMY: If this action touches the character's trouble aspect or a consequence, COMPEL it — add {"field":"fatePoints","action":"set","value":${(characterInfo?.fatePoints ?? 3) + 1}} and narrate the complication. If the character spent effort invoking an aspect (referenced it in their action), spend a fate point: {"field":"fatePoints","action":"set","value":${Math.max(0, (characterInfo?.fatePoints ?? 3) - 1)}}.${consequenceGuide}${personalityReminder}`,
-      `Respond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens.${narrationHint}", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }`,
+      `Respond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens.${narrationHint}", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints", "action": "set|add|remove", "value": <value>}], "itemMoves": [{"item": "<exact name>", "from": "<who had it>", "to": "<who has it now>"}] }`,
       `stateChanges must be objects, not strings. Use [] if no mechanical changes apply.`,
       `</task>`,
     ].filter(Boolean).join('\n');

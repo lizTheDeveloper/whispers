@@ -1186,6 +1186,11 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
           if (inv.get(member)!.some(i => sameItem(i, item))) continue;
           if (!(clear && showsGain(unquoted, member, nouns)) && !caughtIt(unquoted, member, item, mentions)) continue;
           const from = holderOf(item);
+          // A companion's thing moves only when the prose names that companion
+          // (or it is what they just let go of). Live (7RAAQ7): "Mama Pigeon …
+          // offers a granola bar to Biz" moved LIZ's bar — an NPC's thing is
+          // never taken from a party member.
+          if (from && from !== member && !new RegExp(`\\b${esc(firstName(from))}\\b`, 'i').test(unquoted) && !released.some(r => r.from === from && sameItem(r.item, item))) continue;
           // "slips a bottle cap into Liz's palm" from Biz's Bottle caps: one cap, and the stack stays (live WXKC2C).
           if (from && from !== member && isStack(inv.get(from)!.find(i => sameItem(i, item)) ?? item) && oneFromStack(unquoted, item)) {
             const one = singleOf(item);
@@ -1498,6 +1503,9 @@ export function optionsWithoutGoneItems<T extends { description: string }>(optio
 const MOUTH_VERB = String.raw`\b(?:chew(?:s|ed|ing)?|bit(?:e|es|ing)|bit|suck(?:s|ed|ing)?|swallow(?:s|ed|ing)?|lick(?:s|ed|ing)?|nibbl(?:e|es|ed|ing)|gnaw(?:s|ed|ing)?|munch(?:es|ed|ing)?|eat(?:s|ing)?|ate|gulp(?:s|ed|ing)?|taste(?:s|d)?)\b`;
 const FOOD = /\b(?:food|snack|snacks|bar|granola|muffin|bread|toast|apple|apples|banana|cookie|cookies|biscuit|cracker|crackers|candy|sweet|sweets|chocolate|cake|pie|sandwich|fruit|berry|berries|nut|nuts|cheese|soup|stew|meal|lunch|dinner|breakfast|gum|lollipop|pastry|bun|roll|crumb|crumbs|honey|jam|carrot|egg|eggs|rice|noodles|tea|water|juice|milk|drink|cinnamon|popcorn|pretzel|chips|cereal|oats|oatmeal|jerky)\b/i;
 
+/** "… is safe to eat", "… is edible": a question whether a thing can be eaten (the thing is the words before it). */
+const EDIBLE_QUESTION = /\s+(?:is|are|was|were|would\s+be|might\s+be|could\s+be)\s+(?:it\s+)?(?:(?:safe|okay|ok|alright|all\s+right|good|fine)\s+to\s+(?:eat|chew|swallow|taste|lick|nibble)|edible|tasty|yummy)\b/gi;
+
 /**
  * Options without a character chewing, biting, sucking or swallowing a thing
  * that is not food. Live (WXKC2C), 10-year-old Biz was offered "I swallow the
@@ -1509,11 +1517,19 @@ const FOOD = /\b(?:food|snack|snacks|bar|granola|muffin|bread|toast|apple|apples
 export function optionsWithoutMouthedThings<T extends { description: string }>(options: T[], items: string[]): T[] {
   const things = [...new Set([...items.flatMap(itemNouns), ...PORTABLE])].filter(n => !FOOD.test(n));
   const thingRe = new RegExp(`\\b${nounAlt(things)}\\b`, 'i');
+  // What a phrase names is its last word: "the granola bar wrapper" is a wrapper, not food.
+  const headIsFood = (phrase: string) => FOOD.test(phrase.trim().split(/\s+/).pop() ?? '');
   const kept = options.filter(o => {
     for (const m of o.description.matchAll(new RegExp(MOUTH_VERB, 'gi'))) {
       const object = o.description.slice(m.index! + m[0].length).split(/[.;!?,]|\b(?:and|then|while|to|before|as)\b/i)[0]!.split(/\s+/).slice(0, 9).join(' ');
-      if (FOOD.test(object)) continue;
+      if (headIsFood(object)) continue;
       if (thingRe.test(object)) return false;
+    }
+    // "ask Mama Pigeon if the granola bar wrapper is safe to eat" (live 7RAAQ7).
+    for (const m of o.description.matchAll(EDIBLE_QUESTION)) {
+      const subject = (o.description.slice(0, m.index).split(/[.;!?,]|\b(?:if|whether|and|then)\b/i).pop() ?? '').trim();
+      if (!subject || headIsFood(subject)) continue;
+      if (thingRe.test(subject)) return false;
     }
     return true;
   });
