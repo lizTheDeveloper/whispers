@@ -29,7 +29,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, changedSpan, softenForChildren, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, optionsWithoutMouthedThings, changedSpan, softenForChildren, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -184,6 +184,14 @@ export class GameLoop {
    * claim, never an item already in an inventory.
    */
   private itemClaims = new Map<string, Array<{ item: string; beats: number }>>();
+  /**
+   * Things that left the party in play — given away, eaten, lost — so the
+   * characters' own prompts and options stop reaching for them (live
+   * WXKC2C: "I use the granola bar to bribe Unit 7-G…" after it went to
+   * Barnaby). Volatile; a starting-kit item not on anyone's line counts as
+   * gone anyway (goneItems).
+   */
+  private itemsLeftParty: string[] = [];
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private pendingWhisperCharacterId: string | null = null;
   // Out-of-window whispers wait here for their character's next decision
@@ -689,10 +697,17 @@ export class GameLoop {
   }
 
   /** Extracted world facts without the party recorded as NPCs (see withoutPartyEntities). */
-  private worldFacts<T extends { newEntities: Array<{ name: string }> }>(facts: T): T {
+  private worldFacts<T extends { newEntities: Array<{ name: string }>; newItems?: Array<{ name: string }> }>(facts: T): T {
     const names = Array.from(this.characters.values()).map(c => c.definition.name);
     const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id).filter(t => !t.derived).map(t => t.address));
-    return withoutPartyEntities(facts, names, terms, this.allSheetPhrases());
+    const out = withoutPartyEntities(facts, names, terms, this.allSheetPhrases());
+    // "Black Plastic Object" is the pen in flight, not a new thing (live WXKC2C).
+    if (!out.newItems) return out;
+    const held = Array.from(this.characters.values()).flatMap(c => c.state.inventory ?? []);
+    const items = withoutHeldParaphrases(out.newItems, held);
+    if (items.length === out.newItems.length) return out;
+    console.log(`[world-bible] Dropped extracted item(s) that describe what the party holds: ${out.newItems.filter(i => !items.includes(i)).map(i => `"${i.name}"`).join(', ')}`);
+    return { ...out, newItems: items };
   }
 
   /** What `speakerId` calls each companion, when that is not simply their name ("Mom" for Liz). */
@@ -794,7 +809,7 @@ export class GameLoop {
    * lost, taken or given away leaves its holder. Returns the characters
    * whose inventory changed.
    */
-  private trackNarratedItems(prose: string, actorId?: string): Set<string> {
+  private trackNarratedItems(prose: string, actorId?: string, released: Array<{ from: string; item: string }> = []): Set<string> {
     const changed = new Set<string>();
     if (!prose || this.characters.size === 0) return changed;
     try {
@@ -806,7 +821,7 @@ export class GameLoop {
         c.state.inventory = before.filter(i => !sameItem(i, item));
         if (c.state.inventory.length !== before.length) changed.add(c.id);
       };
-      for (const e of narratedItemEvents(prose, party, this.worldBible.getItemNames(this.campaignId))) {
+      for (const e of narratedItemEvents(prose, party, this.worldBible.getItemNames(this.campaignId), { released })) {
         if (e.kind === 'gain') {
           const to = byName(e.to);
           if (!to) continue;
@@ -822,6 +837,7 @@ export class GameLoop {
           const from = byName(e.from);
           if (!from) continue;
           drop(from, e.item);
+          this.noteItemLeft(e.item);
           this.worldBible.updateItemHolder(this.campaignId, e.item, null);
           console.log(`[items] ${e.from} no longer holds "${e.item}": the DM's prose shows it gone`);
         }
@@ -868,6 +884,28 @@ export class GameLoop {
       console.error('[items] missing-item check failed, ruling without it:', err);
       return [];
     }
+  }
+
+  /** Remember a thing that left the party, unless someone in it still holds it. */
+  private noteItemLeft(item: string): void {
+    if (Array.from(this.characters.values()).some(c => (c.state.inventory ?? []).some(i => sameItem(i, item)))) return;
+    if (!this.itemsLeftParty.some(i => sameItem(i, item))) this.itemsLeftParty.push(item);
+  }
+
+  /**
+   * Things no party member has any more: whatever left the party in play,
+   * and starting-kit things no one holds. For the characters' prompts
+   * (<items_not_on_hand>) and to drop options that reach for them.
+   */
+  private goneItems(): string[] {
+    const chars = Array.from(this.characters.values());
+    const held = chars.flatMap(c => c.state.inventory ?? []);
+    const gone: string[] = [];
+    for (const item of [...this.itemsLeftParty, ...chars.flatMap(c => startingKit(c.definition))]) {
+      if (held.some(h => sameItem(h, item)) || gone.some(g => sameItem(g, item))) continue;
+      gone.push(item);
+    }
+    return gone;
   }
 
   private applyDeclaredTakenOut(prose: string): void {
@@ -1454,6 +1492,10 @@ export class GameLoop {
     const ownPronouns = this.ownPronouns(character);
     // Everyone this character could name: met, in the scene with them, or named in it.
     const npcPronouns = this.worldBible.getNpcPronounsForParty(this.campaignId, this.state.currentLocationId, sceneNarration);
+    // Every member's things and what is gone, for the character's own prompts
+    // (live WXKC2C: options offered the given-away granola bar).
+    const partyItems = [character, ...Array.from(this.characters.values()).filter(c => c.id !== characterId)].map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] }));
+    const goneItems = this.goneItems();
 
     const proposals = await this.haltable(() => this.characterAgent.proposeActions({
         definition: character.definition,
@@ -1465,6 +1507,8 @@ export class GameLoop {
         partyMembers,
         ownPronouns,
         npcPronouns,
+        partyItems,
+        goneItems,
       }), (e) => {
       console.error('[game-loop] action proposal failed:', e);
       return { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }, { description: 'Press forward despite the uncertainty', reasoning: 'Fallback bold option' }] };
@@ -1479,6 +1523,14 @@ export class GameLoop {
     // A companion's trait is not a being ("warning the Wanders Off" → "warning
     // Biz"); an option that follows this character's own trait as a being is dropped.
     proposals.actions = optionsWithoutSheetBeings(proposals.actions, character.definition.name, this.sheetOwners());
+    // Never an option that reaches for a gone thing or puts a thing in a mouth (live WXKC2C).
+    {
+      const heldNow = partyItems.flatMap(p => p.inventory);
+      const before = proposals.actions.map(a => a.description);
+      proposals.actions = optionsWithoutMouthedThings(optionsWithoutGoneItems(proposals.actions, goneItems, heldNow), [...heldNow, ...goneItems]);
+      const cut = before.filter(d => !proposals.actions.some(a => a.description === d));
+      if (cut.length > 0) console.log(`[items] ${character.definition.name}: dropped option(s) that reach for a gone thing or mouth a thing: ${cut.map(d => `"${d}"`).join(', ')}`);
+    }
 
     if (!(await this.pace({ window: true }))) return;
     this.sendToOwner(characterId, {
@@ -1547,7 +1599,7 @@ export class GameLoop {
     }
 
     const decision = await this.haltable(() => this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: transcriptVisibleTo(this.transcript, characterId), memories, worldContext: fullCharContext, partyMembers, ownPronouns, npcPronouns },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: transcriptVisibleTo(this.transcript, characterId), memories, worldContext: fullCharContext, partyMembers, ownPronouns, npcPronouns, partyItems, goneItems },
         whisper,
       ), (e) => {
       console.error('[game-loop] action decision failed:', e);
@@ -1909,17 +1961,26 @@ export class GameLoop {
     const affectedCharIds = new Set<string>();
     // An item is gained only when the ruling shows it changing hands. Live,
     // Liz said "It is my property." of Lady Vex's Brass Ruler, the ruling
-    // added it to her inventory, and Vex went on tapping it.
-    resolution.stateChanges = resolution.stateChanges.filter(change => {
-      if (change.field !== 'inventory' || change.action === 'remove' || typeof change.value !== 'string') return true;
-      const who = change.characterId ? this.characters.get(change.characterId) : undefined;
-      if (!who) return true;
+    // added it to her inventory, and Vex went on tapping it. A remove paired
+    // with an add in the same ruling is a move (live WXKC2C: the pen toss's
+    // add was dropped and the pen vanished), and one from a stack is a single
+    // (see reconcileItemChanges).
+    const partyBefore = Array.from(this.characters.values()).map(c => ({ id: c.id, name: c.definition.name, inventory: [...(c.state.inventory ?? [])] }));
+    const released = [
+      ...resolution.stateChanges.filter(c => c.field === 'inventory' && c.action === 'remove' && typeof c.value === 'string' && c.characterId && this.characters.has(c.characterId))
+        .map(c => ({ from: this.characters.get(c.characterId!)!.definition.name, item: c.value as string })),
+      ...releasedInAction(decision.chosenAction, preInventory).map(item => ({ from: character.definition.name, item })),
+    ];
+    const reconciled = reconcileItemChanges(resolution.stateChanges, partyBefore, {
+      actorId: characterId,
+      action: decision.chosenAction,
+      narration: resolution.narration,
       // The hand-off may have been narrated a beat earlier: live, the
       // Postman slipped the envelope into Biz's hand in LIZ's ruling.
-      if (narratesItemTransferRecently(resolution.narration, this.recentDmBeats(4), change.value, who.definition.name, { acting: who.id === characterId })) return true;
-      console.warn(`[game-loop] dropped an inventory add of "${change.value}" for ${who.definition.name}: neither this ruling nor the last few DM beats show it changing hands`);
-      return false;
+      shown: (item, receiverId) => narratesItemTransferRecently(resolution.narration, this.recentDmBeats(4), item, this.characters.get(receiverId)?.definition.name ?? '', { acting: receiverId === characterId, released: released.map(r => r.item) }),
     });
+    for (const note of reconciled.notes) (note.startsWith('dropped') ? console.warn(`[game-loop] ${note}`) : console.log(note));
+    resolution.stateChanges = reconciled.changes;
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
         this.applyStateChange(change.characterId, change.field, change.action, change.value);
@@ -1933,7 +1994,10 @@ export class GameLoop {
     for (const change of resolution.stateChanges) {
       if (change.field !== 'inventory' || change.action !== 'add' || typeof change.value !== 'string' || !change.characterId) continue;
       for (const other of this.characters.values()) {
-        if (other.id === change.characterId || !(other.state.inventory ?? []).some(i => sameItem(i, change.value as string))) continue;
+        const heldAs = (other.state.inventory ?? []).find(i => sameItem(i, change.value as string));
+        if (other.id === change.characterId || !heldAs) continue;
+        // One bottle cap handed over leaves the giver's Bottle caps.
+        if (reconciled.keep.some(k => k.holderId === other.id && sameItem(k.item, heldAs)) || (isStack(heldAs) && !isStack(change.value as string))) continue;
         const named = new RegExp(`\\b${getFirstName(other.definition.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(resolution.narration);
         if (other.id !== characterId && !named) continue;
         other.state.inventory = (other.state.inventory ?? []).filter(i => !sameItem(i, change.value as string));
@@ -1980,7 +2044,8 @@ export class GameLoop {
         this.itemClaims.set(characterId, [...kept, ...claims.map(item => ({ item, beats: 6 }))]);
       }
     }
-    for (const cid of this.trackNarratedItems(resolution.narration, characterId)) affectedCharIds.add(cid);
+    for (const cid of this.trackNarratedItems(resolution.narration, characterId, released)) affectedCharIds.add(cid);
+    for (const item of partyBefore.flatMap(p => p.inventory)) this.noteItemLeft(item);
 
     for (const cid of affectedCharIds) {
       const c = this.characters.get(cid);

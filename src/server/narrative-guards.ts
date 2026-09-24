@@ -715,7 +715,7 @@ const KEEPING = String.raw`(?:palm|palms|hand|hands|pocket|pockets|grip|fingers|
  * sticky, ink-stained hand". Group 1 is the verb, group 2 the receiver
  * ("her", "Liz's").
  */
-const HANDOFF = new RegExp(String.raw`\b(press(?:es|ed|ing)?|plac(?:e|es|ed|ing)|slip(?:s|ped|ping)?|put(?:s|ting)?|tuck(?:s|ed|ing)?|drop(?:s|ped|ping)?|push(?:es|ed|ing)?|fold(?:s|ed|ing)?|shov(?:e|es|ed|ing))\b[^.!?;]*?\b(?:into|in|onto)\s+(her|their|his|[A-Z][\w-]*['’]s)\s+${ADJS}${KEEPING}\b`, 'i');
+const HANDOFF = new RegExp(String.raw`\b(press(?:es|ed|ing)?|plac(?:e|es|ed|ing)|guid(?:e|es|ed|ing)|slip(?:s|ped|ping)?|put(?:s|ting)?|tuck(?:s|ed|ing)?|drop(?:s|ped|ping)?|push(?:es|ed|ing)?|fold(?:s|ed|ing)?|shov(?:e|es|ed|ing))\b[^.!?;]*?\b(?:into|in|onto)\s+(her|their|his|[A-Z][\w-]*['’]s)\s+${ADJS}${KEEPING}\b`, 'i');
 
 /**
  * Words a story uses for the same kind of thing: the DM's "glowing
@@ -734,12 +734,48 @@ const ITEM_KIN: Record<string, string[]> = {
   bar: ['snack'],
 };
 
-/** The noun an item's name is: "Orange Key" → key, "The Letter of Truth" → letter, "Form 9-B: Return to Source (Crumpled)" → form. */
+/** Words ending in s that are not plurals (or have no singular worth using). */
+const NOT_PLURAL = new Set(['glass', 'grass', 'brass', 'compass', 'dress', 'press', 'chess', 'moss', 'boss', 'cross', 'lens', 'bus', 'gas', 'news', 'series', 'species', 'scissors', 'pants', 'trousers', 'jeans', 'glasses', 'binoculars', 'tongs', 'pliers', 'shears', 'clothes', 'canvas', 'atlas', 'iris', 'dice', 'mess', 'kiss', 'abyss', 'mattress', 'harness', 'address', 'business', 'always', 'perhaps']);
+const IRREGULAR_SINGULAR: Record<string, string> = { knives: 'knife', leaves: 'leaf', wolves: 'wolf', halves: 'half', loaves: 'loaf', shelves: 'shelf', scarves: 'scarf', lives: 'life', wives: 'wife', geese: 'goose', teeth: 'tooth', feet: 'foot', mice: 'mouse', children: 'child', men: 'man', women: 'woman' };
+
+/** One word in the singular: "caps" → "cap", "matches" → "match", "berries" → "berry"; anything else as it is. */
+function singularWord(w: string): string {
+  const lw = w.toLowerCase();
+  const keepCase = (s: string) => (/^[A-Z]/.test(w) ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+  if (IRREGULAR_SINGULAR[lw]) return keepCase(IRREGULAR_SINGULAR[lw]!);
+  if (lw.length <= 3 || NOT_PLURAL.has(lw) || /(?:ss|us|is|['’]s)$/.test(lw) || !/s$/.test(lw)) return w;
+  if (/[^aeiou]ies$/.test(lw)) return w.slice(0, -3) + 'y';
+  if (/(?:ches|shes|sses|xes|zzes)$/.test(lw)) return w.slice(0, -2);
+  return w.slice(0, -1);
+}
+
+/** A noun in a pattern, singular or plural: cap → cap(s), match → match(es), berry → berr(y|ies). */
+function nounForms(n: string): string {
+  const e = esc(n);
+  if (/[^aeiou]y$/i.test(n)) return `${esc(n.slice(0, -1))}(?:y|ies)`;
+  if (/(?:ch|sh|x|z|s)$/i.test(n)) return `${e}(?:es)?`;
+  return `${e}s?`;
+}
+const nounAlt = (nouns: string[]) => `(?:${nouns.map(nounForms).join('|')})`;
+
+/** The item's name with its last word in the singular: "Bottle caps" → "Bottle cap" (one from the stack). */
+export function singleOf(name: string): string {
+  const m = name.trim().match(/^(.*?)([A-Za-z'’-]+)$/);
+  return m ? m[1]! + singularWord(m[2]!) : name.trim();
+}
+
+/** A stack of things under one name — its head noun is a plural ("Bottle caps", "Marbles"). */
+export function isStack(name: string): boolean {
+  const last = name.split(/[:(]/)[0]!.trim().split(/\s+/).pop() ?? '';
+  return /^[A-Za-z'’-]+$/.test(last) && singularWord(last).toLowerCase() !== last.toLowerCase();
+}
+
+/** The noun an item's name is, in the singular: "Orange Key" → key, "The Letter of Truth" → letter, "Form 9-B: Return to Source (Crumpled)" → form, "Bottle caps" → cap. */
 export function itemHead(name: string): string | null {
   const core = name.split(/[:(]/)[0]!.replace(/\s+of\s+.*$/i, '');
   // Whole words only: "9-B" is a label, not a noun.
   const words = core.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z'’-]+$/, '')).filter(w => /^[a-z][a-z'’-]*$/.test(w) && !['the', 'a', 'an'].includes(w));
-  return words.length > 0 ? words[words.length - 1]! : null;
+  return words.length > 0 ? singularWord(words[words.length - 1]!) : null;
 }
 
 /** Words that name this item in prose: its head noun and that noun's kin. */
@@ -763,7 +799,8 @@ const DESCRIPTIVE = new Set(['shiny', 'glinting', 'gleaming', 'glittering', 'glo
  * her a second pen.
  */
 export function sameItem(a: string, b: string): boolean {
-  const norm = (s: string) => s.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' ');
+  // "Bottle caps" and "Bottle Cap" are one noun: never a stack and a single side by side (live WXKC2C).
+  const norm = (s: string) => singleOf(s.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' '));
   const na = norm(a);
   const nb = norm(b);
   if (na === nb) return true;
@@ -786,13 +823,17 @@ const unquotedSentences = (text: string) => quoteRuns(text).filter(r => !r.quote
  * does not recoil; instead, he … [is] pressing the brass key into her palm"
  * was read as a refusal and the key was dropped.
  */
-export function narratesItemTransfer(narration: string, item: string, actor: string, opts: { acting?: boolean } = {}): boolean {
+export function narratesItemTransfer(narration: string, item: string, actor: string, opts: { acting?: boolean; released?: string[] } = {}): boolean {
   if (!narration || !item) return false;
   const itemWords = [...new Set([...(item.toLowerCase().match(/[a-z]+/g)?.filter(w => w.length >= 3 && !['the', 'and', 'of'].includes(w)) ?? []), ...itemNouns(item)])];
   if (itemWords.length === 0) return false;
   const first = firstName(actor);
   const name = esc(first);
+  // The thing someone just let go of, landing in the actor's hand unnamed:
+  // "a soft arc of black plastic … landing perfectly in Biz’s waiting palm" (live WXKC2C).
+  const wasReleased = (opts.released ?? []).some(r => sameItem(r, item));
   for (const sentence of unquotedSentences(narration)) {
+    if (wasReleased && receivesUnnamed(sentence, first) && !REFUSAL.test(sentence) && !NEGATED_TRANSFER.test(sentence)) return true;
     const lower = sentence.toLowerCase();
     if (!itemWords.some(w => new RegExp(`\\b${w}s?\\b`).test(lower))) continue;
     if (REFUSAL.test(sentence) || NEGATED_TRANSFER.test(sentence)) continue;
@@ -824,8 +865,76 @@ export function narratesItemTransfer(narration: string, item: string, actor: str
  * ruling a turn later added "The Letter of Truth" to Biz, and it was dropped
  * because that ruling never showed it changing hands — it already had.
  */
-export function narratesItemTransferRecently(current: string, recent: string[], item: string, actor: string, opts: { acting?: boolean } = {}): boolean {
+export function narratesItemTransferRecently(current: string, recent: string[], item: string, actor: string, opts: { acting?: boolean; released?: string[] } = {}): boolean {
   return narratesItemTransfer(current, item, actor, opts) || recent.some(t => narratesItemTransfer(t, item, actor));
+}
+
+/** Where a thing comes to rest when someone receives it: a palm, a hand, a grip. */
+const RECEIVING = String.raw`(?:palm|palms|hand|hands|grip|fingers|fist|arms|lap)`;
+
+/**
+ * A sentence showing `member` receiving something it does not name: "landing
+ * perfectly in Biz’s waiting palm", "guides it firmly into Liz’s waiting
+ * palm", "Biz catches it", "Liz’s fingers close around it". Which thing is
+ * for the caller to say (the one just let go of).
+ */
+function receivesUnnamed(sentence: string, member: string): boolean {
+  const M = esc(firstName(member));
+  const into = String.raw`(?:into|in|onto)\s+${M}['’]s\s+${ADJS}${RECEIVING}\b`;
+  return [
+    new RegExp(String.raw`\b(?:land(?:s|ed|ing)?|drop(?:s|ped|ping)?|fall(?:s|ing)?|fell|settl(?:e|es|ed|ing)|com(?:e|es|ing)\s+to\s+rest|arriv(?:e|es|ed|ing))\s+(?:\w+ly\s+)?(?:right\s+|squarely\s+|safely\s+|neatly\s+)?${into}`, 'i'),
+    new RegExp(String.raw`\b(?:${HANDOFF_VERB}|${GIVE_VERB}|tosses|tossed|lobs|lobbed|throws|threw)\s+it\b[^.!?;]{0,40}?\b${into}`, 'i'),
+    new RegExp(String.raw`\b${M}\s+(?:\w+ly\s+)?(?:catches|caught|snatches|snatched|grabs|grabbed|takes|took|receives|received)\s+it\b`, 'i'),
+    new RegExp(String.raw`\b${M}['’]s\s+(?:[\w-]+\s+){0,2}?${HAND_CLOSE}\s+it\b`, 'i'),
+  ].some(re => re.test(sentence));
+}
+
+/** Verbs by which a player's action lets go of something toward someone. */
+const RELEASE_VERB = String.raw`(?:toss(?:es)?|throws?|lobs?|flicks?|hands?|pass(?:es)?|gives?|slides?|slips?|press(?:es)?|places?|puts?|guides?|offers?|drops?|tucks?)`;
+
+/**
+ * The things a player's declared action lets go of toward someone: "Reach
+ * into my tote bag, pull out the pen, and toss it gently toward Biz" (live
+ * WXKC2C) → the pen; "Slip a bottle cap into Mom's palm" → one bottle cap
+ * from the stack. The object is a held thing named right after the verb, or
+ * "it" — the held thing named last before it. Stowing into one's own bag or
+ * pocket is not letting go.
+ */
+export function releasedInAction(action: string, held: string[]): string[] {
+  if (!action || held.length === 0) return [];
+  const out: string[] = [];
+  const named = (t: string) => held
+    .map(h => ({ h, at: Math.max(-1, ...itemNouns(h).map(n => { const ms = [...t.matchAll(new RegExp(`\\b${nounAlt([n])}\\b`, 'gi'))]; return ms.length ? ms[ms.length - 1]!.index! : -1; })) }))
+    .filter(x => x.at >= 0);
+  for (const m of action.matchAll(new RegExp(`\\b${RELEASE_VERB}\\b`, 'gi'))) {
+    const after = action.slice(m.index! + m[0].length);
+    const clause = after.split(/[.;!?]|,\s*(?:and\s+)?|\s+and\s+|\bthen\b/i)[0] ?? '';
+    if (/\b(?:into|in|inside|to|onto)\s+(?:my|our)\b/i.test(clause)) continue;
+    let item: string | undefined;
+    if (/^\s+it\b/i.test(after)) {
+      const before = named(action.slice(0, m.index));
+      item = before.sort((a, b) => b.at - a.at)[0]?.h;
+    } else {
+      const direct = held.filter(h => { const ns = itemNouns(h); return ns.length > 0 && new RegExp(`^\\s+(?:\\w+\\s+)?(?:back\\s+|over\\s+)?${DET}${ADJS}${nounAlt(ns)}\\b`, 'i').test(clause) || new RegExp(`^\\s+(?:[A-Z][\\w'’-]*|her|him|them)\\s+${DET}${ADJS}${nounAlt(ns)}\\b`).test(clause); });
+      item = direct[0];
+    }
+    if (!item) continue;
+    const one = isStack(item) && oneFromStack(action, item) ? singleOf(item) : item;
+    if (!out.some(o => sameItem(o, one))) out.push(one);
+  }
+  return out;
+}
+
+/**
+ * The text speaks of ONE of a stack: "a bottle cap", "one bottle cap", "one
+ * of my bottle caps" — not "the bottle caps" or "all my bottle caps".
+ */
+export function oneFromStack(text: string, stack: string): boolean {
+  const head = itemHead(stack);
+  if (!text || !head) return false;
+  const single = new RegExp(`\\b(?:a|an|one|another|single)\\s+${ADJS}${esc(head)}\\b(?![s'’-])`, 'i');
+  const oneOf = new RegExp(`\\bone\\s+of\\s+(?:the|her|his|their|my|your|our|[A-Z][\\w'’-]*['’]s)\\s+${ADJS}${nounAlt([head])}\\b`, 'i');
+  return single.test(text) || oneOf.test(text);
 }
 
 /** Verbs that pass a thing across to whoever is there: "sliding a blank form across the polished wood". */
@@ -841,7 +950,7 @@ const PASS_ACROSS = String.raw`(?:slid(?:e|es|ing)|push(?:es|ed|ing)|hand(?:s|ed
  */
 function givenToNobodyElse(sentence: string, nouns: string[], actorFirst: string): boolean {
   if (nouns.length === 0) return false;
-  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const N = `${nounAlt(nouns)}`;
   const m = sentence.match(new RegExp(`\\b${PASS_ACROSS}\\s+(?:over\\s+)?${DET}${ADJS}${N}\\b([^.!?;]{0,60})`, 'i'));
   if (!m) return false;
   if (new RegExp(`\\b${esc(actorFirst)}\\s+(?:\\w+ly\\s+)?${PASS_ACROSS}\\b`, 'i').test(sentence)) return false;
@@ -867,12 +976,12 @@ const OWN_PLACE = String.raw`(?:pocket|pockets|bag|satchel|pouch|apron|coat|jack
 const DET = String.raw`(?:(?:the|a|an|this|that|its|her|his|their)\s+)?`;
 const HAND_CLOSE = String.raw`(?:hand|hands|fingers|fist|palm|grip)\s+(?:close|closes|closed|lock|locks|locked|curl|curls|curled|tighten|tightens|tightened|wrap|wraps|wrapped)\s+(?:tight(?:ly)?\s+)?(?:around|over|on)`;
 const GIVE_VERB = String.raw`(?:hands?|handed|gives?|gave|pass(?:es|ed)?|toss(?:es|ed)?|offers?|offered)`;
-const HANDOFF_VERB = String.raw`(?:press(?:es|ed)?|plac(?:e|es|ed)|slip(?:s|ped)?|put(?:s)?|tuck(?:s|ed)?|drop(?:s|ped)?|push(?:es|ed)?|shov(?:e|es|ed))`;
+const HANDOFF_VERB = String.raw`(?:press(?:es|ed)?|plac(?:e|es|ed)|guid(?:e|es|ed)|slip(?:s|ped)?|put(?:s)?|tuck(?:s|ed)?|drop(?:s|ped)?|push(?:es|ed)?|shov(?:e|es|ed))`;
 
 /** A sentence that shows `member` coming to hold something named by `nouns` (see narratedItemEvents). */
 function showsGain(sentence: string, member: string, nouns: string[]): boolean {
   const M = esc(firstName(member));
-  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const N = `${nounAlt(nouns)}`;
   const obj = `${DET}${ADJS}${N}\\b`;
   const res = [
     // "Biz tucks the key into their treasure pocket", "As Biz pockets the Orange Key"
@@ -888,7 +997,7 @@ function showsGain(sentence: string, member: string, nouns: string[]): boolean {
     // Possession the prose states outright. Live (Z9JKG2): "the Fading Form
     // in Liz’s hand", "the Fading Form in Liz’s grip" after Liz scooped it
     // up; "Biz clutches the pen" after catching it.
-    new RegExp(`\\b(?:the|a|an)\\s+${ADJS}${N}\\s+(?:in|inside|within)\\s+${M}['’]s\\s+(?:[\\w-]+\\s+){0,2}?${HELD_IN}\\b`, 'i'),
+    new RegExp(`\\b(?:the|a|an)\\s+${ADJS}${N}\\s+${HELD_HOW}(?:in|inside|within|up)\\s+${M}['’]s\\s+(?:[\\w-]+\\s+){0,2}?${HELD_IN}\\b`, 'i'),
     new RegExp(`\\b${M}\\s+(?:\\w+ly\\s+)?${HOLDS}\\s+${obj}`, 'i'),
     new RegExp(`\\b${M}['’]s\\s+(?:[\\w-]+\\s+)?(?:grip|hold|grasp)\\s+(?:on|around)\\s+${obj}`, 'i'),
   ];
@@ -898,7 +1007,9 @@ function showsGain(sentence: string, member: string, nouns: string[]): boolean {
 /** Verbs of holding something already in hand. */
 const HOLDS = String.raw`(?:clutch(?:es)?|clutching|holds|holding|is\s+holding|grips|gripping|clasps|clasping|cradles|cradling)`;
 /** Where a held thing is: a hand, a grip, a bag. */
-const HELD_IN = String.raw`(?:hand|hands|grip|grasp|fist|fingers|palm|palms|arms|pocket|pockets|bag|tote|satchel|pouch|backpack)`;
+const HELD_IN = String.raw`(?:hand|hands|grip|grasp|fist|fingers|palm|palms|arms|pocket|pockets|sleeve|sleeves|bag|tote|satchel|pouch|backpack)`;
+/** Between a thing and where it is held: "the golden paperclip glinting in Biz’s pocket", "the key hidden in her sleeve". */
+const HELD_HOW = String.raw`(?:[a-z]+ing\s+|(?:hidden|tucked|stashed|safe|safely|kept|held|stowed)\s+)?`;
 
 /** Capitalised words that start a clause but never name who took something. */
 const NOT_A_NAME = new Set(['She', 'He', 'They', 'It', 'The', 'A', 'An', 'But', 'And', 'As', 'When', 'Then', 'With', 'Her', 'His', 'Their', 'Its', 'This', 'That', 'There', 'Here', 'Now', 'Still', 'Just', 'Even', 'Someone', 'Something', 'Nobody', 'No', 'One', 'You', 'I', 'We']);
@@ -918,7 +1029,7 @@ function showsTakenByOther(sentence: string, prev: string, holder: string, nouns
   const N = `(?:${nouns.map(n => caseFree(esc(n))).join('|')})s?`;
   const re = new RegExp(`\\b([A-Z][\\w'’-]*)\\s+(?:[a-z]+ly\\s+)?${NPC_TAKE}\\s+(it\\b|(?:[Tt]he|[Aa]n?|[Hh]er|[Hh]is|[Tt]heir|[Ii]ts)\\s+${ADJS}${N}\\b)`, 'g');
   const holderRe = new RegExp(`\\b${esc(firstName(holder))}\\b`);
-  const nounRe = new RegExp(`\\b(?:${nouns.map(esc).join('|')})s?\\b`, 'i');
+  const nounRe = new RegExp(`\\b${nounAlt(nouns)}\\b`, 'i');
   for (const m of sentence.matchAll(re)) {
     const taker = m[1]!.replace(/['’]s$/, '');
     if (NOT_A_NAME.has(taker) || party.some(p => firstName(p).toLowerCase() === taker.toLowerCase())) continue;
@@ -970,7 +1081,7 @@ const UNREAL_BEFORE = /\b(?:not|never|almost|nearly|if|unless|would|could|might|
  * fear that tastes of old paper" loses the key, not a paper form.
  */
 function showsLoss(sentence: string, nouns: string[]): boolean {
-  const N = new RegExp(`\\b(?:${nouns.map(esc).join('|')})s?\\b`, 'gi');
+  const N = new RegExp(`\\b${nounAlt(nouns)}\\b`, 'gi');
   const at = [...sentence.matchAll(N)].map(m => m.index!);
   if (at.length === 0) return false;
   for (const m of sentence.matchAll(new RegExp(LOSS.source, 'gi'))) {
@@ -1002,7 +1113,7 @@ function showsEatenIt(sentence: string, item: string, mentions: (t: string) => s
 /** "Biz hands the key to the Postman": the item leaves the party (group 1: who took it). */
 function showsGivenAway(sentence: string, holder: string, nouns: string[], party: string[]): boolean {
   const M = esc(firstName(holder));
-  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const N = `${nounAlt(nouns)}`;
   const re = new RegExp(`\\b${M}\\s+(?:\\w+ly\\s+)?(?:${GIVE_VERB}|${HANDOFF_VERB})\\s+${DET}${ADJS}${N}\\b[^.!?;]{0,30}?\\b(?:to|into|over\\s+to)\\s+(?:the\\s+)?([A-Z][\\w'’-]*)`, 'i');
   const m = sentence.match(re);
   if (!m) return false;
@@ -1027,12 +1138,13 @@ function showsGivenAway(sentence: string, holder: string, nouns: string[], party
  * `candidates` are items that could be gained (the world's items); items
  * the party holds are always candidates.
  */
-export function narratedItemEvents(text: string, party: ItemHolder[], candidates: string[] = []): ItemEvent[] {
+export function narratedItemEvents(text: string, party: ItemHolder[], candidates: string[] = [], opts: { released?: Array<{ from: string; item: string }> } = {}): ItemEvent[] {
   if (!text || party.length === 0) return [];
   const events: ItemEvent[] = [];
   const inv = new Map(party.map(p => [p.name, [...p.inventory]]));
   const holderOf = (item: string) => [...inv].find(([, items]) => items.some(i => sameItem(i, item)))?.[0] ?? null;
   const names = party.map(p => p.name);
+  const released = (opts.released ?? []).filter(r => r.item);
 
   let prev = '';
   for (const sentence of text.split(SENTENCES)) {
@@ -1043,9 +1155,22 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
     const byNoun = (item: string) => pool.filter(o => itemNouns(o).some(n => itemNouns(item).includes(n)));
     // "the Fading Form" when the world also has a Recall Form: its whole name picks it out.
     const namedIn = (t: string, item: string) => { const f = fullItemName(item); return f.includes(' ') && new RegExp(`\\b${esc(f)}\\b`, 'i').test(t); };
-    const unambiguous = (item: string, t: string) => byNoun(item).length === 1 || (namedIn(t, item) && byNoun(item).filter(o => namedIn(t, o)).length === 1);
+    // "Biz’s small hand closes around … the pen" while Biz holds the Pen and
+    // Hark has a Red-ink Pen (live WXKC2C): the one a member named here holds.
+    const heldByNamed = (item: string) => held.filter(h => sameItem(h.item, item)).some(h => new RegExp(`\\b${esc(firstName(h.owner))}\\b`).test(unquoted));
+    const pick = (item: string, t: string) => {
+      const same = byNoun(item);
+      if (same.length === 1) return true;
+      if (namedIn(t, item)) return same.filter(o => namedIn(t, o)).length === 1;
+      return !same.some(o => namedIn(t, o)) && heldByNamed(item) && same.filter(heldByNamed).length === 1;
+    };
+    const unambiguous = (item: string, t: string) => pick(item, t);
     // The items a stretch of prose names (by whole name, or by a noun only one item has).
-    const mentions = (t: string) => pool.filter(o => namedIn(t, o) || itemNouns(o).some(n => new RegExp(`\\b${esc(n)}s?\\b`, 'i').test(t)));
+    const mentions = (t: string) => {
+      const found = pool.filter(o => namedIn(t, o) || itemNouns(o).some(n => new RegExp(`\\b${nounAlt([n])}\\b`, 'i').test(t)));
+      const narrowed = found.filter(o => found.filter(x => itemNouns(x).some(n => itemNouns(o).includes(n))).length === 1 || pick(o, t));
+      return narrowed.length > 0 ? narrowed : found;
+    };
 
     // Gains: named receiver, unquoted narration, no refusal.
     if (!REFUSAL.test(unquoted) && !NEGATED_TRANSFER.test(unquoted)) {
@@ -1057,10 +1182,40 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
           if (inv.get(member)!.some(i => sameItem(i, item))) continue;
           if (!(clear && showsGain(unquoted, member, nouns)) && !caughtIt(unquoted, member, item, mentions)) continue;
           const from = holderOf(item);
+          // "slips a bottle cap into Liz's palm" from Biz's Bottle caps: one cap, and the stack stays (live WXKC2C).
+          if (from && from !== member && isStack(inv.get(from)!.find(i => sameItem(i, item)) ?? item) && oneFromStack(unquoted, item)) {
+            const one = singleOf(item);
+            inv.get(member)!.push(one);
+            events.push({ kind: 'gain', to: member, item: one, from: null });
+            break;
+          }
           if (from) inv.set(from, inv.get(from)!.filter(i => !sameItem(i, item)));
           inv.get(member)!.push(item);
           events.push({ kind: 'gain', to: member, item, from });
           break;
+        }
+      }
+      // What someone just let go of, landing in a member's hand unnamed:
+      // "a soft arc of black plastic … landing perfectly in Biz’s waiting palm" (live WXKC2C).
+      for (const member of names) {
+        const coming = released.filter(r => r.from !== member && !inv.get(member)!.some(i => sameItem(i, r.item)));
+        if (coming.length !== 1) continue;
+        const { item, from: giver } = coming[0]!;
+        if (!receivesUnnamed(unquoted, member)) continue;
+        if (mentions(unquoted).some(o => !sameItem(o, item))) continue;
+        const from = inv.get(giver)?.some(i => sameItem(i, item)) ? giver : null;
+        if (from && !(isStack(inv.get(from)!.find(i => sameItem(i, item))!) && !isStack(item))) inv.set(from, inv.get(from)!.filter(i => !sameItem(i, item)));
+        inv.get(member)!.push(item);
+        events.push({ kind: 'gain', to: member, item, from });
+      }
+      // A portable thing the prose plainly puts in a member's pocket, sleeve
+      // or hand that is no world item yet: "the brass key hidden in Biz’s sleeve".
+      for (const member of names) {
+        for (const thing of statedPortables(unquoted, member)) {
+          const head = itemHead(thing);
+          if (!head || pool.some(o => itemHead(o) === head) || [...inv.values()].some(items => items.some(i => itemHead(i) === head))) continue;
+          inv.get(member)!.push(thing);
+          events.push({ kind: 'gain', to: member, item: thing, from: null });
         }
       }
     }
@@ -1072,6 +1227,8 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
       const heldLike = [...inv].flatMap(([o, items]) => items.filter(i => itemNouns(i).some(n => nouns.includes(n))).map(() => o));
       // Two held keys: only a sentence naming the holder can say whose.
       if (heldLike.length > 1 && !new RegExp(`\\b${esc(firstName(owner))}\\b`).test(sentence)) continue;
+      // A stack goes only when the prose says the lot: "the bottle cap" is one of Biz's bottle caps.
+      if (isStack(item) && !new RegExp(`\\b${esc(item.trim().split(/\s+/).pop()!)}\\b`, 'i').test(sentence)) continue;
       if (showsLoss(sentence, nouns) || showsEatenIt(unquoted, item, mentions) || showsGivenAway(unquoted, owner, nouns, names) || showsTakenByOther(unquoted, prev, owner, nouns, names, mentions, item)) {
         inv.set(owner, inv.get(owner)!.filter(i => i !== item));
         events.push({ kind: 'loss', from: owner, item });
@@ -1080,6 +1237,25 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
     prev = unquoted;
   }
   return events;
+}
+
+/** Small things a hand, pocket or sleeve holds — for a thing the prose puts there that is no world item yet. */
+const PORTABLE = ['key', 'coin', 'cap', 'paperclip', 'clip', 'pen', 'pencil', 'crayon', 'marble', 'button', 'pebble', 'stone', 'rock', 'card', 'ticket', 'token', 'badge', 'ring', 'feather', 'shell', 'whistle', 'note', 'letter', 'envelope', 'receipt', 'stamp', 'sticker', 'candy', 'sweet', 'cookie', 'muffin', 'wrapper', 'ribbon', 'thimble', 'bead', 'pin', 'needle', 'lighter', 'map', 'photo', 'photograph', 'locket', 'compass', 'flashlight', 'knife', 'spoon', 'trinket', 'bauble', 'charm', 'gem', 'jewel', 'crystal', 'acorn', 'figurine', 'toy', 'die', 'keychain', 'screw', 'bolt', 'nail', 'washer', 'battery', 'chalk', 'eraser'];
+
+/** "the golden paperclip glinting in Biz’s pocket" → "Golden paperclip": portable things the sentence states are in `member`'s keeping. */
+function statedPortables(sentence: string, member: string): string[] {
+  const M = esc(firstName(member));
+  const re = new RegExp(`\\b(?:the|a|an)\\s+((?:[a-z][\\w'’-]*,?\\s+){0,2}?)${nounAlt(PORTABLE)}\\s+${HELD_HOW}(?:in|inside|within|up)\\s+${M}['’]s\\s+(?:[\\w-]+\\s+){0,2}?(?:pocket|pockets|sleeve|sleeves|hand|hands|palm|fist|grip|fingers)\\b`, 'gi');
+  const out: string[] = [];
+  for (const m of sentence.matchAll(re)) {
+    const phrase = m[0].replace(/^(?:the|a|an)\s+/i, '').split(/\s+(?:[a-z]+ing|hidden|tucked|stashed|safe|safely|kept|held|stowed|in|inside|within|up)\s+/i)[0]!;
+    const words = phrase.replace(/,/g, '').split(/\s+/).filter(w => w && !DESCRIPTIVE.has(w.toLowerCase()));
+    if (words.length === 0) continue;
+    const name = singleOf(words.join(' ').toLowerCase());
+    const cased = name.charAt(0).toUpperCase() + name.slice(1);
+    if (!out.some(o => sameItem(o, cased))) out.push(cased);
+  }
+  return out;
 }
 
 /** First-person verbs by which a player declares taking something: "Scoop up the Fading Form". */
@@ -1105,7 +1281,7 @@ export function declaredTakes(action: string, candidates: string[]): string[] {
       if (full.includes(' ') && new RegExp(`\\b${esc(full)}\\b`, 'i').test(after)) return true;
       const nouns = itemNouns(c);
       return nouns.length > 0 && candidates.filter(o => itemNouns(o).some(n => nouns.includes(n))).length === 1
-        && new RegExp(`^\\s+(?:up\\s+)?${DET}${ADJS}(?:${nouns.map(esc).join('|')})s?\\b`, 'i').test(after);
+        && new RegExp(`^\\s+(?:up\\s+)?${DET}${ADJS}${nounAlt(nouns)}\\b`, 'i').test(after);
     });
     for (const c of named) if (!out.some(o => sameItem(o, c))) out.push(c);
   }
@@ -1129,7 +1305,7 @@ export function usesMissingItems(action: string, held: string[], known: string[]
     if (nouns.length === 0) continue;
     const same = (o: string) => sameItem(o, item) || itemHead(o) === itemHead(item);
     if (held.some(same) || out.some(same)) continue;
-    const N = `(?:${nouns.map(esc).join('|')})s?`;
+    const N = `${nounAlt(nouns)}`;
     const mine = new RegExp(`\\b(?:my|our)\\s+${ADJS}${N}\\b`, 'i');
     const fromMine = new RegExp(`\\b(?:the|a|an|this|that|some)\\s+${ADJS}${N}\\s+(?:from|out\\s+of|in|inside)\\s+(?:my|our)\\b`, 'i');
     if (mine.test(action) || fromMine.test(action)) out.push(item);
@@ -1147,7 +1323,7 @@ export function usesMissingItems(action: string, held: string[], known: string[]
 export function confirmsClaim(prose: string, member: string, item: string, opts: { ownRuling?: boolean; party?: string[]; pronouns?: string | null } = {}): boolean {
   const nouns = itemNouns(item);
   if (!prose || nouns.length === 0) return false;
-  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const N = `${nounAlt(nouns)}`;
   const others = (opts.party ?? []).filter(p => firstName(p).toLowerCase() !== firstName(member).toLowerCase());
   const said = (opts.pronouns ?? '').toLowerCase().match(/\b(she|he|they)\b/)?.[1];
   const possessive = said === 'she' ? 'her' : said === 'he' ? 'his' : said === 'they' ? 'their' : null;
@@ -1174,10 +1350,170 @@ function fullItemName(item: string): string {
  * is `item`. Two things named before it, or none, and nobody gains anything.
  */
 function caughtIt(sentence: string, member: string, item: string, mentions: (t: string) => string[]): boolean {
-  const m = sentence.match(new RegExp(`\\b${esc(firstName(member))}\\s+(?:\\w+ly\\s+)?${SELF_TAKE}\\s+it\\b`, 'i'));
+  const M = esc(firstName(member));
+  // "Biz … catches it", and "guides it firmly into Liz’s waiting palm" (live WXKC2C).
+  const m = sentence.match(new RegExp(`\\b${M}\\s+(?:\\w+ly\\s+)?${SELF_TAKE}\\s+it\\b`, 'i'))
+    ?? sentence.match(new RegExp(`\\b(?:${HANDOFF_VERB}|${GIVE_VERB})\\s+it\\b[^.!?;]{0,40}?\\b(?:into|in|onto)\\s+${M}['’]s\\s+${ADJS}${KEEPING}\\b`, 'i'));
   if (!m) return false;
   const named = mentions(sentence.slice(0, m.index));
   return named.length === 1 && sameItem(named[0]!, item);
+}
+
+// ─── A ruling's item changes, reconciled ───────────────────────────────────
+
+export interface ItemChange { characterId?: string; field?: string; action?: string; value?: unknown }
+
+/**
+ * A ruling's inventory changes, made to agree with each other and the prose:
+ *  - one from a stack ("Slip a bottle cap into Mom's palm", live WXKC2C —
+ *    the ruling moved all of Biz's "Bottle caps") gives the receiver a single
+ *    ("Bottle cap") and leaves the giver's stack where it is; a singular
+ *    remove never takes a stack;
+ *  - an add stands when the prose shows it changing hands (`shown`), when the
+ *    same ruling removes it from another member (a move: live, the pen toss
+ *    removed the Pen from Liz and its add for Biz was dropped, so it
+ *    vanished), or when it is the thing the actor let go of landing, unnamed,
+ *    in the receiver's hand ("a soft arc of black plastic … landing perfectly
+ *    in Biz’s waiting palm");
+ *  - a remove with no add, when the prose shows another member receiving that
+ *    thing unnamed or named, becomes a move.
+ * `keep` lists stacks a giver keeps (so nothing downstream strips them).
+ */
+export function reconcileItemChanges<T extends ItemChange>(
+  changes: T[],
+  holders: Array<{ id: string; name: string; inventory: string[] }>,
+  opts: { actorId: string; action: string; narration: string; shown: (item: string, receiverId: string) => boolean },
+): { changes: T[]; keep: Array<{ holderId: string; item: string }>; notes: string[] } {
+  const notes: string[] = [];
+  const keep: Array<{ holderId: string; item: string }> = [];
+  const isItem = (c: T): c is T & { characterId: string; value: string } => c.field === 'inventory' && typeof c.value === 'string' && !!c.characterId;
+  const byId = (id: string) => holders.find(h => h.id === id);
+  const actor = byId(opts.actorId);
+  const released = actor ? releasedInAction(opts.action, actor.inventory) : [];
+  const text = `${opts.action}\n${opts.narration}`;
+  const dropped = new Set<T>();
+  const rewritten = new Map<T, T>();
+  const removes = changes.filter(c => isItem(c) && c.action === 'remove');
+  const adds = changes.filter(c => isItem(c) && c.action === 'add');
+
+  // One from a stack.
+  for (const a of adds) {
+    if (!isItem(a)) continue;
+    for (const giver of holders) {
+      if (giver.id === a.characterId) continue;
+      const stack = giver.inventory.find(i => sameItem(i, a.value));
+      if (!stack || !isStack(stack)) continue;
+      if (isStack(a.value) && !oneFromStack(text, stack)) continue;
+      const one = isStack(a.value) ? singleOf(stack) : a.value;
+      if (one !== a.value) rewritten.set(a, { ...a, value: one });
+      for (const r of removes) if (isItem(r) && r.characterId === giver.id && sameItem(r.value, stack)) dropped.add(r);
+      keep.push({ holderId: giver.id, item: stack });
+      notes.push(`[items] one "${one}" from ${giver.name}'s "${stack}" to ${byId(a.characterId)?.name ?? 'a companion'}; the stack stays`);
+    }
+  }
+  // A singular remove never takes the stack.
+  for (const r of removes) {
+    if (!isItem(r) || dropped.has(r)) continue;
+    const held = byId(r.characterId)?.inventory.find(i => sameItem(i, r.value));
+    if (held && isStack(held) && !isStack(r.value)) {
+      dropped.add(r);
+      notes.push(`[items] kept ${byId(r.characterId)!.name}'s "${held}": the ruling removed one "${r.value}", not the lot`);
+    }
+  }
+  // Adds need the prose, a paired remove, or the released thing landing.
+  for (const a of adds) {
+    if (!isItem(a)) continue;
+    const who = byId(a.characterId);
+    if (!who) continue;
+    const paired = removes.some(r => isItem(r) && r.characterId !== a.characterId && sameItem(r.value, a.value));
+    const landed = released.some(r => sameItem(r, a.value)) && narratesItemTransfer(opts.narration, a.value, who.name, { released });
+    if (paired || landed || opts.shown(a.value, a.characterId)) continue;
+    dropped.add(a);
+    notes.push(`dropped an inventory add of "${a.value}" for ${who.name}: neither this ruling nor the last few DM beats show it changing hands`);
+  }
+  // A remove the prose shows another member receiving is a move.
+  const extra: T[] = [];
+  for (const r of removes) {
+    if (!isItem(r) || dropped.has(r)) continue;
+    if (adds.some(a => isItem(a) && !dropped.has(a) && sameItem(a.value, r.value))) continue;
+    const from = byId(r.characterId);
+    const to = holders.filter(h => h.id !== r.characterId && narratesItemTransfer(opts.narration, r.value, h.name, { released: [r.value] }));
+    if (!from || to.length !== 1) continue;
+    extra.push({ ...r, characterId: to[0]!.id, action: 'add' } as T);
+    notes.push(`[items] "${r.value}" moves from ${from.name} to ${to[0]!.name}: the ruling removed it and the prose shows ${to[0]!.name} receiving it`);
+  }
+  return { changes: [...changes.filter(c => !dropped.has(c)).map(c => rewritten.get(c) ?? c), ...extra], keep, notes };
+}
+
+/** Names that describe a thing without saying what it is: "Black Plastic Object". */
+const GENERIC_THING = new Set(['object', 'thing', 'item', 'instrument', 'implement', 'device', 'gadget', 'contraption', 'trinket', 'bauble', 'shape', 'something', 'artifact', 'artefact', 'possession', 'belonging', 'effect']);
+
+/**
+ * Extracted new world items without the party's own things under another
+ * name: a held item's adjective variant ("Shiny Pen" for the Pen) and, while
+ * the party holds anything, a generic description ("Black Plastic Object" —
+ * live WXKC2C, the pen in flight).
+ */
+export function withoutHeldParaphrases<T extends { name: string }>(items: T[], held: string[]): T[] {
+  if (held.length === 0) return items;
+  return items.filter(i => {
+    const head = itemHead(i.name);
+    if (head && GENERIC_THING.has(head)) return false;
+    return !held.some(h => sameItem(h, i.name) && fullItemName(h).toLowerCase() !== fullItemName(i.name).toLowerCase());
+  });
+}
+
+/** Verbs by which an option uses, gives or reaches for a thing. */
+const USE_VERB = String.raw`\b(?:use|uses|using|hand|hands|give|gives|offer|offers|pull|pulls|take|takes|grab|grabs|snag|snags|bribe|bribes|eat|eats|share|shares|show|shows|hold|holds|tap|taps|wave|waves|sign|signs|write|writes|toss|tosses|throw|throws|slide|slides|slip|slips|press|presses|place|places|put|puts|break|breaks|unwrap|unwraps|reach\s+for|dig\s+(?:for|out)|jingle|jingles|click|clicks|point|points|swing|swings|with)\b`;
+/** Looking for a lost thing is fine. */
+const SEEK = /\b(?:search(?:es)?|look(?:s)?\s+for|hunt(?:s)?\s+for|find|finds|retriev(?:e|es)|recover(?:s)?|pick(?:s)?\s+up|ask\w*\s+(?:\w+\s+){0,3}?(?:about|where|for))\b/i;
+
+/**
+ * Options without the party's gone things: live (WXKC2C), after the granola
+ * bar went to Barnaby, Liz was offered "I use the granola bar to bribe Unit
+ * 7-G…" and Biz chose "take Mom's granola bar". An option using, handing,
+ * offering or reaching for a gone thing is dropped; looking for it is not;
+ * a held thing with the same noun keeps it. Never empties the list.
+ */
+export function optionsWithoutGoneItems<T extends { description: string }>(options: T[], gone: string[], held: string[]): T[] {
+  const lost = gone.filter(g => !held.some(h => sameItem(h, g) || itemHead(h) === itemHead(g)));
+  if (lost.length === 0) return options;
+  const kept = options.filter(o => !lost.some(g => {
+    const nouns = itemNouns(g);
+    if (nouns.length === 0) return false;
+    const at = o.description.search(new RegExp(`\\b${nounAlt(nouns)}\\b`, 'i'));
+    if (at < 0) return false;
+    const before = o.description.slice(0, at);
+    const clause = before.split(/[.;!?]|,\s*|\band\b|\bthen\b/i).pop() ?? '';
+    if (SEEK.test(clause)) return false;
+    return new RegExp(USE_VERB, 'i').test(clause) || /\b(?:my|our|[A-Z][\w'’-]*['’]s)\s+(?:[\w-]+\s+){0,2}$/.test(clause);
+  }));
+  return kept.length > 0 ? kept : options;
+}
+
+const MOUTH_VERB = String.raw`\b(?:chew(?:s|ed|ing)?|bit(?:e|es|ing)|bit|suck(?:s|ed|ing)?|swallow(?:s|ed|ing)?|lick(?:s|ed|ing)?|nibbl(?:e|es|ed|ing)|gnaw(?:s|ed|ing)?|munch(?:es|ed|ing)?|eat(?:s|ing)?|ate|gulp(?:s|ed|ing)?|taste(?:s|d)?)\b`;
+const FOOD = /\b(?:food|snack|snacks|bar|granola|muffin|bread|toast|apple|apples|banana|cookie|cookies|biscuit|cracker|crackers|candy|sweet|sweets|chocolate|cake|pie|sandwich|fruit|berry|berries|nut|nuts|cheese|soup|stew|meal|lunch|dinner|breakfast|gum|lollipop|pastry|bun|roll|crumb|crumbs|honey|jam|carrot|egg|eggs|rice|noodles|tea|water|juice|milk|drink|cinnamon|popcorn|pretzel|chips|cereal|oats|oatmeal|jerky)\b/i;
+
+/**
+ * Options without a character chewing, biting, sucking or swallowing a thing
+ * that is not food. Live (WXKC2C), 10-year-old Biz was offered "I swallow the
+ * metal cap…" and chose "Swallow the metallic taste of the chewed bottle
+ * cap…". The object is the few words after the verb; only a thing — a party
+ * item's noun or a small portable thing — counts, so "swallow my fear" and
+ * "bite into the muffin" stand. Never empties the list.
+ */
+export function optionsWithoutMouthedThings<T extends { description: string }>(options: T[], items: string[]): T[] {
+  const things = [...new Set([...items.flatMap(itemNouns), ...PORTABLE])].filter(n => !FOOD.test(n));
+  const thingRe = new RegExp(`\\b${nounAlt(things)}\\b`, 'i');
+  const kept = options.filter(o => {
+    for (const m of o.description.matchAll(new RegExp(MOUTH_VERB, 'gi'))) {
+      const object = o.description.slice(m.index! + m[0].length).split(/[.;!?,]|\b(?:and|then|while|to|before|as)\b/i)[0]!.split(/\s+/).slice(0, 9).join(' ');
+      if (FOOD.test(object)) continue;
+      if (thingRe.test(object)) return false;
+    }
+    return true;
+  });
+  return kept.length > 0 ? kept : options;
 }
 
 // ─── Repetition of a whole beat ─────────────────────────────────────────────

@@ -44,7 +44,32 @@ interface CharacterContext {
   ownPronouns?: string;
   /** The fixed pronouns of every NPC this character could talk about — met, in the scene, or named in it. */
   npcPronouns?: Array<{ name: string; pronouns: string }>;
+  /** What each party member carries right now, this character first. */
+  partyItems?: Array<{ name: string; inventory: string[] }>;
+  /** Things the party no longer has — given away, used up, eaten, lost. */
+  goneItems?: string[];
 }
+
+/**
+ * What each party member is carrying and what is gone, for the character's
+ * own options and choice. Live (WXKC2C): after the granola bar went to
+ * Barnaby, Liz was offered "I use the granola bar to bribe Unit 7-G…" and
+ * Biz chose "take Mom's granola bar" — the character prompts never had the
+ * record the DM's ruling had.
+ */
+export function characterItemsBlock(self: string, party: Array<{ name: string; inventory: string[] }> | undefined, gone: string[] | undefined): string {
+  if (!party || party.length === 0) return '';
+  const lines = party.map(p => `- ${p.name}${p.name === self ? ' (you)' : ''}: ${p.inventory.length > 0 ? p.inventory.join(', ') : 'nothing'}`);
+  const onHand = `<items_on_hand>\nWhat each of you is carrying right now:\n${lines.join('\n')}\nYou can only use, show, offer or hand over what is on your own line. A companion's things stay theirs until they hand them to you — ask for them, never just take them.\n</items_on_hand>`;
+  const lost = (gone ?? []).filter(Boolean);
+  const notOnHand = lost.length > 0
+    ? `\n<items_not_on_hand>\nGone — given away, used up, eaten or lost: ${lost.join(', ')}. Nobody at the table has these any more. Never propose or choose using, offering, showing, reaching for or taking any of them, from your bag, your pocket or anyone else.\n</items_not_on_hand>`
+    : '';
+  return `\n${onHand}${notOnHand}`;
+}
+
+/** Things are held, not eaten (live WXKC2C: 10-year-old Biz "chewing a bottle cap", "I swallow the metal cap"). */
+export const HELD_NOT_EATEN = 'Things are held, carried, shown and handed over — not eaten. Never put a thing in your mouth — no chewing, biting, sucking, licking or swallowing it — unless it is food.';
 
 /**
  * The NPC pronoun line for a character's own words. Live (7MJXE5): Barnaby
@@ -270,6 +295,7 @@ export class CharacterAgent {
       skillRotationBlock ? `\n<skill_rotation>${skillRotationBlock}\n</skill_rotation>` : '',
       phraseVarietyBlock ? `\n<phrasing>${phraseVarietyBlock}\n</phrasing>` : '',
       npcDirective ? `\n<npcs>${npcDirective}\n</npcs>` : '',
+      characterItemsBlock(ctx.definition.name, ctx.partyItems, ctx.goneItems),
       `\n<events>\n${recentTranscript}\n</events>`,
       `\n<task>`,
       `Propose 2-4 actions. Keep each description under 20 words. Include one bold/risky option. Each action should advance a SPECIFIC goal from your memories or the world state — follow up on a clue you found, confront someone whose behavior was suspicious, explore a location mentioned but not visited, or protect something you care about. Reference NPCs, items, or locations you know about BY NAME. Make at least one action SOCIAL — actually TALK to a named NPC (ask them a question, demand answers, plead for help, threaten them). "I ask the merchant about the missing shipments" not "I investigate the area." If you have companions, at least one action MUST involve them directly — ${ADDRESS_DIRECTIVE}: "I tell ${companionNames || 'my companion'} to watch the door" or "I ask ${companionNames || 'my companion'} for their opinion on..." — parties are parties because members interact.`,
@@ -370,6 +396,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       memoryGoalBlock,
       whisperText ? `\n<whisper>${whisperText}\n</whisper>` : '',
       itemReminder ? `\n<inventory>${itemReminder}\n</inventory>` : '',
+      characterItemsBlock(ctx.definition.name, ctx.partyItems, ctx.goneItems),
       varietyBlock ? `\n<recent_actions>${varietyBlock}\n</recent_actions>` : '',
       decisionRotationBlock ? `\n<skill_rotation>${decisionRotationBlock}\n</skill_rotation>` : '',
       decisionPhraseBlock ? `\n<phrasing>${decisionPhraseBlock}\n</phrasing>` : '',
@@ -453,7 +480,8 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
         : '',
       ctx.state.inventory && ctx.state.inventory.length > 0
         ? `Inventory: ${ctx.state.inventory.join(', ')} — USE these items in your actions when relevant. A lantern lights dark places, a map reveals paths, a lockpick opens doors.`
-        : '',
+        : 'Inventory: nothing — you are not carrying anything right now.',
+      HELD_NOT_EATEN,
       memoryBlock,
       npcPronounRule(ctx.npcPronouns),
       ctx.partyMembers && ctx.partyMembers.length > 0
