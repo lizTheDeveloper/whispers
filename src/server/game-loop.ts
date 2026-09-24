@@ -16,7 +16,7 @@ import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
 import { getSessionTokenForCharacter } from './room.js';
 import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
-import { LineRotation, invokeLines, compelLines, appendBeat, withoutStockBeats } from './template-lines.js';
+import { LineRotation, invokeLines, compelLines, gentleCompelLines, appendBeat, withoutStockBeats } from './template-lines.js';
 import { gateGentleTone, gateChildOptions, gateChildThought, type ToneJudge, type ToneListJudge, type ToneKind } from './tone-gate.js';
 import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet, partyRolesLine } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
@@ -1878,14 +1878,21 @@ export class GameLoop {
     // A gentle table's child reads their own options (round 16, NUMMRL: "pull
     // her back before the shelf slams shut on her hand"): softened, then all
     // judged in one short call, and a flagged option dropped — never rewritten.
-    if (this.familyTable() && this.isChild(character)) {
-      for (const a of proposals.actions) {
-        a.description = softenForChildren(a.description);
-        if (a.reasoning) a.reasoning = softenForChildren(a.reasoning);
+    // Round 18 (39PF4D): a grown-up's options too ("Sneak a pen behind my back
+    // to threaten The Dust Bunny with a formal audit"), under the grown-up's rule.
+    if (this.familyTable()) {
+      const child = this.isChild(character);
+      if (child) {
+        for (const a of proposals.actions) {
+          a.description = softenForChildren(a.description);
+          if (a.reasoning) a.reasoning = softenForChildren(a.reasoning);
+        }
       }
       const options = proposals.actions;
       const gated = await this.haltable(
-        () => gateChildOptions(options.map(a => a.description), { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name }),
+        () => gateChildOptions(options.map(a => a.description), child
+          ? { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name }
+          : { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: 'adult', label: character.definition.name }),
         (e) => { console.error('[tone-gate] options gate failed — kept as written:', e); return { keep: options.map((_, i) => i), dropped: [] }; },
       );
       if (!gated) return;
@@ -2550,7 +2557,13 @@ export class GameLoop {
           this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
           const compelFirst = getFirstName(character.definition.name);
           const compelTrouble = character.definition.trouble;
-          const compelLine = this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText(), { whenSpent: 'skip' });
+          // Round 18 (39PF4D): the child at a gentle table hears a warm line —
+          // never "How many times now? "Wanders off…", again", never their
+          // trouble quoted back at them.
+          const gentleChild = this.familyTable() && this.isChild(character);
+          const compelLine = gentleChild
+            ? this.lines.pick('compel-gentle', gentleCompelLines(compelFirst), this.recentStoryText(), { whenSpent: 'skip' })
+            : this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText(), { whenSpent: 'skip' });
           if (compelLine) {
             resolution.narration += `\n\n${compelLine}`;
             stockBeats.push(compelLine);

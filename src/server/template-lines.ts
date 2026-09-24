@@ -142,6 +142,45 @@ export function withoutStockBeats(text: string, beats: string[]): string {
   return out === text ? text : out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+/**
+ * The compel line for the CHILD at a gentle table (round 18, live 39PF4D):
+ * `How many times now? "Wanders off after anything shiny", again. Biz takes
+ * the setback and a token for the trouble.` — the stock line counted the
+ * child's slips and quoted their trouble back at them, a telling-off in the
+ * narrator's voice, on the turn an NPC had already eyed them "with weary
+ * suspicion". These are warm: a detour, a little luck saved up, never a
+ * count, a sigh or the trouble in quotes. Names only; no two share a
+ * four-word phrase.
+ */
+export function gentleCompelLines(name: string): string[] {
+  return [
+    `${name} gets a little sidetracked, and that is all right — a bit of luck is tucked away for later.`,
+    `A small detour for ${name}. The story smiles and saves ${name} a lucky penny.`,
+    `${name} follows their curiosity for a moment; it earns a little something for later.`,
+    `That is just how ${name} is, and the story likes ${name} for it. Some luck goes in the pocket.`,
+    `Curious as ever, ${name} takes the scenic route — and picks up a spot of luck on the way.`,
+    `${name}'s attention wanders for a heartbeat, and a small reward waits at the end of it.`,
+    `The long way round suits ${name} fine. Something good is saved up for later.`,
+    `${name} pauses to look, like explorers do. The dice will be kind next time.`,
+    `A little side-quest for ${name}, and a gold star to show for it.`,
+    `${name} being ${name}: it slows things down a touch, and it is worth a point.`,
+    `One more wonder noticed by ${name}, and one more bit of luck in the bag.`,
+    `Every good explorer gets distracted sometimes. ${name} earns a lucky token.`,
+    `${name}'s eyes light up at something, and the story keeps a treat aside for ${name}.`,
+    `It takes ${name} a moment longer, and that is fine; luck is on its way.`,
+    `There goes ${name}, noticing everything. A little luck comes along too.`,
+    `${name} stops to marvel. The moment passes, and a bright token stays behind.`,
+    `A bit of a wobble for ${name}, nothing more — and a lucky charm to keep.`,
+    `${name} goes their own way for a breath, and the tale tucks a reward into ${name}'s pocket.`,
+    `Wide-eyed and wondering, ${name} takes the slow road; luck saves ${name} a seat.`,
+    `The world is full of interesting things, and ${name} sees them all. A point for ${name}.`,
+    `${name}'s curiosity leads the way for a moment — and leaves a little sparkle behind.`,
+    `A small hiccup, happily made by ${name}; good luck is waiting just ahead.`,
+    `Nothing wrong with a peek. ${name} earns a shiny bit of luck.`,
+    `${name} lingers a moment over something wonderful, and the day repays it kindly.`,
+  ];
+}
+
 /** The line when a character spends a fate point on their high concept. Names only, no pronouns. No two share a four-word phrase. */
 export function invokeLines(name: string, aspect: string): string[] {
   return [
