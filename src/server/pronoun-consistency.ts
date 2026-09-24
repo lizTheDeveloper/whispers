@@ -59,9 +59,11 @@ const FORMS: Record<'she' | 'he' | 'they', string[]> = {
 };
 /** Nouns that state a gender about the person they describe. Kept tight: "man" and "woman" are too often someone else. */
 const WORDS: Record<'she' | 'he', string[]> = {
-  she: ['girl', 'daughter', 'lass'],
-  he: ['boy', 'son', 'lad'],
+  she: ['girl', 'daughter', 'lass', 'young lady', 'young woman'],
+  he: ['boy', 'son', 'lad', 'young man'],
 };
+/** Two-word gendered nouns, read as one word by wordsIn ("young man"). */
+const YOUNG_NOUN = /\byoung\s+(man|lady|woman)\b/g;
 
 function keyOf(pronouns: string | null | undefined): Key | null {
   const first = pronouns?.trim().toLowerCase().split(/[\/,\s]+/).filter(Boolean)[0];
@@ -140,8 +142,8 @@ function asksAboutPronouns(sentence: string): boolean {
  * "he/him/his", "they / them"): asking which pronouns to use is not using one.
  */
 function wordsIn(sentence: string): string[] {
-  const withoutOptions = sentence.toLowerCase().replace(OPTION_LIST, ' ');
-  return (withoutOptions.match(/[a-z]+/g) ?? []);
+  const withoutOptions = sentence.toLowerCase().replace(OPTION_LIST, ' ').replace(YOUNG_NOUN, 'young~$1');
+  return (withoutOptions.match(/[a-z~]+/g) ?? []).map(w => w.replace('~', ' '));
 }
 
 export interface PronounConflict {
@@ -170,6 +172,49 @@ function npcMatcher(members: PronounMember[], npcNames: string[]): (sentence: st
   const npcWords = [...new Set(npcs.flatMap(n => [n, ...n.split(/\s+/).filter(w => /^[A-Z]/.test(w) && w.length >= 3 && !NOT_A_NAME.has(w.toLowerCase()))]))];
   const npcRe = npcWords.length > 0 ? new RegExp(`(?<![\\w'’-])(?:${npcWords.map(esc).join('|')})(?![\\w'’-])`) : null;
   return (sentence: string) => !!npcRe && npcRe.test(sentence);
+}
+
+/**
+ * Capitalised words at the start of a sentence (or after an opening quote)
+ * that are ordinary words, not names. Anything else capitalised and not a
+ * party member's name is taken for someone the NPC list does not know yet.
+ */
+const COMMON_CAPITALISED = new Set([
+  'a', 'an', 'the', 'and', 'but', 'or', 'so', 'yet', 'nor', 'for', 'i', 'we', 'you', 'he', 'she', 'it', 'they', 'his', 'her', 'its', 'their', 'our', 'my', 'your',
+  'this', 'that', 'these', 'those', 'there', 'here', 'then', 'now', 'still', 'even', 'just', 'only', 'also', 'again', 'once', 'soon', 'later', 'finally', 'meanwhile',
+  'as', 'at', 'by', 'in', 'on', 'of', 'off', 'to', 'up', 'down', 'out', 'over', 'under', 'into', 'onto', 'from', 'with', 'without', 'within', 'behind', 'beside', 'beyond',
+  'above', 'below', 'across', 'along', 'around', 'through', 'toward', 'towards', 'inside', 'outside', 'near', 'past', 'before', 'after', 'during', 'until', 'while', 'when',
+  'where', 'what', 'who', 'whom', 'whose', 'why', 'how', 'which', 'if', 'though', 'although', 'because', 'since', 'unless', 'whether', 'somewhere', 'something', 'someone',
+  'nothing', 'no', 'not', 'yes', 'oh', 'ah', 'every', 'each', 'all', 'both', 'some', 'any', 'none', 'one', 'two', 'three', 'another', 'other', 'others', 'more', 'most',
+  'much', 'many', 'few', 'too', 'very', 'far', 'high', 'low', 'deep', 'far', 'let', 'can', 'could', 'will', 'would', 'should', 'must', 'may', 'might', 'do', 'does', 'did',
+  'is', 'are', 'was', 'were', 'be', 'been', 'has', 'have', 'had', 'suddenly', 'slowly', 'quickly', 'somehow', 'overhead', 'nearby', 'ahead', 'outside', 'upstairs',
+]);
+
+/**
+ * Does a sentence name someone who is neither a party member nor on the NPC
+ * list — "Odo steps forward, his stormcloud coat…" when Odo only just walked
+ * in? Quoted speech, ordinary sentence-openers and a capitalised place after
+ * "the" ("the Grand Registry") do not count. Used only to keep the code's
+ * own repair away: a wrong "yes" sends a sentence to the model, never the
+ * other way round.
+ */
+function namesSomeoneElse(sentence: string, members: PronounMember[]): boolean {
+  const party = new Set(members.map(m => firstName(m.name).toLowerCase()));
+  for (const run of quoteRuns(sentence)) {
+    if (run.quoted) continue;
+    const re = /(?<![\w'’-])([A-Z][a-z'’-]+)/g;
+    for (const m of run.text.matchAll(re)) {
+      const word = m[1]!.replace(/['’]s$/, '');
+      const lower = word.toLowerCase();
+      if (party.has(lower) || COMMON_CAPITALISED.has(lower)) continue;
+      if (/(?:ly|ing)$/.test(lower) && m.index === run.text.search(/\S/)) continue;
+      const before = run.text.slice(0, m.index);
+      // "the Grand Registry Hall", "The Lamp Room": a place or a thing.
+      if (/\b(?:the|The)\s+(?:[A-Z][\w'’-]*\s+)*$/.test(before)) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 interface Flagged extends PronounConflict {
@@ -278,6 +323,8 @@ export const PRONOUN_REWRITE_MARKER = 'You correct how people are referred to in
 const REWRITE_RULES = 'Change NOTHING else: keep every other word, sentence, name, line break and punctuation mark as it is, apart from the pronoun and whatever verb agreement it needs ("they are", not "they is"). Pronouns and words for anyone else — NPCs, creatures, objects — stay exactly as written. A list of pronoun options ("she/her, he/him, they/them") is never changed. Reply with the passage only: no preamble, no quotation marks around it, no notes.';
 
 const ALL_FORMS = new Set([...FORMS.she, ...FORMS.he, ...FORMS.they, ...WORDS.she, ...WORDS.he]);
+/** What a gendered noun becomes for someone it does not fit. */
+const NEUTRAL_NOUNS = new Set(['kid', 'child', 'youngster', 'person']);
 /** Verb agreement a pronoun change brings with it. */
 const AGREEMENT: Record<string, string> = { are: 'is', were: 'was', have: 'has', do: 'does', "they're": "is", "she's": 'is', "he's": 'is' };
 
@@ -287,10 +334,11 @@ const AGREEMENT: Record<string, string> = { are: 'is', were: 'was', have: 'has',
  * read the same; "Tilly Tink, the thief, grabs the seal" does not.
  */
 function skeleton(sentence: string): string {
-  return (sentence.toLowerCase().replace(OPTION_LIST, ' / ').match(/[a-z'’/]+/g) ?? [])
+  return (sentence.toLowerCase().replace(OPTION_LIST, ' / ').replace(/\byoung\s+(?:man|lady|woman|person|one)\b/g, ' ').match(/[a-z'’/]+/g) ?? [])
     // A quotation mark is not part of a word: 'A letter.' and "A letter." read the same.
     .map(w => w.replace(/’/g, "'").replace(/^'+|'+$/g, ''))
-    .filter(w => w && !ALL_FORMS.has(w))
+    // A gendered noun and its neutral stand-in ("the boy" / "the kid") read the same.
+    .filter(w => { const base = w.replace(/'s$/, ''); return w && !ALL_FORMS.has(base) && !NEUTRAL_NOUNS.has(base); })
     .map(w => AGREEMENT[w] ?? w)
     // Verb agreement both ways: "he declares" and "they declare" are the
     // same sentence. (Stripping a bare -s/-es made "declares" "declar" but
@@ -421,6 +469,10 @@ export function toTheyThem(sentence: string): string {
   }).join('');
 }
 
+function nearSomeoneElse(list: string[], i: number, members: PronounMember[], namesNpc: (s: string) => boolean): boolean {
+  return [list[i], i > 0 ? list[i - 1] : undefined].some(s => s !== undefined && (namesNpc(s) || namesSomeoneElse(s, members)));
+}
+
 /**
  * Flagged sentences that code can repair on its own, by index: the sentence
  * names exactly one party member — a they/them member, and the one every
@@ -441,7 +493,10 @@ function deterministicRepairs(list: string[], conflicts: Flagged[], members: Pro
     if (!owner || keyOf(owner.pronouns) !== 'they' || cs.some(c => c.name !== owner.name)) continue;
     const named = members.filter(m => mentions(sentence, m));
     if (named.length !== 1 || named[0] !== owner) continue;
-    if (namesNpc(sentence) || (i > 0 && namesNpc(list[i - 1]!))) continue;
+    // An NPC — known, or a name nobody has listed yet ("Odo steps forward,
+    // his stormcloud coat…") — in this sentence or the one before: the
+    // "his" may well be theirs, so the model decides, never the code.
+    if (nearSomeoneElse(list, i, members, namesNpc)) continue;
     const unquoted = quoteRuns(sentence).filter(r => !r.quoted).map(r => r.text).join(' ');
     const words = wordsIn(unquoted);
     if (words.some(w => FORMS.they.includes(w))) continue;
@@ -486,12 +541,105 @@ export async function withConsistentPronouns(text: string, members: PronounMembe
   const stated = members.filter(m => keyOf(m.pronouns));
   const list = stated.map(m => `- ${m.name}: ${m.pronouns!.trim()}`).join('\n');
   const partyFirst = new Set(members.map(m => firstName(m.name).toLowerCase()));
-  const others = [...new Set((opts.npcNames ?? []).map(n => n.trim()).filter(n => n && !partyFirst.has(firstName(n).toLowerCase()) && current.includes(firstName(n))))];
+  // Everyone else by name — the NPC list, and anyone named here it does not know yet.
+  const unlisted = [...current.matchAll(/(?<![\w'’-])([A-Z][a-z'’-]+)/g)].map(m => m[1]!.replace(/['’]s$/, ''))
+    .filter(w => !partyFirst.has(w.toLowerCase()) && namesSomeoneElse(w, members));
+  const others = [...new Set([...(opts.npcNames ?? []).map(n => n.trim()).filter(n => n && !partyFirst.has(firstName(n).toLowerCase()) && current.includes(firstName(n))), ...unlisted])];
   const othersLine = others.length > 0 ? ` Everyone else keeps their pronouns exactly as written — including ${others.join(', ')}.` : '';
   const system = `${PRONOUN_REWRITE_MARKER}. Rewrite this passage so that each party member listed is referred to with their stated pronouns. Change pronouns for only the listed party members, and only where the word refers to that member.${othersLine} ${REWRITE_RULES}`;
   const user = `Party members and their stated pronouns:\n${list}\n\nPassage:\n${current}`;
   console.log(`[pronouns] asking for a rewrite of sentence${remaining.size === 1 ? '' : 's'} ${[...remaining].map(i => i + 1).join(', ')}`);
-  return rewrite(current, system, user, members.map(m => m.name), remaining, opts.llm ?? defaultLlm, 'narration');
+  const llm = opts.llm ?? defaultLlm;
+  let out = await rewrite(current, system, user, members.map(m => m.name), remaining, llm, 'narration');
+
+  // The rewrite is checked again, not trusted: live, qwen sent "the boy" back
+  // unchanged fifteen times in one game and nothing noticed.
+  let still = stillConflicting(out, members, opts, remaining);
+  if (still.length === 0) return out;
+  console.warn(`[pronouns] narration rewrite ${out === current ? 'came back unchanged' : 'still misgenders'} (${still.map(c => `"${c.word}" for ${c.name} in sentence ${c.index + 1}`).join('; ')}); asking once more, more strictly`);
+  const strictUser = `${user}\n\nSTILL WRONG — the last rewrite left these unchanged. Fix exactly these, and nothing else:\n${still.map(c => `- In "${c.sentence}", "${c.word}" refers to ${c.name}, whose pronouns are ${c.pronouns}. Replace it with the right pronoun, or with ${firstName(c.name)}'s name or a neutral word ("kid", "child") for a gendered word like "boy" or "son".`).join('\n')}`;
+  const second = await rewrite(out, system, strictUser, members.map(m => m.name), new Set(still.map(c => c.index)), llm, 'narration (strict)');
+  if (second === out) console.warn('[pronouns] strict rewrite came back unchanged too');
+  out = second;
+  still = stillConflicting(out, members, opts, remaining);
+  if (still.length === 0) return out;
+
+  // Last, in code, where it is safe: a sentence whose only party referent is
+  // that member, and no NPC — listed or not — in it or just before it.
+  const { lead: lead2, list: ps2 } = pieces(out);
+  const trimmed2 = ps2.map(p => p.text.trim());
+  const repaired = fallbackRepairs(trimmed2, still, members, opts.npcNames ?? []);
+  if (repaired.size === 0) {
+    console.warn(`[pronouns] could not repair ${still.map(c => `"${c.word}" for ${c.name}`).join('; ')} safely in code; left as written`);
+    return out;
+  }
+  console.log(`[pronouns] repaired in code after the model did not: ${[...repaired.entries()].map(([i, f]) => `"${trimmed2[i]!.slice(0, 60)}" → "${f.slice(0, 60)}"`).join('; ')}`);
+  return lead2 + ps2.map((p, i) => {
+    const f = repaired.get(i);
+    return (f !== undefined ? p.text.replace(trimmed2[i]!, f) : p.text) + p.sep;
+  }).join('');
+}
+
+/** Conflicts left in `text`, among the sentences that were flagged to begin with. */
+function stillConflicting(text: string, members: PronounMember[], opts: ConflictOptions, flagged: Set<number>): Flagged[] {
+  const { list } = pieces(text);
+  return flagConflicts(list.map(p => p.text.trim()), list.map(p => p.sep.includes('\n')), members, opts).filter(c => flagged.has(c.index));
+}
+
+/** "the boy" → a they/them member's name, "her son" → "her child", "the boy" for a she/her member → her name. */
+function repairNouns(sentence: string, owner: PronounMember): string {
+  const key = keyOf(owner.pronouns);
+  const bad = conflictingWords(key!);
+  const name = firstName(owner.name);
+  const kinFor = (w: string) => (key === 'she' ? (w === 'son' ? 'daughter' : w) : key === 'he' ? (w === 'daughter' ? 'son' : w) : 'child');
+  return quoteRuns(sentence).map(run => {
+    if (run.quoted) return run.text;
+    return run.text
+      // "the boy", "The boy's": someone the story already knows — the member.
+      .replace(/\b([Tt]he)\s+(boy|girl|lad|lass|young\s+(?:man|lady|woman))(['’]s)?\b/g, (m: string, _the: string, noun: string, poss: string | undefined) =>
+        bad.has(noun.toLowerCase().replace(/\s+/g, ' ')) ? `${name}${poss ?? ''}` : m)
+      // "her son", "Liz's boy": a kin or child word after a possessive.
+      .replace(/\b(her|his|their|[A-Z][\w]*['’]s)\s+(son|daughter|boy|girl|lad|lass)\b/g, (m: string, poss: string, noun: string) => {
+        const w = noun.toLowerCase();
+        if (!bad.has(w)) return m;
+        if (w === 'son' || w === 'daughter') return `${poss} ${kinFor(w)}`;
+        return `${poss} ${key === 'she' ? 'girl' : key === 'he' ? 'boy' : 'kid'}`;
+      });
+  }).join('');
+}
+
+/**
+ * The code's last resort once the model has twice left a conflict in place.
+ * A sentence qualifies only when the member is its only possible party
+ * referent — no other party member named, nobody else at the table who could
+ * own the word — and no NPC, listed or not, is in it or the sentence before.
+ * Gendered nouns ("the boy") become the member's name or a neutral word; for
+ * a they/them member, he/she words become they-words (toTheyThem).
+ */
+function fallbackRepairs(list: string[], conflicts: Flagged[], members: PronounMember[], npcNames: string[]): Map<number, string> {
+  const out = new Map<number, string>();
+  const namesNpc = npcMatcher(members, npcNames);
+  const byIndex = new Map<number, Flagged[]>();
+  for (const c of conflicts) byIndex.set(c.index, [...(byIndex.get(c.index) ?? []), c]);
+  for (const [i, cs] of byIndex) {
+    const sentence = list[i]!;
+    const owner = members.find(m => m.name === cs[0]!.name);
+    if (!owner || cs.some(c => c.name !== owner.name)) continue;
+    if (members.some(m => m !== owner && mentions(sentence, m))) continue;
+    if (nearSomeoneElse(list, i, members, namesNpc)) continue;
+    // Nobody else at the table could be the one meant.
+    if (cs.some(c => members.some(m => m !== owner && couldOwn(m, c.word)))) continue;
+    let fixed = repairNouns(sentence, owner);
+    const words = wordsIn(quoteRuns(fixed).filter(r => !r.quoted).map(r => r.text).join(' '));
+    const pronounsLeft = words.some(w => HE_FAMILY.has(w) || SHE_FAMILY.has(w));
+    if (pronounsLeft && keyOf(owner.pronouns) === 'they' && !words.some(w => FORMS.they.includes(w))) {
+      const he = words.some(w => HE_FAMILY.has(w));
+      const she = words.some(w => SHE_FAMILY.has(w));
+      if (he !== she) fixed = toTheyThem(fixed);
+    }
+    if (fixed !== sentence) out.set(i, fixed);
+  }
+  return out;
 }
 
 const GENDERED = new Set([...FORMS.he, ...FORMS.she]);

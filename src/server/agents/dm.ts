@@ -4,6 +4,8 @@ import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, Scene
 import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply, DmOpening } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { PLAIN_PROSE_STYLE } from './style.js';
+import { repetitionNotes } from '../narrative-guards.js';
+import { wantsNoSpoilers } from '../../shared/spoilers.js';
 import { safeDataFile } from '../data-paths.js';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, CharacterRelationship, TranscriptMessage, DiceResult, WorldSeed, TableRole } from '../../shared/types.js';
@@ -48,9 +50,73 @@ function clip(text: string, max: number): string {
 }
 
 /** The slice of a character sheet the DM needs to know who is actually playing. */
-/** Has the host asked, anywhere in the setup chat, not to be spoiled ("No spoilers for me please, I'm playing in it too")? */
-export function wantsNoSpoilers(history: Array<{ role: string; content: string }>): boolean {
-  return history.some(m => m.role === 'user' && /\bno spoilers?\b|\bdon['’]?t spoil|\bdo not spoil|\bwithout spoilers|\bspoiler[- ]free|\bnot spoil|\bi['’]?m (?:also )?playing\b|\bi am (?:also )?playing\b|\bplaying in it\b|\bdon['’]?t tell me\b|\bdo not tell me\b|\bsurprise me\b/i.test(m.content));
+export { wantsNoSpoilers };
+
+/**
+ * Mild OpenAI-style penalties for DM prose (narration, rulings). Sent with
+ * every request; the shared game proxy does not forward them yet.
+ */
+const REPETITION_PENALTIES = { frequencyPenalty: 0.3, presencePenalty: 0.3 } as const;
+
+/** The greeting's user turn: the setup chat has no host message yet. */
+export const SETUP_GREETING_CUE = '(The host has just opened the setup chat. Greet them and ask your first question.)';
+/** Starts the second ask after a reply that repeated an earlier one. */
+export const SETUP_REPEAT_NUDGE = 'That reply repeats one you already sent, word for word.';
+
+/**
+ * The setup history with the host's latest message marked as the one to
+ * answer. Qwen, given a strict no-spoiler system prompt, answered the
+ * host's first message over and over; this is the same nudge the character
+ * interview gives its last turn. Only the copy sent to the model changes.
+ */
+export function anchorLatestHostMessage(history: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> {
+  const out = [...history];
+  const last = out[out.length - 1];
+  if (last && last.role === 'user') {
+    out[out.length - 1] = { ...last, content: `${last.content}\n\n(Reply to THIS message — what the host just said — and move the setup forward. Never repeat an earlier reply. "influences" lists every influence the host has named so far.)` };
+  }
+  return out;
+}
+
+/** Two replies that say the same thing word for word, ignoring case, spacing and punctuation. */
+function sameReplyKey(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** What to say when the model will only repeat itself: the next thing setup still needs. */
+export function nextSetupQuestion(unmet: string[]): string {
+  if (unmet.some(u => /influence/i.test(u))) {
+    return 'Noted. What should this world feel like? Name at least three influences — books, films, games, records, painters, anything — and I will build from where they meet.';
+  }
+  if (unmet.some(u => /summary|how you want this game run/i.test(u))) {
+    return 'Noted. Tell me how you want this game to run — the tone at the table, anything off limits, anything you are hoping for.';
+  }
+  return 'Noted. What else should I know about the game you want?';
+}
+
+/**
+ * Influences the host names outright: "three influences: Discworld, Spirited
+ * Away, and Brazil", "my influences are…", "inspired by…". Split on commas
+ * (and a final "and" after one); a title with "and" in it and no commas
+ * around it stays whole. Anything unsure is left to the model.
+ */
+export function influencesNamedIn(text: string): string[] {
+  const m = text.match(/\binfluences?\b[^:.!?\n]{0,40}?(?::|\bare\b|\bis\b|—|–)\s*([^\n]+)/i)
+    ?? text.match(/\binspired by\s+([^\n]+)/i);
+  if (!m) return [];
+  let list = m[1]!.trim().replace(/[.!?]+$/, '');
+  // Stop at a sentence that follows the list ("…and Brazil. Keep it light.").
+  list = list.split(/(?<=[a-z0-9)"'”’])[.!?]\s+(?=[A-Z])/)[0]!;
+  const parts = list.includes(',') || list.includes(';')
+    ? list.split(/\s*[,;]\s*/).flatMap((p, i, all) => {
+        if (i !== all.length - 1) return [p];
+        // "…, and Brazil" (a serial comma) or "…, Spirited Away and Brazil".
+        return /^(?:and|&)\s+/i.test(p) ? [p] : p.split(/\s+(?:and|&)\s+(?=[A-Z0-9"“'‘])/);
+      })
+    : [list];
+  return parts
+    .map(p => p.trim().replace(/^(?:and|&)\s+/i, '').replace(/^["“'‘]|["”'’]$/g, '').trim())
+    .filter(p => p.length >= 2 && p.length <= 80 && /[A-Za-z]/.test(p));
 }
 
 export interface PartyMember {
@@ -391,7 +457,8 @@ Storytelling principles:
 - Build toward a dramatic question — each scene should move the story closer to answering: will the party succeed, and at what cost?
 - ADVANCE THROUGH LOCATIONS: Check the "Known locations" list in the world state — the party should visit these NAMED locations as the story progresses. Use their EXACT names in your narration (e.g. "The Clockwork Antechamber" not "a chamber"). Don't let them linger in one location for more than 2-3 rounds. Each scene transition should move deeper into the adventure. If the party has been in the same location for 3+ rounds, create a reason to move them forward — a collapsing passage, a discovered exit, an NPC leading them onward.
 - PARTY DYNAMICS: When multiple characters are present, create situations that force them to INTERACT — a locked door one can pick while another stands guard, a moral dilemma where their values conflict, an NPC who trusts one character but fears another. Reference each character's last action in your narration. If one character just failed, show how it affects the others. The most interesting party moments come from characters disagreeing about what to do next.
-- WHISPER AWARENESS: Characters hear a mysterious voice (the player's whispers). When the transcript shows a character heeded or resisted a whisper, weave that into the narrative. A character following dangerous whispers might attract dark attention; one resisting wise counsel might face harder consequences. The whisper influence is the game's central tension — make it matter in the story.
+- WHISPER AWARENESS: Characters hear a mysterious voice (the player's whispers). When the transcript shows a character heeded or resisted a whisper, weave the CONSEQUENCES into the narrative. A character following dangerous whispers might attract dark attention; one resisting wise counsel might face harder consequences. The whisper influence is the game's central tension — make it matter in the story.
+- Whispers come ONLY from the players, and they are private. You never narrate a whisper or a voice speaking to a character — no voice in anyone's ear, head or mind, no whispered instruction, hint or warning — and you never quote, paraphrase or reveal what a whisper said. Show only what the characters do.
 - CREATE WHISPER MOMENTS: At least once per scene, present a situation where the "right" choice is ambiguous — a locked door that could be forced or bypassed, a suspicious ally, a tempting shortcut through danger. These fork-in-the-road moments give the player interesting whisper decisions. The player is the character's conscience, and the best stories emerge when conscience is tested.
 - USE ITEMS BY EXACT NAME: If the world state lists "Unclaimed items" or "Items you could pick up," use their EXACT names in your narration (e.g. "the Crystal Shard" not "a crystal," "Sparks' Blueprint" not "a map"). Describe a character spotting the item, an NPC offering it, or a situation where it would be useful. When resolving actions, if a character's inventory contains a relevant item, acknowledge it BY NAME and grant a narrative advantage. Items are plot hooks — "Sparks' Blueprint" hints at a secret passage, "the Gala Invitation" proves identity, "the Clockwork Lockpick" opens doors. Named items connect to the game's tracking system — paraphrased items get lost.
 `;
@@ -544,6 +611,10 @@ export class DmAgent {
       ? this.buildTroubleHint(pacing.characterSummaries)
       : '';
 
+    // qwen repeats itself: an NPC's exact line came back 50s later (and
+    // another NPC echoed it), and the same few sensory words recurred.
+    const repetition = repetitionNotes(ctx.transcript.filter(m => m.role === 'dm').slice(-6).map(m => m.content));
+
     const userMessage = [
       `<scene>`,
       sceneLabel,
@@ -554,6 +625,7 @@ export class DmAgent {
       `\n<world>\n${ctx.worldSummary}\n</world>`,
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
+      repetition ? `\n<already_said>\n${repetition}\n</already_said>` : '',
       `\n<task>`,
       `Narrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. VARY YOUR OPENING — don't start with the character's name every time. Try starting with: a sound, an NPC speaking, a sensory detail, a shift in the environment, or an action in progress. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.\nNPC INITIATIVE: If activeNpcs are present, at least one NPC must SPEAK or ACT in the narration — they approach the party, ask a question, block a path, offer information, make a demand, or reveal something. "The foreman steps from the shadows, voice hoarse: 'You shouldn't be down here.'" NPCs who initiate create drama the characters MUST respond to.${partyHint}`,
       `currentLocationName MUST be COPIED EXACTLY from the <valid_locations> list above. NEVER invent a new location name. If no <valid_locations> section exists, you may introduce a new name.${personalityReminder}`,
@@ -568,6 +640,7 @@ export class DmAgent {
       ],
       schema: DmNarrationSchema,
       maxTokens: 2048,
+      ...REPETITION_PENALTIES,
     });
   }
 
@@ -677,12 +750,14 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
 
     const recentTranscript = ctx.transcript.slice(-6).map(m => `[${m.role}] ${m.content}`).join('\n');
+    const repetition = repetitionNotes(ctx.transcript.filter(m => m.role === 'dm').slice(-6).map(m => m.content));
 
     const userMessage = [
       charBlock ? `<character>\n${charBlock.trim()}\n</character>` : '',
       `\n<action>\n${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n</action>`,
       ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',
       `\n<context>\n${recentTranscript}\n</context>`,
+      repetition ? `\n<already_said>\n${repetition}\n</already_said>` : '',
       ruleContext ? `\n<rules>\n${ruleContext}\n</rules>` : '',
       `\n<task>`,
       `Resolve ${characterInfo ? characterInfo.name + "'s" : 'this'} action using the FATE steps above. A wounded character (high stress, existing consequences) should face HIGHER difficulty (+1 per consequence). Apply meaningful state changes:`,
@@ -694,7 +769,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       `NPC DIALOGUE: If the action involves talking to, questioning, persuading, or confronting an NPC, the narration MUST include the NPC's spoken response in quotation marks. NPCs who respond with actual words create real drama — "I'll tell you nothing, sellsword" hits harder than "the merchant refuses."`,
       `COOPERATIVE ACTIONS: If the action references a party member by name (coordinating, protecting, assisting), lower the difficulty by 1 and narrate how the teamwork helps. If the action HARMS or abandons a party member, add stress to BOTH characters — betrayal costs everyone.`,
       `PARTY DIALOGUE: If the action includes spoken words addressed to a companion (quoted dialogue), show a BRIEF physical reaction from that companion in your narration — a nod, a glare, a flinch, a skeptical eyebrow, a hand on their weapon. Do NOT put words in the companion's mouth (they speak on their own turn), but show they HEARD and REACTED. Dead-eyed companions who ignore each other kill immersion. A companion who is TAKEN OUT does not react, speak or act at all — they are down until they recover.`,
-      `INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If they USE an item destructively (a potion consumed, a key that breaks), add {"field":"inventory","action":"remove","value":"<item name>"} to stateChanges. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"}.`,
+      `INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If they USE an item destructively (a potion consumed, a key that breaks), add {"field":"inventory","action":"remove","value":"<item name>"} to stateChanges. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"} — and only then: the narration must show them taking it, picking it up or being handed it. Saying an item is theirs, asking for it or claiming it in words is NOT gaining it; an item someone else holds stays theirs unless your narration shows it change hands.`,
       `FATE POINT ECONOMY: If this action touches the character's trouble aspect or a consequence, COMPEL it — add {"field":"fatePoints","action":"set","value":${(characterInfo?.fatePoints ?? 3) + 1}} and narrate the complication. If the character spent effort invoking an aspect (referenced it in their action), spend a fate point: {"field":"fatePoints","action":"set","value":${Math.max(0, (characterInfo?.fatePoints ?? 3) - 1)}}.${consequenceGuide}${personalityReminder}`,
       `Respond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens.${narrationHint}", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }`,
       `stateChanges must be objects, not strings. Use [] if no mechanical changes apply.`,
@@ -708,6 +783,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       ],
       schema: DmResolutionSchema,
       maxTokens: 1536,
+      ...REPETITION_PENALTIES,
     });
   }
 
@@ -753,8 +829,51 @@ ${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` :
 
 Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }`;
 
+    // The greeting (no history yet) has a user turn of its own: Qwen's chat
+    // template refuses a request without one, and live the greeting failed
+    // with a 400 every time. Otherwise the host's latest message is anchored
+    // (see anchorLatestHostMessage).
+    const history = opts.history.length === 0
+      ? [{ role: 'user', content: SETUP_GREETING_CUE }]
+      : anchorLatestHostMessage(opts.history);
+    const messages = [{ role: 'system', content: systemPrompt }, ...history];
+    const first = await this.setupReply(messages);
+    let reply = first;
+    // Live (EV94GS, a no-spoiler host): four different host messages got the
+    // same reply word for word, and no influence was ever recorded. A reply
+    // identical to one already sent is never accepted: ask once more, naming
+    // the host's latest message, and if it repeats again say something that
+    // moves the setup on instead of sending it a fifth time.
+    const sent = new Set(opts.history.filter(m => m.role === 'assistant').map(m => sameReplyKey(m.content)));
+    if (sent.has(sameReplyKey(first.reply))) {
+      const latest = [...opts.history].reverse().find(m => m.role === 'user')?.content ?? '';
+      console.warn(`[dm-setup] reply repeats one already sent, word for word ("${first.reply.slice(0, 60)}"); asking again`);
+      const retry = await this.setupReply([
+        ...messages,
+        { role: 'assistant', content: JSON.stringify(first) },
+        { role: 'user', content: `${SETUP_REPEAT_NUDGE} The host's latest message was:\n"${latest}"\nAnswer THAT message: react to what it says, record anything it tells you (a premise, a tone, influences), and ask the next thing you need. Keep every secret out of "reply" as before. Respond with the JSON object only.` },
+      ]).catch(e => { console.error('[dm-setup] retry after a repeated reply failed:', e); return null; });
+      if (retry && !sent.has(sameReplyKey(retry.reply))) {
+        reply = { ...retry, influences: [...(first.influences ?? []), ...(retry.influences ?? [])] };
+      } else {
+        console.warn('[dm-setup] the retry repeated itself too; replying with the next setup question instead');
+        reply = { ...(retry ?? first), reply: nextSetupQuestion(opts.unmet) };
+      }
+    }
+    // Influences the host named outright are recorded even when the model
+    // leaves them out of "influences".
+    const named = opts.history.filter(m => m.role === 'user').flatMap(m => influencesNamedIn(m.content));
+    if (named.length > 0) {
+      const all = [...(reply.influences ?? []), ...named];
+      const seen = new Set<string>();
+      reply = { ...reply, influences: all.filter(i => { const k = i.trim().toLowerCase(); if (!k || seen.has(k)) return false; seen.add(k); return true; }) };
+    }
+    return reply;
+  }
+
+  private setupReply(messages: Array<{ role: string; content: string }>): Promise<DmSetupReply> {
     return callLlm({
-      messages: [{ role: 'system', content: systemPrompt }, ...opts.history],
+      messages,
       schema: DmSetupReplySchema,
       // Left unset, this fell through to the proxy's own default and was
       // observed truncating mid-sentence — the same class of bug already

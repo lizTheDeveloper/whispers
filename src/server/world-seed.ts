@@ -137,7 +137,7 @@ export function isSeedAccepted(db: Database.Database, campaignId: string): boole
  * the drafted world — six words in a row of it, or all of a shorter one.
  * The prompt asks for this; this is the net under it. Null seed: as written.
  */
-export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null): string {
+export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null, fallback?: string): string {
   if (!reply || !seed) return reply;
   const words = (t: string) => t.toLowerCase().match(/[a-z0-9'’]+/g) ?? [];
   const secrets = [...seed.plotHooks, ...seed.npcs.map(n => n.motivation ?? '')].map(words).filter(w => w.length >= 3);
@@ -161,5 +161,7 @@ export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null): stri
     return ok.join(' ');
   });
   const out = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  return out || 'I have the shape of it — the rest you will discover in play. What tone do you want at the table?';
+  // A caller-chosen fallback moves the setup on; the fixed line, sent for
+  // every fully-dropped reply, read to the host as the DM stuck in a loop.
+  return out || fallback || 'I have the shape of it — the rest you will discover in play. What tone do you want at the table?';
 }

@@ -27,6 +27,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransfer,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -66,6 +67,14 @@ function getFirstName(fullName: string): string {
 
 /** Grounding for the epilogue and closing reflections, stated once so both say the same thing. */
 const ENDING_FACTS_RULE = 'Items and places: who holds an item and where something is are exactly as the lists given say — an item handed over is no longer the party\'s; a room belongs to the place the record puts it in. Never say an item was handed over, given, taken or put anywhere unless the item list or the record says so — a plan, a hope or a memory of someone eyeing it is not the item changing hands. A question listed as still open stays open: do not answer it. If you are not sure where something happened or who has an item, do not say.';
+
+/**
+ * The epilogue narrates the record, and only the record. Live: "Liz clutched
+ * the Brass Ruler" then "forced her to drop the ruler" (she never dropped
+ * it), and "suspended by Odo's… interruption" (Liz froze the beetle herself).
+ */
+export const EPILOGUE_RECORD_RULE = 'Do not narrate any action that is not in the record — nobody drops, grabs, loses, gives, freezes or rescues anything unless the record says so. What a character did stays theirs: never credit it to someone else\'s interruption or help. The last rulings are the final word on how things stand; a character still holds what the Characters list says they carry.';
+export const EPILOGUE_TEMPERATURE = 0.5;
 
 /** A character's condition as it stands now: only consequences they still carry (a recovered one is gone from state). */
 export function currentCondition(state: Pick<CharacterState, 'consequences'>): string {
@@ -474,7 +483,8 @@ export class GameLoop {
       // "the Curious Kid With a Sketchbook steps forward" is Biz stepping forward.
       const party = Array.from(this.characters.values()).map(c => ({ name: c.definition.name, highConcept: c.definition.highConcept }));
       // …and "a paper sprite—Wanders Off After Anything Shiny—flits" is just a sprite.
-      const fixed = namesInNarration(sheetPhrasesToNames(highConceptsToNames(text, party), this.sheetOwners()), terms);
+      // …and whispers come only from players: no voice in anyone's ear.
+      const fixed = withoutDmWhispers(namesInNarration(sheetPhrasesToNames(highConceptsToNames(text, party), this.sheetOwners()), terms));
       if (fixed !== text) console.log(`[guard] address term in narration replaced by a name: "${text.slice(0, 80)}" → "${fixed.slice(0, 80)}"`);
       return fixed;
     } catch (e) {
@@ -1333,6 +1343,17 @@ export class GameLoop {
       }
     }
 
+    // What the table sees never mentions the whisper (live: "Biz: Sprint
+    // down the spiraling passage with Mom, ignoring the conveyor belt
+    // whisper."). Checked after the verdict, which reads the action against
+    // the whisper; the private thought is left as it is.
+    {
+      const publicAction = withoutWhisperMentions(decision.chosenAction);
+      decision.chosenAction = publicAction.trim().length >= 20 ? publicAction
+        : (proposals.actions[0]?.description ?? 'Surveys the surroundings, weighing the options carefully');
+      if (decision.spokenWords) decision.spokenWords = withoutWhisperMentions(decision.spokenWords) || null;
+    }
+
     let actionTranscript = `${character.definition.name}: ${decision.chosenAction}`;
     if (decision.spokenWords) {
       actionTranscript += ` — "${decision.spokenWords}"`;
@@ -1576,6 +1597,17 @@ export class GameLoop {
     const preConsequences = [...character.state.consequences];
     const preInventory = [...(character.state.inventory ?? [])];
     const affectedCharIds = new Set<string>();
+    // An item is gained only when the ruling shows it changing hands. Live,
+    // Liz said "It is my property." of Lady Vex's Brass Ruler, the ruling
+    // added it to her inventory, and Vex went on tapping it.
+    resolution.stateChanges = resolution.stateChanges.filter(change => {
+      if (change.field !== 'inventory' || change.action === 'remove' || typeof change.value !== 'string') return true;
+      const who = change.characterId ? this.characters.get(change.characterId) : undefined;
+      if (!who) return true;
+      if (narratesItemTransfer(resolution.narration, change.value, who.definition.name)) return true;
+      console.warn(`[game-loop] dropped an inventory add of "${change.value}" for ${who.definition.name}: the ruling never shows it changing hands`);
+      return false;
+    });
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
         this.applyStateChange(change.characterId, change.field, change.action, change.value);
@@ -1954,7 +1986,7 @@ export class GameLoop {
     try {
       const epilogue = await callProse({
         messages: [
-          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Credit every deed to whoever did it in the record — what an NPC did, opened or revealed is never a party member's doing. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them. ${ENDING_FACTS_RULE}${toneRule ? ` ${toneRule}` : ''}` },
+          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Credit every deed to whoever did it in the record — what an NPC did, opened or revealed is never a party member's doing. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them. ${EPILOGUE_RECORD_RULE} ${ENDING_FACTS_RULE}${toneRule ? ` ${toneRule}` : ''}` },
           { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.` },
         ],
         // Seen live at 248 characters, stopped mid-sentence ("...and the
@@ -1964,6 +1996,9 @@ export class GameLoop {
         // a record that can run to several thousand tokens, and callProse
         // retries a cut-off reply at double that, then trims to a sentence.
         maxTokens: 3072,
+        // A summary of a record, not invention: lower than the play default
+        // (0.7), where qwen added a dropped ruler and a rescue nobody made.
+        temperature: EPILOGUE_TEMPERATURE,
       });
       const text = (await this.consistentProse(epilogue.trim())).trim();
       if (text && text.length > 20) {

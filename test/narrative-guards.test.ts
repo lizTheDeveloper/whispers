@@ -621,9 +621,18 @@ describe('the pronoun rewrite', () => {
   it('keeps the original when the rewrite changes too much or drops a name', async () => {
     const { withConsistentPronouns, acceptRewrite } = await import('../src/server/pronoun-consistency.js');
     const text = 'Biz presses the rune. It gives way under his finger and tingles on his skin.';
-    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'Here is the corrected passage, with every pronoun fixed as requested: Biz presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(text);
-    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'The kid presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(text);
-    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => { throw new Error('proxy down'); } })).toBe(text);
+    // The rejected rewrite is never used. Since round 8 a conflict the model
+    // leaves in place twice is repaired in code where that is safe (only Biz
+    // could own "his" here, and no NPC is near), so the result is the
+    // original with just the pronouns changed — never the model's preamble
+    // or its "The kid".
+    const repaired = 'Biz presses the rune. It gives way under their finger and tingles on their skin.';
+    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'Here is the corrected passage, with every pronoun fixed as requested: Biz presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(repaired);
+    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'The kid presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(repaired);
+    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => { throw new Error('proxy down'); } })).toBe(repaired);
+    // Where the code cannot be sure (an NPC just before), a bad rewrite leaves the original.
+    const nearNpc = 'Odo nods. It gives way under his finger.';
+    expect(await withConsistentPronouns(`Biz presses the rune. ${nearNpc}`, MEMBERS, { llm: async () => 'The kid presses the rune. Odo nods. It gives way under their finger.' })).toBe(`Biz presses the rune. ${nearNpc}`);
     expect(acceptRewrite('abc Liz', '', ['Liz'])).toBe(false);
   });
 });

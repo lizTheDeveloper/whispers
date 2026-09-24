@@ -31,6 +31,13 @@ interface CallLlmOpts<S extends z.ZodType | undefined = undefined> {
   timeout?: number;
   maxTokens?: number;
   /**
+   * Repetition penalties (OpenAI-style), sent when set. The shared game proxy
+   * does not forward them yet (tools/llm-token-proxy/src/game-proxy.ts
+   * builds its own forwardBody), so today they are a no-op upstream.
+   */
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  /**
    * Cancels the call: an aborted signal rejects promptly with an
    * LlmAbortError and is never retried (unlike a timeout or a bad reply).
    * When omitted, the ambient signal from runWithLlmSignal applies.
@@ -291,6 +298,35 @@ function hitTokenLimit(c: Completion): boolean {
   return c.finishReason !== null && TRUNCATION_FINISH_REASONS.has(c.finishReason.toLowerCase());
 }
 
+/** The user turn added to a request that has none (see withUserTurn). */
+const MINIMAL_USER_TURN = 'Begin.';
+
+/**
+ * The messages as the model's chat template will accept them. Qwen's template
+ * (qwen/qwen3.8-27b, behind the shared proxy) raises "No user query found in
+ * messages" on a request with no user turn — live, the DM's setup greeting
+ * (a system prompt and an empty history) failed with a 400 every time — and
+ * rejects a system message anywhere but first. So, for every request, in one
+ * place: a later system message is folded into the first, and a request with
+ * no user turn gets a minimal one at the end. A request that is already fine
+ * is returned as it is (the same array).
+ */
+export function withUserTurn<M extends { role: string; content: string }>(messages: M[]): M[] {
+  let out = messages;
+  if (out.some((m, i) => i > 0 && m.role === 'system')) {
+    const extra = out.filter((m, i) => i > 0 && m.role === 'system').map(m => m.content);
+    const rest = out.filter((m, i) => i === 0 || m.role !== 'system');
+    out = rest[0]?.role === 'system'
+      ? [{ ...rest[0], content: [rest[0].content, ...extra].join('\n\n') }, ...rest.slice(1)]
+      : [{ ...(out.find((m, i) => i > 0 && m.role === 'system')!), content: extra.join('\n\n') }, ...rest];
+  }
+  if (!out.some(m => m.role === 'user')) {
+    console.warn(`[llm-client] request had no user turn (roles: ${out.map(m => m.role).join(', ') || 'none'}); added "${MINIMAL_USER_TURN}"`);
+    out = [...out, { role: 'user', content: MINIMAL_USER_TURN } as M];
+  }
+  return out;
+}
+
 /**
  * One POST to the proxy (with fetchWithRetry's transport retries) and the
  * cleaned reply. A cancelled call rejects with LlmAbortError.
@@ -301,6 +337,8 @@ async function requestCompletion(opts: {
   maxTokens: number;
   timeout: number;
   signal: AbortSignal | null;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
 }): Promise<Completion> {
   const { signal } = opts;
   if (signal?.aborted) throw new LlmAbortError();
@@ -314,7 +352,14 @@ async function requestCompletion(opts: {
         'Content-Type': 'application/json',
         'X-Game': 'whispers',
       },
-      body: JSON.stringify({ messages: opts.messages, temperature: opts.temperature, max_tokens: opts.maxTokens }),
+      body: JSON.stringify({
+        messages: withUserTurn(opts.messages),
+        temperature: opts.temperature,
+        max_tokens: opts.maxTokens,
+        // Sent for a proxy that forwards them; today's game proxy drops them.
+        ...(opts.frequencyPenalty !== undefined ? { frequency_penalty: opts.frequencyPenalty } : {}),
+        ...(opts.presencePenalty !== undefined ? { presence_penalty: opts.presencePenalty } : {}),
+      }),
       signal: requestSignal,
     });
 
@@ -374,7 +419,7 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
 
       const retryTemp = attempt > 0 ? Math.max(0.2, (temperature ?? 0.7) - attempt * 0.15) : (temperature ?? 0.7);
 
-      const completion = await requestCompletion({ messages: promptMessages, temperature: retryTemp, maxTokens: budget, timeout, signal });
+      const completion = await requestCompletion({ messages: promptMessages, temperature: retryTemp, maxTokens: budget, timeout, signal, frequencyPenalty: opts.frequencyPenalty, presencePenalty: opts.presencePenalty });
       const text = completion.text;
       const cutOff = hitTokenLimit(completion);
       if (cutOff) console.warn(`[llm-client] reply stopped at max_tokens=${budget} (finish_reason=${completion.finishReason})`);
@@ -447,6 +492,8 @@ export async function callProse(opts: Omit<CallLlmOpts<undefined>, 'schema'> & {
     temperature: opts.temperature ?? 0.7,
     timeout: opts.timeout ?? DEFAULT_TIMEOUT,
     signal,
+    frequencyPenalty: opts.frequencyPenalty,
+    presencePenalty: opts.presencePenalty,
   };
   const firstBudget = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
   const looksCutOff = (c: Completion) => hitTokenLimit(c) || isMarkerOnly(c.text) || !endsCleanly(c.text);

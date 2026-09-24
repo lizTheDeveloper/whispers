@@ -597,3 +597,140 @@ export function whisperInboxMessage(name: string, pronouns: string | null | unde
     ? `${name} is still carrying your last whispers — wait for ${r.possessive} next choice.`
     : `${name} will carry your whisper into ${r.possessive} next choice.`;
 }
+
+// ─── Whispers are private ──────────────────────────────────────────────────
+
+/**
+ * A reference to the whisper itself: "the whisper", "the conveyor belt
+ * whisper", "the whisper's target", "the voice", "the suggestion". Not the
+ * verb — "I whisper to Mom" is the character whispering — and not "a whisper
+ * of wind".
+ */
+const WHISPER_REFERENCE = /(?<!\bin\s)\b(?:the|that|this|its|a|my|your)\s+(?:[\w-]+\s+){0,3}?whisper(?:s|['’]s)?\b(?!\s+of\b)|\bwhispered\s+(?:advice|suggestion|warning|urging|instructions?|voice)\b|\b(?:the|that|this|inner)\s+voice(?:['’]s)?\b(?!\s+(?:from|of|behind|on|at|through|calls?|called|echo))|\bthe\s+suggestion\b|\bvoice\s+in\s+(?:my|your|their|his|her)\s+head\b/i;
+
+/**
+ * A character's PUBLIC action or words with every clause that mentions the
+ * whisper taken out. Everyone at the table sees the action line; the whisper
+ * belongs to one player. Live: "Biz: Sprint down the spiraling passage with
+ * Mom, ignoring the conveyor belt whisper." The private thought is never
+ * passed through this. Returns '' when nothing is left.
+ */
+export function withoutWhisperMentions(text: string): string {
+  if (!text || !WHISPER_REFERENCE.test(text)) return text;
+  const end = text.trim().match(/[.!?…]+["”’']?$/)?.[0] ?? '';
+  const body = end ? text.trim().slice(0, -end.length) : text.trim();
+  // Clauses, split after commas, semicolons and dashes (the separator stays with the clause before it).
+  const clauses = body.split(/(?<=[,;—–])\s*/);
+  const kept = clauses.filter(c => !WHISPER_REFERENCE.test(c));
+  let out = kept.join(' ').replace(/\s+/g, ' ').trim().replace(/[,;—–]\s*$/, '').trim();
+  if (!out) return '';
+  out = out + (end && !/[.!?…]$/.test(out) ? end : '');
+  if (out !== text.trim()) console.log(`[guard] whisper mention removed from a public action: "${text.slice(0, 80)}" → "${out.slice(0, 80)}"`);
+  return out;
+}
+
+/**
+ * The DM narrating a whisper or a voice speaking to a character: "a sudden,
+ * urgent whisper in their ear hisses, 'Grab the red form…'". Whispers come
+ * only from players. NPCs whispering to one another, or a voice calling out
+ * of the stacks, are ordinary scene.
+ */
+const DM_WHISPER = [
+  // "a sudden, urgent whisper in their ear hisses" — a disembodied whisper or
+  // voice (a noun, with its article: "Odo whispers in her ear" is Odo).
+  /\b(?:a|an|the|some)\s+(?:[\w,'’-]+\s+){0,3}?(?:whisper|voice|murmur)\b[^.!?]*?\b(?:in|into|inside)\s+(?:(?:their|his|her|your)\s+|[A-Z][\w]*['’]s\s+)(?:ear|ears|mind|head|thoughts|skull)\b/i,
+  // "In Biz's head, a voice murmurs…"
+  /\b(?:in|into|inside)\s+(?:(?:their|his|her|your)\s+|[A-Z][\w]*['’]s\s+)(?:ear|ears|mind|head|thoughts)\b[^.!?]*?\b(?:a|an|the|some)\s+(?:[\w,'’-]+\s+){0,3}?(?:whisper|voice|murmur)\b/i,
+  // "the mysterious voice urges…" — the voice itself, not "the voice of the clerk".
+  /\bthe\s+(?:mysterious\s+|familiar\s+|guiding\s+|quiet\s+|strange\s+)?(?:voice|whisper)\b(?!\s+(?:of|from|behind|on|at|through|in the))[^.!?]*?\b(?:urges|says|tells|hisses|insists|commands|warns|murmurs|whispers|suggests)\b/i,
+];
+
+const SENTENCES = /(?<=[.!?…]["”’']?)\s+/;
+
+/** DM prose without any sentence that narrates a whisper or a voice speaking to a character. */
+export function withoutDmWhispers(text: string): string {
+  if (!text || !/\b(?:whisper|voice|murmur)/i.test(text)) return text;
+  const paragraphs = text.split(/(\n+)/);
+  let dropped = 0;
+  const out = paragraphs.map(p => {
+    if (/^\n+$/.test(p)) return p;
+    const sentences = p.split(SENTENCES);
+    const kept = sentences.filter(sn => {
+      const bad = DM_WHISPER.some(re => re.test(sn));
+      if (bad) dropped++;
+      return !bad;
+    });
+    return kept.join(' ');
+  }).join('').replace(/\n{3,}/g, '\n\n').trim();
+  if (dropped === 0) return text;
+  if (!out) return text;
+  console.log(`[guard] dropped ${dropped} DM sentence(s) narrating a whisper or voice to a character`);
+  return out;
+}
+
+// ─── Items change hands only in the ruling ─────────────────────────────────
+
+const ACQUIRE = /\b(?:take|takes|took|taking|snatch(?:es|ed|ing)?|grab(?:s|bed|bing)?|seiz(?:e|es|ed|ing)|pocket(?:s|ed|ing)?|pick(?:s|ed|ing)?\s+up|lift(?:s|ed|ing)?|scoop(?:s|ed|ing)?|wrest(?:s|ed|ing)?|pr(?:y|ies|ied|ying)|yank(?:s|ed|ing)?|pull(?:s|ed|ing)?|catch(?:es|ing)?|caught|collect(?:s|ed|ing)?|retriev(?:e|es|ed|ing)|find(?:s|ing)?|found|claim(?:s|ed)?\s+(?:it|the)\b[^.!?]*\b(?:from|off)|receiv(?:e|es|ed|ing)|accept(?:s|ed|ing)?|win(?:s|ning)?|won|steal(?:s|ing)?|stole|swipe(?:s|d)?|tuck(?:s|ed|ing)?|slip(?:s|ped|ping)?\s+(?:it|the)[^.!?]*\binto)\b/i;
+const GIVE_TO = (name: string) => new RegExp(`\\b(?:hand(?:s|ed|ing)?|give(?:s|n)?|gave|giving|pass(?:es|ed|ing)?|toss(?:es|ed|ing)?|offer(?:s|ed|ing)?|slid(?:e|es|ing)?|press(?:es|ed|ing)?)\\b[^.!?]*\\b${name}\\b|\\b${name}\\b[^.!?]*\\b(?:is|was)\\s+(?:handed|given|passed|tossed)\\b|\\b(?:hand(?:s|ed)?|give(?:s|n)?|gave|pass(?:es|ed)?)\\s+${name}\\b`, 'i');
+const REFUSAL = /\b(?:not|never|no|refus(?:e|es|ed|ing)|won['’]t|wouldn['’]t|doesn['’]t|didn['’]t|can['’]t|cannot|fails?\s+to|keeps?|kept|holds?\s+(?:it|onto)|withhold(?:s|ing)?|clutch(?:es)?\s+(?:it|her|his|their)|snatch(?:es|ed)?\s+(?:it\s+)?back|out\s+of\s+reach)\b/i;
+
+/**
+ * Does a ruling's narration show `actor` actually coming to hold `item` —
+ * taking, picking up, being handed, finding it — in a sentence that names the
+ * item (by any word of its name) and is not a refusal? A claim in speech ("It
+ * is my property") is not: live, Liz's claim put Lady Vex's Brass Ruler in
+ * Liz's inventory while Vex went on tapping it.
+ */
+export function narratesItemTransfer(narration: string, item: string, actor: string): boolean {
+  if (!narration || !item) return false;
+  const itemWords = item.toLowerCase().match(/[a-z]+/g)?.filter(w => w.length >= 3 && !['the', 'and', 'of'].includes(w)) ?? [];
+  if (itemWords.length === 0) return false;
+  const name = esc(firstName(actor));
+  const unquoted = quoteRuns(narration).filter(r => !r.quoted).map(r => r.text).join(' ');
+  for (const sentence of unquoted.split(SENTENCES)) {
+    const lower = sentence.toLowerCase();
+    if (!itemWords.some(w => new RegExp(`\\b${w}s?\\b`).test(lower))) continue;
+    if (REFUSAL.test(sentence)) continue;
+    const actorHere = new RegExp(`\\b${name}\\b`, 'i').test(sentence) || /^\s*(?:she|he|they)\b/i.test(sentence);
+    if (GIVE_TO(name).test(sentence)) return true;
+    if (actorHere && ACQUIRE.test(sentence)) return true;
+  }
+  return false;
+}
+
+// ─── Repetition ─────────────────────────────────────────────────────────────
+
+const STOP = new Set(['the', 'and', 'with', 'that', 'this', 'from', 'into', 'onto', 'over', 'under', 'their', 'there', 'they', 'them', 'then', 'than', 'what', 'when', 'where', 'which', 'while', 'your', 'have', 'has', 'had', 'were', 'was', 'been', 'being', 'will', 'would', 'could', 'should', 'about', 'above', 'after', 'again', 'along', 'around', 'because', 'before', 'behind', 'below', 'between', 'every', 'each', 'just', 'like', 'more', 'most', 'only', 'other', 'some', 'such', 'through', 'very', 'still', 'toward', 'towards', 'across', 'against', 'another', 'itself', 'himself', 'herself', 'themselves', 'something', 'nothing', 'someone', 'says', 'said', 'asks', 'steps', 'turns', 'looks', 'voice', 'eyes', 'hand', 'hands', 'head', 'face', 'room', 'moment', 'party']);
+
+/**
+ * What the DM has been repeating, for its next prompt: lines of NPC dialogue
+ * already spoken (never to be said again word for word — live, Lady Vex's
+ * exact line came back 50 seconds later and Odo echoed it), and descriptive
+ * words it keeps reaching for (ozone, burnt sugar, copper). '' when there is
+ * nothing to say.
+ */
+export function repetitionNotes(dmLines: string[]): string {
+  const lines = dmLines.filter(Boolean).slice(-8);
+  if (lines.length === 0) return '';
+  const quotes: string[] = [];
+  for (const l of lines) {
+    for (const r of quoteRuns(l)) {
+      if (!r.quoted) continue;
+      const q = r.text.replace(/^["“'‘]|["”'’]$/g, '').trim();
+      if (q.split(/\s+/).length >= 4 && !quotes.includes(q)) quotes.push(q);
+    }
+  }
+  const counts = new Map<string, number>();
+  // Names are not overused words: anything written capitalised mid-sentence.
+  const names = new Set(lines.flatMap(l => [...l.matchAll(/(?<![.!?…"“]\s*|^)(?<=\s)([A-Z][a-z'’-]+)/g)].map(m => m[1]!.toLowerCase())));
+  for (const l of lines) {
+    const unquoted = quoteRuns(l).filter(r => !r.quoted).map(r => r.text).join(' ').toLowerCase();
+    const words = new Set((unquoted.match(/\b[a-z][a-z-]{3,}\b/g) ?? []).filter(w => !STOP.has(w) && !names.has(w)));
+    for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1);
+  }
+  const overused = [...counts].filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]).map(([w]) => w).slice(0, 8);
+  const parts: string[] = [];
+  if (quotes.length > 0) parts.push(`Lines of dialogue already spoken — do not repeat them, or have anyone echo them, word for word; NPCs say something new:\n${quotes.slice(-6).map(q => `- "${q}"`).join('\n')}`);
+  if (overused.length > 0) parts.push(`Words you keep reaching for — do not repeat them; find fresh sensory detail: ${overused.join(', ')}.`);
+  return parts.join('\n');
+}

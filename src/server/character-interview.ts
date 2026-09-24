@@ -157,9 +157,89 @@ export function mergeCharacterDraft(base: Partial<CharacterDefinition> | null, u
   if (age !== undefined) merged.age = age;
   const pronouns = u.pronouns ?? b.pronouns;
   if (pronouns !== undefined) merged.pronouns = pronouns;
-  const relationships = u.relationships && u.relationships.length > 0 ? u.relationships : b.relationships;
+  const relationships = u.relationships && u.relationships.length > 0 ? mergeRelationships(b.relationships ?? [], u.relationships) : b.relationships;
   if (relationships && relationships.length > 0) merged.relationships = relationships;
   return merged;
+}
+
+type Relationship = NonNullable<CharacterDefinition['relationships']>[number];
+
+const sameFirst = (a: string, b: string) => a.trim().split(/\s+/)[0]?.toLowerCase() === b.trim().split(/\s+/)[0]?.toLowerCase();
+
+/**
+ * The model reports the relationships it understands this turn; an address
+ * term stated earlier is kept when this turn's entry for the same person
+ * leaves it out. Live: "calls Liz Mom" was on the sheet, then gone.
+ */
+function mergeRelationships(base: Relationship[], update: Relationship[]): Relationship[] {
+  return update.map(r => {
+    if (r.address?.trim()) return r;
+    const before = base.find(o => sameFirst(o.to, r.to) && o.address?.trim());
+    return before ? { ...r, address: before.address } : r;
+  });
+}
+
+/** Kin words a player uses as an address term, and the relation each implies. */
+const ADDRESS_RELATION: Array<[RegExp, string]> = [
+  [/^(?:mom|mommy|mum|mummy|mama|ma|mother)$/i, 'mother'],
+  [/^(?:dad|daddy|papa|pa|pop|father)$/i, 'father'],
+  [/^(?:grandma|granny|nana|gran)$/i, 'grandmother'],
+  [/^(?:grandpa|granddad|grandad|gramps)$/i, 'grandfather'],
+  [/^(?:sis)$/i, 'sister'],
+  [/^(?:bro)$/i, 'brother'],
+  [/^(?:auntie|aunt)$/i, 'aunt'],
+  [/^(?:uncle)$/i, 'uncle'],
+];
+
+const TERM = String.raw`["“'‘]?([A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*)?)["”'’]?`;
+
+/**
+ * Address terms the player states outright in their own message: "calls Liz
+ * Mom", "Biz calls her Mom", "Biz calls me Mom" (the player speaking as the
+ * person called). Each is { to, address }, where `to` is someone at the table
+ * or on the sheet. "her"/"him"/"them" resolve only when one person is meant:
+ * the sheet's single tie, else the table's single other character.
+ */
+export function statedAddressTerms(text: string, ctx: { characterName: string; playerName: string; tableNames: string[]; relationships: Relationship[] }): Array<{ to: string; address: string }> {
+  if (!text) return [];
+  const known = [...new Set([...ctx.tableNames, ...ctx.relationships.map(r => r.to)].map(n => n.trim()).filter(n => n && !sameFirst(n, ctx.characterName || '\u0000')))];
+  const findKnown = (word: string) => known.find(n => sameFirst(n, word));
+  const out: Array<{ to: string; address: string }> = [];
+  const add = (to: string | undefined, address: string) => {
+    const a = address.trim().replace(/["”'’]+$/, '');
+    if (!to || !a || sameFirst(a, to) || /^(?:I|Me|You|Him|Her|Them|The|A|An)$/.test(a)) return;
+    if (!out.some(o => sameFirst(o.to, to))) out.push({ to, address: a });
+  };
+  const re = new RegExp(String.raw`\bcall(?:s|ed|ing)?\s+(?:(me|her|him|them)|([A-Z][\w'’-]*))\s+${TERM}`, 'g');
+  for (const m of text.matchAll(re)) {
+    const [, pronoun, name, term] = m;
+    let to: string | undefined;
+    if (name) to = findKnown(name);
+    else if (pronoun === 'me') to = findKnown(ctx.playerName);
+    else {
+      const tied = [...new Set(ctx.relationships.map(r => r.to.trim()))];
+      to = tied.length === 1 ? tied[0] : known.length === 1 ? known[0] : undefined;
+    }
+    add(to, term!);
+  }
+  return out;
+}
+
+/** The sheet with each stated address term on its tie — or on a new tie, when the term itself says what the tie is ("Mom"). */
+export function withStatedAddressTerms<T extends Partial<CharacterDefinition>>(sheet: T, terms: Array<{ to: string; address: string }>): T {
+  if (terms.length === 0) return sheet;
+  const rels: Relationship[] = [...(sheet.relationships ?? [])];
+  let changed = false;
+  for (const t of terms) {
+    const i = rels.findIndex(r => sameFirst(r.to, t.to));
+    if (i >= 0) {
+      if (rels[i]!.address?.trim() !== t.address) { rels[i] = { ...rels[i]!, address: t.address }; changed = true; }
+      continue;
+    }
+    const relation = ADDRESS_RELATION.find(([re]) => re.test(t.address))?.[1];
+    if (relation) { rels.push({ to: t.to, relation, address: t.address }); changed = true; }
+  }
+  return changed ? { ...sheet, relationships: rels } : sheet;
 }
 
 export function setInterviewStatus(db: Database.Database, id: string, status: InterviewStatus): void {

@@ -24,14 +24,14 @@ import {
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
-import { DmAgent, wantsNoSpoilers } from './agents/dm.js';
+import { DmAgent, wantsNoSpoilers, nextSetupQuestion } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
 import { guardInterviewReply } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
   getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewDraft, setInterviewStatus, getInterviewBySession, listTableCharacters,
-  interviewSheet, mergeCharacterDraft,
+  interviewSheet, mergeCharacterDraft, statedAddressTerms, withStatedAddressTerms,
   type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness, checkInterviewReadiness } from './character-readiness.js';
@@ -1352,7 +1352,21 @@ wss.on('connection', (ws) => {
         });
         // Names, not "Mom Liz"; and no he/she for a character whose
         // pronouns are not on the sheet yet (as of this reply).
-        const sheetAsOfReply = reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview);
+        // An address term the player stated outright ("Please keep 'calls Liz
+        // Mom' in the sheet") goes on the sheet whether or not the model
+        // wrote it down — live, it was dropped.
+        const playerLines = fullHistory.filter(t => t.role === 'user').map(t => t.content);
+        const withStated = <T extends import('../shared/types.js').CharacterDefinition | null>(sheet: T): T => {
+          if (!sheet) return sheet;
+          const terms = playerLines.flatMap(line => statedAddressTerms(line, {
+            characterName: sheet.name ?? '',
+            playerName: currentPlayer!.playerName,
+            tableNames: tableCharacters.map(c => c.name),
+            relationships: sheet.relationships ?? [],
+          }));
+          return withStatedAddressTerms(sheet, terms);
+        };
+        const sheetAsOfReply = withStated(reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview));
         reply.reply = await guardInterviewReply(reply.reply, sheetAsOfReply, tableCharacters.map(c => c.name));
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
@@ -1370,8 +1384,9 @@ wss.on('connection', (ws) => {
         // it is folded into the stored draft, so a field stated once stays
         // stated (a clarifying question comes back with `definition: null`
         // and changes nothing). The checklist is computed from that draft.
-        const draft = reply.definition ? mergeCharacterDraft(interviewSheet(current), reply.definition) : interviewSheet(current);
-        if (reply.definition && draft) setInterviewDraft(db, interview.id, draft);
+        const merged = reply.definition ? mergeCharacterDraft(interviewSheet(current), reply.definition) : interviewSheet(current);
+        const draft = withStated(merged);
+        if ((reply.definition || draft !== merged) && draft) setInterviewDraft(db, interview.id, draft);
         const draftReadiness = checkInterviewReadiness(draft);
         const storedReadiness = checkInterviewReadiness(current.definition);
         // A ready draft that differs from the stored sheet is a new proposal
@@ -1454,7 +1469,7 @@ wss.on('connection', (ws) => {
         // A host who plays, or asked for no spoilers, never reads the drafted
         // world's plot hooks or NPC motives back in a chat reply.
         if (campaign.hostTableRole === 'player' || wantsNoSpoilers(currentPlayer.setupChat)) {
-          reply.reply = withoutSeedSpoilers(reply.reply, getWorldSeed(db, campaign.id));
+          reply.reply = withoutSeedSpoilers(reply.reply, getWorldSeed(db, campaign.id), `I have the shape of it — the rest you will discover in play. ${nextSetupQuestion(before.detail).replace(/^Noted\.\s*/, '')}`);
         }
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 

@@ -278,6 +278,23 @@ export async function startHarness(): Promise<Harness> {
  * The host says "done" only after at least one message, so a test can drive a
  * campaign to "world set up" deterministically by sending exactly one dm-chat.
  */
+/**
+ * What the model's chat template would reject in a request body, or null.
+ * Qwen's template needs at least one user turn and a system message only at
+ * the start.
+ */
+export function chatTemplateViolation(body: string): string | null {
+  let messages: Array<{ role?: unknown }>;
+  try { messages = JSON.parse(body).messages; } catch { return 'unparseable body'; }
+  if (!Array.isArray(messages) || messages.length === 0) return 'No messages';
+  if (!messages.some(m => m?.role === 'user')) return 'No user query found in messages.';
+  if (messages.some((m, i) => i > 0 && m?.role === 'system')) return 'System message must be at the beginning.';
+  return null;
+}
+
+/** Every request the stub refused as the live chat template would, across every harness in this process. */
+export const templateViolations: Array<{ body: string; violation: string }> = [];
+
 function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: string[] }> {
   return new Promise((resolve) => {
     const receivedBodies: string[] = [];
@@ -287,6 +304,19 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
         receivedBodies.push(body);
+        // The live model (qwen via the shared proxy) renders its chat
+        // template before generating, and the template raises on a request
+        // with no user turn ("No user query found in messages") or a system
+        // message anywhere but first. The stub refuses the same requests
+        // with the same 400, so a call site that sends one fails here the
+        // way it fails live, instead of getting a canned reply.
+        const violation = chatTemplateViolation(body);
+        if (violation) {
+          templateViolations.push({ body, violation });
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `raise_exception: ${violation}` }));
+          return;
+        }
         let text: string;
         const slowToken = body.match(new RegExp(`${SLOW_LLM_TRIGGER}-\\d+`))?.[0];
         const slow = !!slowToken && !consumedSlowTokens.has(slowToken);
@@ -378,7 +408,10 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // unique across every system prompt in src/server.
           text = LLM_STUB_REPLIES.negotiationCompactionSummary;
         } else if (body.includes('helping set up a new game')) {
-          const hostSpoke = body.includes('"role":"user"');
+          // The greeting carries a user turn of its own now (the chat
+          // template needs one); it is a cue, not the host speaking.
+          const hostSpoke = (JSON.parse(body).messages as Array<{ role: string; content: string }>)
+            .some(m => m.role === 'user' && !m.content.includes('The host has just opened the setup chat'));
           // A marker in the host's own message text (same pattern as
           // THIN_SHEET_TRIGGER/MODIFICATIONS_TRIGGER above) selects the
           // done-but-no-instructions fixture deterministically, without

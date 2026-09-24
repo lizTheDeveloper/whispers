@@ -3,6 +3,7 @@ import { renderNegotiationChat } from './negotiation-chat.js';
 import { dmUrl, playUrl } from './session-store.js';
 import type { GamePhase, TableRole, WorldReadiness, WorldSeed, WorldSeedItem, WorldSeedLocation, WorldSeedNpc } from '../shared/types.js';
 import { appendMarkdown } from './markdown.js';
+import { wantsNoSpoilers } from '../shared/spoilers.js';
 
 /** Mirrors MIN_INFLUENCES in src/server/world-readiness.ts — display only, the server owns the actual gate. */
 const MIN_INFLUENCES = 3;
@@ -182,6 +183,8 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     const text = chatInput.value.trim();
     if (!text) return;
     addChatMessage(text, 'host');
+    hostLines.push(text);
+    if (currentSeed && wantsNoSpoilers([{ role: 'user', content: text }])) rerenderSeed();
     chatInput.value = '';
     chatSend.disabled = true;
     showTyping();
@@ -311,6 +314,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     if (msg.type !== 'room-joined') return;
     hostTableRole = msg.tableRole;
     renderTableRole();
+    rerenderSeed();
   });
 
   // ─── Influences ───
@@ -390,6 +394,19 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     return li;
   }
 
+  // What the host has said in the setup chat, for wantsNoSpoilers.
+  const hostLines: string[] = [];
+
+  /**
+   * A host who plays in this game, or asked not to be spoiled, sees the
+   * world without its secrets: premise, places, and people by name and role.
+   * NPC motives and plot hooks stay the DM's (only the card is trimmed — the
+   * seed itself, and what Accept sends back, are unchanged).
+   */
+  function spoilerFreeHost(): boolean {
+    return hostTableRole === 'player' || wantsNoSpoilers(hostLines.map(content => ({ role: 'user', content })));
+  }
+
   function npcItem(npc: WorldSeedNpc): HTMLLIElement {
     const li = document.createElement('li');
     const strong = document.createElement('strong');
@@ -400,7 +417,7 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     li.appendChild(desc);
     const metaParts: string[] = [];
     if (npc.disposition) metaParts.push(`disposition: ${npc.disposition}`);
-    if (npc.motivation) metaParts.push(`wants: ${npc.motivation}`);
+    if (npc.motivation && !spoilerFreeHost()) metaParts.push(`wants: ${npc.motivation}`);
     if (metaParts.length > 0) {
       const meta = document.createElement('span');
       meta.className = 'seed-npc-meta';
@@ -427,6 +444,29 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     return li;
   }
 
+  function fillSeedContent(content: HTMLElement, seed: WorldSeed) {
+    content.replaceChildren();
+    const heading = document.createElement('h2');
+    heading.textContent = 'The World';
+    content.appendChild(heading);
+
+    const premise = document.createElement('p');
+    premise.className = 'seed-premise';
+    premise.textContent = seed.premise;
+    content.appendChild(premise);
+
+    content.appendChild(buildSeedList('Locations', seed.locations, locationItem));
+    content.appendChild(buildSeedList('NPCs', seed.npcs, npcItem));
+    if (!spoilerFreeHost()) content.appendChild(buildSeedList('Plot Hooks', seed.plotHooks, plotHookItem));
+    content.appendChild(buildSeedList('Items', seed.items, itemItem));
+  }
+
+  /** The card shown again after the host's seat or spoiler wish changed — the buttons and note untouched. */
+  function rerenderSeed() {
+    const content = seedPanel.querySelector('.seed-content') as HTMLElement | null;
+    if (currentSeed && content) fillSeedContent(content, currentSeed);
+  }
+
   function renderSeed(seed: WorldSeed, accepted: boolean) {
     currentSeed = seed;
     // A new draft is the authoritative end of any in-flight redraft, whether this one
@@ -436,19 +476,10 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     seedPanel.classList.remove('hidden');
     seedPanel.replaceChildren();
 
-    const heading = document.createElement('h2');
-    heading.textContent = 'The World';
-    seedPanel.appendChild(heading);
-
-    const premise = document.createElement('p');
-    premise.className = 'seed-premise';
-    premise.textContent = seed.premise;
-    seedPanel.appendChild(premise);
-
-    seedPanel.appendChild(buildSeedList('Locations', seed.locations, locationItem));
-    seedPanel.appendChild(buildSeedList('NPCs', seed.npcs, npcItem));
-    seedPanel.appendChild(buildSeedList('Plot Hooks', seed.plotHooks, plotHookItem));
-    seedPanel.appendChild(buildSeedList('Items', seed.items, itemItem));
+    const content = document.createElement('div');
+    content.className = 'seed-content';
+    fillSeedContent(content, seed);
+    seedPanel.appendChild(content);
 
     const actions = document.createElement('div');
     actions.className = 'seed-actions';
@@ -540,8 +571,10 @@ export function renderDmLobby(root: HTMLElement, ws: WsClient, joinCode: string,
     for (const name of msg.players) addPlayerToList(name);
 
     chatLog.innerHTML = '';
+    hostLines.length = 0;
     for (const entry of msg.setupChat) {
       addChatMessage(entry.content, entry.role === 'user' ? 'host' : 'dm');
+      if (entry.role === 'user') hostLines.push(entry.content);
     }
 
     dmReady = msg.dmReady;
