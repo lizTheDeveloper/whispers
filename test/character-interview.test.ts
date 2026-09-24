@@ -454,6 +454,29 @@ describe('the interview end-to-end, over the wire', () => {
     await closeWs(hostWs);
   }, 60_000);
 
+  // Live: the very message that asked for Liz's pronouns said "what would
+  // catch her attention". Until the sheet states pronouns, a reply that
+  // genders the character being made is rewritten to their name or "they".
+  it('rewrites an interview reply that says "her" before any pronouns are stated', async () => {
+    const { hostWs, joined } = await openTable();
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Liz' });
+    await pq.waitFor('room-joined', 10_000);
+    await pq.waitFor('world-introduction', 10_000);
+
+    const before = harness.receivedBodies.length;
+    sendMsg(playerWs, { type: 'char-chat', text: 'GENDERED_REPLY_TRIGGER I am Liz, a mom with a clipboard.' });
+    const reply = await pq.waitFor('char-chat-reply', 15_000) as any;
+    expect(reply.text).toContain('what would catch their attention first');
+    expect(reply.text).not.toContain('catch her attention');
+    const rewrite = harness.receivedBodies.slice(before).find(b => b.includes('You correct how people are referred to'));
+    expect(rewrite).toMatch(/Liz/);
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
+
   // The single hole in submit-character's completeness guarantee: the DM's
   // validateCharacter reply carries an entirely unvalidated `modifications`
   // record that gets spread over the definition AFTER both shape and
