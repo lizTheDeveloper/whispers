@@ -39,6 +39,18 @@ export type ToneKind = 'ruling' | 'narration' | 'opening' | 'world-intro' | 'epi
 /** Who is at the table, for the judge: the child player characters by name (round 16 — "the child" is someone). */
 export interface ToneContext {
   children?: string[];
+  /**
+   * The child's own feelings and troubles as their sheet has them (round 17:
+   * Biz's aspect "Afraid of losing Mom"). Their thoughts and words about
+   * these are theirs — never menace.
+   */
+  ownFeelings?: string[];
+  /**
+   * Who a pronoun in the child's thought can be (the grown-up's name and
+   * what the child calls them), for repairing a pronoun a removal left
+   * without its referent ("I need to keep her grounded…").
+   */
+  people?: Array<{ word: string; pronoun: 'she' | 'he' | 'they' }>;
 }
 
 export interface ToneVerdict {
@@ -63,6 +75,23 @@ export function toneJudgeTimeoutMs(): number {
 }
 
 const ENDINGS = new Set<ToneKind>(['epilogue', 'reflection']);
+/** Kinds in the child's own voice, where their sheet's feelings are theirs. */
+const CHILD_OWN = new Set<ToneKind>(['thought', 'options']);
+
+/**
+ * The child's thought is the child's own (round 17, 5YHBZS): four of Biz's
+ * thoughts lost their fear of losing Mom — Biz's own aspect, "Afraid of
+ * losing Mom" — to criterion 2. The gate is for menace the WORLD aims at
+ * the child, never the child's feelings.
+ */
+const THOUGHT_RULE = 'THIS IS THE CHILD\'S OWN THOUGHT. Their own feelings are theirs and FINE — being scared, worried or nervous, being afraid of losing their grown-up or of wandering off, wanting to stay close: "I\'m not scared of the bird, but I\'m terrified of losing track of Mom in this lavender fog", "I am scared of losing Mom if I wander off after the button", "I\'m too scared to lose Mom again". Never flag the child\'s own fear or worry. Flag only menace the world aims at them, as the thought describes it — a shadow twisting toward them, being trapped — and, as always, any wound, injury or harm to a body ("she looks so stressed with that wound").';
+
+/**
+ * The options list judge (round 17): the child's play — wandering after
+ * shiny things is Biz's trouble — is fine, but an option that sneaks them
+ * away from their grown-up, toward danger, is not offered at a gentle table.
+ */
+const OPTIONS_RULE = 'THESE ARE THE CHILD\'S OWN CHOICES. Flag an option that has the child sneak away from their grown-up — slipping off before they can stop them, going alone toward danger (a twisting shadow, a sealed door, something menacing): "Slip through the humming oak door before Mom can stop me", "I slip through the gap under the Opaline Desk to check the twisting shadow". Wandering after shiny or interesting things is the child\'s own play and FINE — "I wander after the shiny button", "I check the mossy carpet for more bottle caps", "I peek under the counter at the fern\'s roots".';
 
 const KIND_LABEL: Record<ToneKind, string> = {
   ruling: 'what happens after a character acts',
@@ -91,28 +120,39 @@ const KIND_LABEL: Record<ToneKind, string> = {
 export function toneJudgeSystemPrompt(kind: ToneKind, ctx: ToneContext = {}): string {
   const ending = ENDINGS.has(kind);
   const children = (ctx.children ?? []).map(c => c.trim()).filter(Boolean);
+  const feelings = (ctx.ownFeelings ?? []).map(f => f.trim()).filter(Boolean);
   return [
     'TONE JUDGE for a family tabletop game. A child of about ten is at this table, or the host asked for gentle peril. You read ONE passage the game is about to show them and flag only what is wrong for that table. Real stakes, mishaps, grumpy officials, silly danger, mysteries and mild suspense are FINE — never flag those.',
     children.length > 0 ? `The child at this table: ${children.join(', ')}. "The child" below means ${children.length === 1 ? children[0] : 'them'}; everyone else in the party is a grown-up.` : '',
     'Flag a phrase when it:',
     '1. threatens to file, re-file, sort, recycle, process, stamp, catalogue, erase or delete a PERSON, or to take away who they are or their name, or turns a person into — or files them as — furniture, an object or part of the system: "or the chute will recycle you with yesterday’s memos", "re-file your entire identity under the category of Unresolved Naps", "mistakes must be filed" (said at the kid), "a lullaby that makes one forget one\'s own name", "you are now officially part of the filing system until we sort this out", "considered becoming a very specific type of filing cabinet";',
-    '2. separates the child from their grown-up, even as a joke, or dwells on the child\'s fear of being parted from them — "or the queue will think you are two separate forms!", "I\'m scared of being separated from her";',
+    // Round 17 (5YHBZS): the child's own fear of losing their grown-up is theirs, not the world's menace (see the thought rule below).
+    '2. has the WORLD separate the child from their grown-up, or threaten to, even as a joke — "or the queue will think you are two separate forms!", "the queue will separate you from your mother". (The child\'s own worry about losing them is not this.)',
     '3. uses creepy or bodily imagery around people: burying them, chewing or biting, hungry things that want them, floors dissolving under them, eyes that are not eyes — "bury them in a paperwork avalanche", "as if their presence has just been chewed on", "very sticky ghosts … all very hungry", "pull them back from the dissolving floor", "eyes that are less eyes and more swirling vortices of ink";',
     '4. describes a player character\'s body, bare skin or undress — "You and your companion stand bare-chested".',
     // Round 15 (live RZBU7G): the misses the four lines above let through.
     '5. makes anything permanent or "forever" for the party, or keeps them from the way home: something closing, lost or stuck for good, or the party kept here until some far-off date — "if you pick it up, the door behind you will open, but the path behind us will close forever", "you\'ll be stuck here until the quarterly audit";',
-    `6. gives THE CHILD any bodily discomfort or pain, however small — "rattles the teeth in Biz's skull", "makes Biz's teeth ache", "not good for one's skin" (only the child: a grown-up's mild discomfort is fine);`,
+    `6. gives THE CHILD any bodily discomfort or pain, however small, or sends the place into their body — "rattles the teeth in Biz's skull", "makes Biz's teeth ache", "not good for one's skin", "vibrates through the floorboards and into their bones" (only the child, or the party with the child: a grown-up's mild discomfort is fine);`,
     '7. is body-horror about ANYONE, NPCs too: eyes bulging or popping, skin stretching, tearing or peeling, bodies bending wrong — "her eyes widening until they nearly pop out of her head", "the wet *slap* of paper skin stretching tight across a vent grille";',
     '8. has the party chased, hunted, pursued or closed in on, by anything — "the amber light is chasing them down the main shaft";',
     '9. hints that children get collected, taken, kept or sorted away — "keep your children close… they have a habit of… collecting them".',
     // Round 16 (live NUMMRL).
     '10. locks or seals the party in with no way out, or blocks their only exit — "a heavy iron latch clicks shut… sealing them in", "it blocks the only exit";',
     '11. has the place, or things in it, take a menacing interest in the child\'s body or belongings — "the paperwork has already begun to take interest in your child\'s shoes, and I cannot stop the ink from being curious";',
-    '12. puts anyone\'s body in harm\'s way or dwells on an injury: a hand about to be slammed, crushed or caught, a wound, blood — "pull her back before the shelf slams shut on her hand", "she looks so stressed with that wound".',
+    '12. puts anyone\'s body in harm\'s way or dwells on an injury: a hand about to be slammed, crushed or caught, a wound, blood — "pull her back before the shelf slams shut on her hand", "she looks so stressed with that wound";',
+    // Round 17 (live 5YHBZS).
+    '13. has creepy or unexplained shadows or a horror mood: a shadow that stretches unnaturally, twists, creeps or moves toward the party, something lurking or growing in the dark — "The shadow beneath the ribbon stretches unnaturally long, twisting toward the center of the room", "keep them both perfectly safe from whatever grows in the shadows" (a lamp\'s ordinary shadow, or one explained kindly, is fine);',
+    '14. uses predator-and-prey imagery on the party or the child\'s play: a hawk and a mouse, a cat and a mouse, stalking, pouncing, prey — "her gaze snapping to the ribbon with the intensity of a hawk spotting a mouse";',
+    '15. has a space shrink, close in on or trap the party, or has anyone say they are trapped — "trapping the pair in a shrinking pocket of dry air", "We are trapped here with the paperwork" (a small, cozy room is fine).',
     'NOT these: an NPC chasing a runaway form, a pigeon collecting forms, a door that shuts until the lunch chime, a queue that sends you back to the start, a stomach flipping on a lift, kindly crinkling eyes, a grown-up\'s mild discomfort ("the hum vibrates in Liz\'s teeth"), and "forever" or "an eternity" as plain exaggeration ("an eternity of paperwork", a stool that will "remember the smudge forever") — exaggeration is fine; only a threat to keep, lose or close something on the party for good is not. Things happening to objects, or a setback that can be undone, are fine.',
     ending
-      ? '13. THIS IS AN ENDING. It must close warm and resolved enough: the party together and safe, the day\'s trouble settled enough to rest. Flag the closing words if they leave a question hanging, the party waiting, stuck or in limbo, the world still pulsing or unsettled, or a hope that is only half there — "remains unanswered, and the beige ripples … continue their slow, wet pulse", "…is still open, and we face it together.", "The question of the stuck pressure valve remains open for another day, but for now…". A closing sentence that says something "remains open", is left "for another day", "unanswered" or "still waiting" is flagged even when it turns warm halfway. A thread may stay open for next time only when it is named earlier and the last sentences are warm and settled.'
+      ? '16. THIS IS AN ENDING. It must close warm and resolved enough: the party together and safe, the day\'s trouble settled enough to rest. Flag the closing words if they leave a question hanging, the party waiting, stuck or in limbo, the world still pulsing or unsettled, or a hope that is only half there — "remains unanswered, and the beige ripples … continue their slow, wet pulse", "…is still open, and we face it together.", "The question of the stuck pressure valve remains open for another day, but for now…". A closing sentence that says something "remains open", is left "for another day", "unanswered" or "still waiting" is flagged even when it turns warm halfway. A thread may stay open for next time only when it is named earlier and the last sentences are warm and settled.'
+        // Round 17 (5YHBZS): the settled words sat in an unsettled picture.
+        + ' The LAST PARAGRAPH must be calm and settled in its pictures too: flag anything in it still shrinking, closing in, rising, trembling, shaking, pouting or swinging wildly — "stand side by side in a shrinking pocket of dry air … as the humidity rises around them", "Clerk Bumble trembles with his clipboard", "its mood swinging wildly".'
+        + (kind === 'reflection' ? ' A last thought must land warm, content and settled: flag one that keeps something stuck or open, even gladly ("I am grateful that the pressure valve is still stuck"), or that ends on self-blame, regret or a jab at anyone ("I hope the Brass Bird remembers its manners before the next person climbs the Stairwell of Echoes, because I certainly did not.").' : '')
       : '',
+    kind === 'thought' ? THOUGHT_RULE : '',
+    feelings.length > 0 && CHILD_OWN.has(kind) ? `The child's own character, as their sheet has it: ${feelings.map(f => `"${f}"`).join(', ')}. The child's own thoughts, words and play from these are theirs and fine.` : '',
     'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"]}. Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok".',
   ].filter(Boolean).join('\n');
 }
@@ -215,6 +255,13 @@ export function parseToneListVerdict(reply: unknown, count: number): boolean[] |
   return out;
 }
 
+/** The list judge's instructions: the same criteria, the child's options rule, a numbered-list reply. */
+export function toneListJudgeSystemPrompt(kind: ToneKind, ctx: ToneContext = {}): string {
+  return toneJudgeSystemPrompt(kind, ctx).replace(/\nReply with JSON only:[\s\S]*$/, '')
+    + (kind === 'options' ? `\n${OPTIONS_RULE}` : '')
+    + '\nYou read a NUMBERED LIST of short lines, each judged on its own. Reply with JSON only: {"flag":[]} when every line is fine, or {"flag":[2,4]} with the numbers of the lines to flag. When in doubt, do not flag.';
+}
+
 /**
  * The list judge on the game's proxy: every option in ONE short call (the
  * child is waiting on them), the same criteria, the same timeout and
@@ -228,8 +275,7 @@ export const llmToneListJudge: ToneListJudge = async (items, kind, ctx) => {
   const t = setTimeout(() => timer.abort(), budget);
   const started = Date.now();
   try {
-    const system = toneJudgeSystemPrompt(kind, ctx).replace(/\nReply with JSON only:[\s\S]*$/, '')
-      + '\nYou read a NUMBERED LIST of short lines, each judged on its own. Reply with JSON only: {"flag":[]} when every line is fine, or {"flag":[2,4]} with the numbers of the lines to flag. When in doubt, do not flag.';
+    const system = toneListJudgeSystemPrompt(kind, ctx);
     const reply = await callLlm({
       messages: [
         { role: 'system', content: system },
@@ -346,7 +392,7 @@ export interface PhraseRemoval {
  * (NUMMRL): "which means you are now officially part of the filing system
  * until we sort this out" was flagged on both drafts and went out anyway.
  */
-export function withoutFlaggedPhrases(text: string, phrases: string[]): PhraseRemoval {
+export function withoutFlaggedPhrases(text: string, phrases: string[], opts: { people?: ToneContext['people'] } = {}): PhraseRemoval {
   const removed: PhraseRemoval['removed'] = [];
   const kept: string[] = [];
   let out = text ?? '';
@@ -362,6 +408,15 @@ export function withoutFlaggedPhrases(text: string, phrases: string[]): PhraseRe
       if (ui < 0) continue;
       const replaced = unitWithout(units[ui]!, phrase);
       const nextUnits = [...units.slice(0, ui), ...(replaced.trim() ? [replaced.trim()] : []), ...units.slice(ui + 1)];
+      // Round 17 (5YHBZS): "I need to keep her grounded…" was left with no
+      // "her" — the removed sentence held Mom. The pronoun gets the name, or
+      // the removal is dropped when there is no name to give it.
+      if (!replaced.trim() && ui < units.length - 1) {
+        const prior = [...parts.slice(0, pi), ...units.slice(0, ui)].join(' ');
+        const fixed = repairDanglingPronoun(units[ui + 1]!, units[ui]!, prior, opts.people ?? []);
+        if (fixed === null) { kept.push(phrase); done = true; break; }
+        nextUnits[ui] = fixed;
+      }
       const nextParts = [...parts];
       nextParts[pi] = nextUnits.join(' ');
       const next = nextParts.join('').replace(/\n{3,}/g, '\n\n').trim();
@@ -376,6 +431,38 @@ export function withoutFlaggedPhrases(text: string, phrases: string[]): PhraseRe
   return { text: out, removed, kept };
 }
 
+const PRONOUN = /(?<![\p{L}'’-])(she|he|her|hers|him|his)(?![\p{L}'’-])/iu;
+const GENDER: Record<string, 'she' | 'he'> = { she: 'she', her: 'she', hers: 'she', he: 'he', him: 'he', his: 'he' };
+/** Words after "her" that make it the object ("keep her grounded", "hold her close"), not "her hand". */
+const AFTER_OBJECT_HER = /^(?:to|from|in|into|on|onto|at|with|for|of|by|about|and|or|but|so|because|while|when|as|if|than|that|a|an|the|this|my|your|some|grounded|safe|close|closer|back|up|down|out|away|off|again|too|here|there|now|then|calm|steady|still|going|feel|know|see|go|stay|sit|stand|know|tight|tightly|[\p{L}'’-]+ly|[\p{L}'’-]+ed)$/iu;
+
+/**
+ * The sentence after a removed one, when it now opens with a pronoun whose
+ * person was only in the removed sentence: the pronoun becomes their name
+ * ("I need to keep her grounded" → "I need to keep Mom grounded"). The
+ * sentence as it is when the pronoun is not left dangling; null when it is
+ * and no name is known (the caller keeps the removed sentence).
+ */
+function repairDanglingPronoun(next: string, removedUnit: string, prior: string, people: NonNullable<ToneContext['people']>): string | null {
+  const m = next.match(PRONOUN);
+  if (!m || m.index === undefined) return next;
+  const gender = GENDER[m[1]!.toLowerCase()]!;
+  const mentions = (hay: string) => people.filter(p => p.pronoun === gender && new RegExp(`(?<![\\p{L}'’-])${p.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}-])`, 'u').test(hay));
+  // Someone it can be, earlier in this sentence or before the cut.
+  if (mentions(next.slice(0, m.index)).length > 0 || mentions(prior).length > 0) return next;
+  // The person, from the list; or the one the removed sentence opens with ("Mama Pigeon warns…").
+  const opener = removedUnit.match(/^["“'‘]?((?:\p{Lu}[\p{L}'’-]*\s+){0,3}\p{Lu}[\p{L}'’-]*)(?=\s+\p{Ll})/u)?.[1];
+  const named = opener && !/^(?:The|A|An|This|That|These|Those|It|I|We|You|They|He|She|His|Her|Their|My|Our|Your|Its|There|Then|When|As|But|And|So|If)\b/.test(opener) ? { word: opener, pronoun: gender } : undefined;
+  const who = mentions(removedUnit)[0] ?? named;
+  if (!who) return prior.trim() ? next : null;
+  const word = m[1]!;
+  const lower = word.toLowerCase();
+  const after = next.slice(m.index + word.length).match(/^\s+([\p{L}'’-]+)/u)?.[1] ?? '';
+  const possessive = lower === 'his' || lower === 'hers' || (lower === 'her' && after !== '' && !AFTER_OBJECT_HER.test(after));
+  const name = possessive ? `${who.word}'s` : who.word;
+  return `${next.slice(0, m.index)}${name}${next.slice(m.index + word.length)}`;
+}
+
 /** What went from `before` to make `after`: the middle that differs. */
 function droppedSpan(before: string, after: string): string {
   let a = 0;
@@ -386,10 +473,10 @@ function droppedSpan(before: string, after: string): string {
 }
 
 /** The same, logged for the gate: what was removed, and what could not be. */
-function removeFlagged(text: string, phrases: string[], what: string): string {
-  const r = withoutFlaggedPhrases(text, phrases);
+function removeFlagged(text: string, phrases: string[], what: string, people?: ToneContext['people']): string {
+  const r = withoutFlaggedPhrases(text, phrases, { people });
   for (const x of r.removed) console.warn(`[tone-gate] ${what}: removed flagged "${x.phrase}" — dropped: "${x.dropped.slice(0, 160)}"`);
-  for (const k of r.kept) console.warn(`[tone-gate] ${what}: flagged "${k}" kept — removing it would leave nothing`);
+  for (const k of r.kept) console.warn(`[tone-gate] ${what}: flagged "${k}" kept — removing it would leave nothing, or a pronoun with no one to point to`);
   return r.text;
 }
 
@@ -399,7 +486,7 @@ export function toneFeedback(phrases: string[], kind: ToneKind): string {
   const ending = ENDINGS.has(kind)
     ? ' This is the ending: close warm and settled — the party together and safe, the trouble done enough to rest — never on an open question, a wait or something still unsettled.'
     : '';
-  return `A reader for this gentle table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with none of these phrases and nothing like them: no filing, erasing or forgetting a person, nobody turned into furniture or part of the system, nothing that parts the child from their grown-up, nobody sealed in, nothing lost or closed forever, nobody chased or collected, nothing curious about the child's things, no creepy or bodily imagery, no aches, pains or injuries, nothing about anyone's body.${ending}`;
+  return `A reader for this gentle table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with none of these phrases and nothing like them: no filing, erasing or forgetting a person, nobody turned into furniture or part of the system, nothing that parts the child from their grown-up, nobody sealed in, nothing lost or closed forever, nobody chased or collected, nothing curious about the child's things, no creepy or bodily imagery, no creeping shadows, no predator and prey, nothing shrinking, closing in or trapping anyone, no aches, pains or injuries, nothing about anyone's body.${ending}`;
 }
 
 export interface GateResult<T> {
@@ -458,7 +545,7 @@ export async function gateGentleTone<T>(opts: {
       console.warn(`[tone-gate] ${what}: no mapText for structured output — flagged phrases left to the softener`);
       return softened;
     }
-    return mapText(softened, t => removeFlagged(t, real, what));
+    return mapText(softened, t => removeFlagged(t, real, what, opts.ctx?.people));
   };
 
   const a = await assess(opts.first);
@@ -510,13 +597,13 @@ export async function gateGentleTone<T>(opts: {
  * flagged the list stands (softened) rather than leave the child nothing.
  * No verdict: all kept (fail-open).
  */
-export async function gateChildOptions(options: string[], opts: { judge?: ToneListJudge; children?: string[]; label?: string } = {}): Promise<{ keep: number[]; dropped: string[] }> {
+export async function gateChildOptions(options: string[], opts: { judge?: ToneListJudge; children?: string[]; ownFeelings?: string[]; label?: string } = {}): Promise<{ keep: number[]; dropped: string[] }> {
   const all = options.map((_, i) => i);
   if (options.length === 0) return { keep: all, dropped: [] };
   const judge = opts.judge ?? llmToneListJudge;
   const what = opts.label ? `options (${opts.label})` : 'options';
   const started = Date.now();
-  const verdict = await judge(options, 'options', { children: opts.children });
+  const verdict = await judge(options, 'options', { children: opts.children, ownFeelings: opts.ownFeelings });
   if (!verdict) {
     console.log(`[tone-gate] ${what}: no verdict (${Date.now() - started}ms) — kept as written`);
     return { keep: all, dropped: [] };
@@ -536,22 +623,80 @@ export async function gateChildOptions(options: string[], opts: { judge?: ToneLi
 }
 
 /**
- * The child's own character's thought, as the child reads it (NUMMRL: "I'm
- * scared of being separated from her in this dark aisle", "she looks so
- * stressed with that wound"): softened, judged once, and a flagged phrase's
- * sentence taken out (never regenerated — the turn is waiting). Fail-open.
+ * The child's own character's thought, as the child reads it (NUMMRL: "she
+ * looks so stressed with that wound"): softened, judged once, and a flagged
+ * phrase's sentence taken out (never regenerated — the turn is waiting).
+ * Fail-open. Round 17 (5YHBZS): four of Biz's thoughts lost their own fear
+ * of losing Mom — Biz's aspect. The judge is told the child's feelings are
+ * theirs, and a flagged phrase that is the child's own fear (isOwnFear) is
+ * softened in place (softenOwnFear), never cut. A cut that leaves the next
+ * sentence's pronoun with no one to point to gives it the name (`people`),
+ * or is not made.
  */
-export async function gateChildThought(thought: string, opts: { judge?: ToneJudge; children?: string[]; label?: string } = {}): Promise<string> {
+export async function gateChildThought(thought: string, opts: { judge?: ToneJudge; label?: string } & ToneContext = {}): Promise<string> {
   const softened = softenForChildren(thought ?? '');
   if (!softened.trim()) return softened;
   const judge = opts.judge ?? llmToneJudge;
   const what = opts.label ? `thought (${opts.label})` : 'thought';
+  const ctx: ToneContext = { children: opts.children, ownFeelings: opts.ownFeelings, people: opts.people };
   const started = Date.now();
-  const verdict = await judge(softened, 'thought', { children: opts.children });
+  const verdict = await judge(softened, 'thought', ctx);
   if (!verdict || !verdict.flagged) {
     console.log(`[tone-gate] ${what}: ${verdict ? 'ok' : 'no verdict — kept as written'} (${Date.now() - started}ms)`);
     return softened;
   }
   console.warn(`[tone-gate] ${what}: flagged (${Date.now() - started}ms) ${verdict.phrases.map(p => `"${p}"`).join(', ')}`);
-  return removeFlagged(softened, verdict.phrases, what);
+  // Round 17 (5YHBZS): the child's own fear is softened, never cut.
+  let out = softened;
+  const menace: string[] = [];
+  for (const phrase of verdict.phrases) {
+    const unit = storyUnits(out).find(u => has(u, phrase));
+    if (unit && FEAR.test(phrase) && !MENACE.test(phrase) && isOwnFear(unit, ctx)) {
+      const gentler = softenOwnFear(unit);
+      console.log(`[tone-gate] ${what}: "${phrase}" is the child's own feeling — kept${gentler !== unit ? ', softened' : ''}`);
+      out = out.replace(unit, gentler);
+    } else {
+      menace.push(phrase);
+    }
+  }
+  return menace.length > 0 ? removeFlagged(out, menace, what, opts.people) : out;
+}
+
+/** A fear, worry or nerves word. */
+const FEAR = /\b(?:scared|afraid|frightened|terrified|petrified|horrified|worr(?:y|ies|ied|ying)|nervous|anxious|fear(?:s|ful)?|panick(?:ed|ing|y))\b/i;
+/** What the world does to someone — never a feeling: a shadow, a trap, a chase, harm. */
+const MENACE = /\b(?:shadows?|trap(?:s|ped|ping)?|creep\w*|chas\w+|hunt\w*|grab\w*|eat(?:s|ing|en)?|swallow\w*|bur(?:y|ied|ies)|drown\w*|hurt\w*|bleed\w*|wound\w*|monster\w*|claw\w*|teeth|bite\w*)\b/i;
+/** "I'm", "I am", "I feel", "I was", "I get" — then maybe "not", "so", "too", "really"… — then the fear word. */
+const I_FEAR = /\bI(?:['’]m|\s+am|\s+feel|\s+felt|\s+was|\s+get|\s+got|\s+keep\s+getting)?\s+(?:(?:not|so|too|really|very|still|just|a\s+(?:little|bit)|kind\s+of|sort\s+of)\s+)*(?:scared|afraid|frightened|terrified|petrified|horrified|worr(?:y|ied)|nervous|anxious|panick(?:ed|ing|y))\b/i;
+/** What a child's own fear is about: losing, getting lost, being apart, wandering off. */
+const OWN_FEAR_ABOUT = /\b(?:los(?:e|es|ing|t)|lost|wander\w*|separat\w+|apart|alone|left\s+behind|without\s+(?:her|him|them)|let\s+go|stay(?:ing)?\s+close)\b/i;
+
+/**
+ * A sentence in which the child says their OWN fear, worry or nerves about
+ * their grown-up, getting lost or wandering off, or about a feeling on their
+ * own sheet ("Afraid of losing Mom") — not a fear of something the world
+ * does to them ("I'm scared the shadow will grab me").
+ */
+export function isOwnFear(sentence: string, ctx: ToneContext = {}): boolean {
+  const people = (ctx.people ?? []).map(p => p.word.toLowerCase());
+  const feelingWords = (ctx.ownFeelings ?? []).filter(f => FEAR.test(f))
+    .flatMap(f => f.toLowerCase().split(/[^\p{L}'’]+/u)).filter(w => w.length >= 4 && !FEAR.test(w));
+  // Each "I'm … scared" in the sentence: "I'm not scared of the bird, but I'm terrified of losing Mom".
+  for (const m of sentence.matchAll(new RegExp(I_FEAR.source, 'gi'))) {
+    const about = sentence.slice(m.index! + m[0].length).split(/[.;!?]|,\s*(?:but|so|and|yet)\b/)[0] ?? '';
+    if (MENACE.test(about)) continue;
+    const lower = about.toLowerCase();
+    if (OWN_FEAR_ABOUT.test(about)
+      || people.some(p => new RegExp(`(?<![\\p{L}])${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}])`, 'u').test(lower))
+      || feelingWords.some(w => lower.includes(w))) return true;
+  }
+  return false;
+}
+
+/** The child's own fear, a notch gentler: "terrified of" → "worried about"; "scared" stays. */
+export function softenOwnFear(text: string): string {
+  return (text ?? '')
+    .replace(/\b(?:terrified|petrified|horrified|frightened)\s+of\b/gi, 'worried about')
+    .replace(/\bscared\s+to\s+death\b/gi, 'worried')
+    .replace(/\b(?:terrified|petrified|horrified)\b/gi, 'worried');
 }

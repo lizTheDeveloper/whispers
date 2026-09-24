@@ -31,7 +31,7 @@ import {
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
   withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames, withoutCount, itemCount, lessOne,
-  withoutMechanics, withoutStrayPronounAfterName, fixIndefiniteArticles, troubleShown,
+  withoutMechanics, withoutStrayPronounAfterName, fixIndefiniteArticles, troubleShown, repairKinWordAsVerb, withoutCharacterReading, type MechanicSheet,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -67,6 +67,11 @@ export interface WhisperAck {
 }
 
 const TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor']);
+/** "she/her" → she, "he/him" → he, anything else → they. */
+function pronounKey(p: string | null | undefined): 'she' | 'he' | 'they' {
+  return /^\s*she\b/i.test(p ?? '') ? 'she' : /^\s*he\b/i.test(p ?? '') ? 'he' : 'they';
+}
+
 function getFirstName(fullName: string): string {
   const parts = fullName.split(/\s+/);
   return parts.find(p => !TITLES.has(p.toLowerCase())) ?? parts[0]!;
@@ -268,7 +273,7 @@ export class GameLoop {
   // the stage the table just heard.
   private openingJustDelivered = false;
   /** The server's stock lines (fate-point beats, outcome corrections), rotated per game so none repeats soon. */
-  private lines = new LineRotation();
+  private lines: LineRotation;
   private sceneWhisperStats = new Map<string, { name: string; followed: number; partial: number; ignored: number; trustStart: number; trustEnd: number }>();
   private broadcastFn: (msg: ServerMessage) => void;
 
@@ -283,6 +288,8 @@ export class GameLoop {
     private sendToOwnerFn: (characterId: string, msg: ServerMessage) => void = () => {},
   ) {
     this.dm = new DmAgent(db);
+    // Seeded by the game, so each game's first stock line differs (round 17).
+    this.lines = new LineRotation(campaignId);
     this.worldBible = new WorldBible(db);
     this.memoryStore = new CharacterMemoryStore(db);
     this.state = initialState;
@@ -614,13 +621,42 @@ export class GameLoop {
    */
   private async toneGated<T>(kind: ToneKind, first: T, textOf: (v: T) => string, regenerate: (feedback: string) => Promise<T | null | undefined>, opts: { soften?: (v: T) => T; extraFlags?: (text: string) => string[]; label?: string; mapText?: (v: T, edit: (text: string) => string) => T } = {}): Promise<T> {
     if (!this.familyTable()) return first;
-    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames() }, judge: GameLoop.toneJudge });
+    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames(), people: this.partyPeople() }, judge: GameLoop.toneJudge });
     return result.value;
   }
 
   /** The child player characters, by first name (for the tone judge). */
   private childNames(): string[] {
     return childrenInParty(this.partyForDm()).map(n => getFirstName(n));
+  }
+
+  /** The party by first name, with the pronoun each takes: a DM draft's removal repairs a pronoun with these (round 17). */
+  private partyPeople(): Array<{ word: string; pronoun: 'she' | 'he' | 'they' }> {
+    return Array.from(this.characters.values()).map(c => ({ word: getFirstName(c.definition.name), pronoun: pronounKey(this.ownPronouns(c)) }));
+  }
+
+  /** The child's own feelings and troubles, as their sheet has them (the judge reads their thoughts and options with these; round 17). */
+  private ownFeelings(character: Character): string[] {
+    const d = character.definition;
+    return [d.trouble, ...(d.aspects ?? [])].map(x => (x ?? '').trim()).filter(Boolean);
+  }
+
+  /** Who a pronoun in this character's thought can be: each companion by name and by what this character calls them. */
+  private thoughtPeople(character: Character): Array<{ word: string; pronoun: 'she' | 'he' | 'they' }> {
+    const out: Array<{ word: string; pronoun: 'she' | 'he' | 'they' }> = [];
+    for (const other of this.characters.values()) {
+      if (other.id === character.id) continue;
+      const pronoun = pronounKey(this.ownPronouns(other));
+      out.push({ word: getFirstName(other.definition.name), pronoun });
+      for (const t of this.addressTermsOf(character.id)) if (this.namesMatch(t.name, other.definition.name)) out.push({ word: t.address, pronoun });
+    }
+    return out;
+  }
+
+  /** A character's sheet, for keeping its skills, aspects and stunts out of their words as game terms. */
+  private mechanicSheet(character: Character): MechanicSheet {
+    const d = character.definition;
+    return { skills: Object.keys(d.skills ?? {}), aspects: [d.highConcept, d.trouble, ...(d.aspects ?? [])].filter((x): x is string => !!x), stunts: d.stunts ?? [] };
   }
 
   /** Is this character one of the children at the table? */
@@ -727,7 +763,8 @@ export class GameLoop {
   /** A memory as it is stored: the NPC pronoun fix, and gentle at a family table. */
   private memoryRepair = (text: string): string => {
     const fixed = fixIndefiniteArticles(repairChildNouns(this.fixNpcPronouns(text, { speech: true }), this.pronounMembers(), { npcNames: this.knownNpcNames() }));
-    return this.familyTable() ? softenForChildren(fixed) : fixed;
+    // Round 17 (5YHBZS): "…revealing their impatience and lack of fine motor control" — no reading of anyone's character at a family table.
+    return this.familyTable() ? softenForChildren(withoutCharacterReading(fixed)) : fixed;
   };
 
   /**
@@ -1804,6 +1841,12 @@ export class GameLoop {
       if (cut.length > 0) console.log(`[items] ${character.definition.name}: dropped option(s) that reach for a gone thing or mouth a thing: ${cut.map(d => `"${d}"`).join(', ')}`);
     }
     for (const a of proposals.actions) a.description = fixIndefiniteArticles(a.description);
+    // Round 17 (5YHBZS): "I use my Fine Print to find the clause…" — no sheet term as a game term in an option.
+    {
+      const sheet = this.mechanicSheet(character);
+      for (const a of proposals.actions) a.description = withoutMechanics(a.description, sheet);
+      proposals.actions = proposals.actions.filter(a => a.description.trim().length > 0);
+    }
     // A gentle table's child reads their own options (round 16, NUMMRL: "pull
     // her back before the shelf slams shut on her hand"): softened, then all
     // judged in one short call, and a flagged option dropped — never rewritten.
@@ -1814,7 +1857,7 @@ export class GameLoop {
       }
       const options = proposals.actions;
       const gated = await this.haltable(
-        () => gateChildOptions(options.map(a => a.description), { judge: GameLoop.toneListJudge, children: this.childNames(), label: character.definition.name }),
+        () => gateChildOptions(options.map(a => a.description), { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name }),
         (e) => { console.error('[tone-gate] options gate failed — kept as written:', e); return { keep: options.map((_, i) => i), dropped: [] }; },
       );
       if (!gated) return;
@@ -1909,6 +1952,8 @@ export class GameLoop {
     }
     // Live (WXKC2C): Biz handed Mom the pen with spokenWords `""` — no line.
     decision.spokenWords = spokenOrNull(decision.spokenWords);
+    // Round 17 (5YHBZS): "Dad a bottle cap to Mom…" — the model's, a kin word in the verb slot.
+    decision.chosenAction = repairKinWordAsVerb(decision.chosenAction);
     // The address guard, here at the source so the transcript line, the
     // DM's ruling and every screen carry the same text: Biz calls Liz
     // "Mom", in speech and in thought.
@@ -2023,21 +2068,24 @@ export class GameLoop {
     // says ("Biz just earned a fate point", "my trust is too low to…"); no
     // pronoun glued to an NPC's name ("Barnaby it, you said…"); "an engine".
     {
-      const thought = withoutMechanics(decision.innerThought);
+      // Round 17 (5YHBZS): the sheet's skills, aspects and stunts too ("I will use my Rapport to…").
+      const sheet = this.mechanicSheet(character);
+      const thought = withoutMechanics(decision.innerThought, sheet);
       decision.innerThought = fixIndefiniteArticles(thought.trim() ? thought : endSentence(`I'll ${lowerFirst(decision.chosenAction.replace(/^I\s+/i, ''))}`));
       if (decision.spokenWords) {
         const npcNames = [...new Set([...this.knownNpcNames(), ...this.allNpcs().map(n => n.name)])];
-        decision.spokenWords = spokenOrNull(fixIndefiniteArticles(withoutStrayPronounAfterName(withoutMechanics(decision.spokenWords), npcNames)));
+        decision.spokenWords = spokenOrNull(fixIndefiniteArticles(withoutStrayPronounAfterName(withoutMechanics(decision.spokenWords, sheet), npcNames)));
       }
       decision.chosenAction = fixIndefiniteArticles(decision.chosenAction);
     }
     // A gentle table's child reads their own character's thought (NUMMRL:
-    // "I'm scared of being separated from her in this dark aisle", "she looks
-    // so stressed with that wound"): softened, judged, a flagged sentence out.
+    // "she looks so stressed with that wound"): softened, judged, a flagged
+    // sentence out. Round 17 (5YHBZS): the child's own fear ("I'm too scared
+    // to lose Mom again" — their aspect) is theirs: kept, softened at most.
     if (this.familyTable() && this.isChild(character)) {
       const thought = decision.innerThought;
       const gated = await this.haltable(
-        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), label: character.definition.name }),
+        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), people: this.thoughtPeople(character), label: character.definition.name }),
         (e) => { console.error('[tone-gate] thought gate failed — kept softened:', e); return softenForChildren(thought); },
       );
       if (gated === null) return;

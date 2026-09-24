@@ -46,6 +46,20 @@ export class LineRotation {
   private clock = 0;
 
   /**
+   * `seed` (the game's id): where in each family an unused rotation starts,
+   * so each game's first compel is not the same line (round 17, 5YHBZS: the
+   * first variant opened every game). No seed: the first variant first.
+   */
+  constructor(private readonly seed?: string) {}
+
+  private start(family: string, n: number): number {
+    if (!this.seed || n === 0) return 0;
+    let h = 2166136261;
+    for (const ch of `${this.seed}\u0000${family}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+    return h % n;
+  }
+
+  /**
    * A variant of `family` that has not been said this game (by anyone),
    * least recently used first, and not already in `recent` (a resumed game
    * with no snapshot still has its transcript). When every variant has been
@@ -57,7 +71,9 @@ export class LineRotation {
     this.lastUse.set(family, uses);
     const said = this.said.get(family) ?? [];
     this.said.set(family, said);
-    const order = variants.map((_, i) => i).sort((a, b) => (uses.get(a) ?? -1) - (uses.get(b) ?? -1));
+    const n = variants.length;
+    const from = this.start(family, n);
+    const order = variants.map((_, i) => i).sort((a, b) => ((uses.get(a) ?? -1) - (uses.get(b) ?? -1)) || (((a - from + n) % n) - ((b - from + n) % n)));
     const unread = (i: number) => !recent || !recent.includes(variants[i]!);
     const fresh = order.find(i => !said.includes(i) && unread(i));
     if (fresh === undefined && opts.whenSpent === 'skip') {
@@ -165,7 +181,10 @@ export function invokeLines(name: string, aspect: string): string[] {
  */
 export function compelLines(name: string, trouble: string): string[] {
   return [
-    `${name} feels the pull of old habits — "${trouble}" — and the universe grants a small mercy in return.`,
+    // Round 17 (5YHBZS): "…and the universe grants a small mercy in return"
+    // was the first compel of every game (the rotation always began at the
+    // top). Retired; and a seeded rotation now starts somewhere else.
+    `${name} follows "${trouble}" for a moment, and that moment pays ${name} back.`,
     `But "${trouble}" rears its head, complicating everything — though ${name} gets a small consolation.`,
     `"${trouble}" — the words could be ${name}'s motto, and today they earn a point.`,
     `Guess who is back? "${trouble}". ${name} pays for it now and collects later.`,
