@@ -26,7 +26,7 @@ import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent, wantsNoSpoilers, nextSetupQuestion, setupToneRule } from './agents/dm.js';
 import { softenForChildren } from './narrative-guards.js';
-import { GameLoop, campaignWantsGentlePeril, worldIntroductionAsShown } from './game-loop.js';
+import { GameLoop, campaignWantsGentlePeril, worldIntroductionAsShown, partyNamesForIntroduction, hostSetupMessages } from './game-loop.js';
 import { gateGentleTone } from './tone-gate.js';
 import { guardInterviewReply, neutralSetupNouns, sheetWithNeutralNouns, sheetWithCompanionPronouns, type PronounMember } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
@@ -552,12 +552,17 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
     const dm = new DmAgent(db);
     let gentlePeril = false;
     try { gentlePeril = campaignWantsGentlePeril(db, campaign.id); } catch (e) { console.error('[world-introduction] could not read the table tone:', e); }
+    // The players' own characters, never named to the reader (round 16,
+    // NUMMRL: the host, who plays Liz, read "You and Liz stand…").
+    let partyNames: string[] = [];
+    try { partyNames = partyNamesForIntroduction(seed, hostSetupMessages(db, campaign.id)); } catch (e) { console.error('[world-introduction] could not read the party names:', e); }
     const introduce = (toneFeedback?: string) => dm.introduceWorld({
       preset: campaign.dmPreset,
       influences: getInfluences(db, campaign.id),
       seed,
       gentlePeril,
       toneFeedback,
+      partyNames,
     });
     let raw = await introduce();
     // A gentle table: the judge reads the first sight of the world (live
@@ -566,12 +571,12 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
       raw = (await gateGentleTone({
         kind: 'world-intro',
         first: raw,
-        textOf: r => worldIntroductionAsShown(r, seed, true),
+        textOf: r => worldIntroductionAsShown(r, seed, true, partyNames),
         regenerate: feedback => introduce(feedback),
         soften: r => r, // worldIntroductionAsShown softens whatever is kept
       })).value;
     }
-    const text = worldIntroductionAsShown(raw, seed, gentlePeril);
+    const text = worldIntroductionAsShown(raw, seed, gentlePeril, partyNames);
     // introduceWorld calls callLlm with no schema, so a proxy hiccup (outage,
     // an all-whitespace body, a response that was nothing but thinking tags)
     // comes back as '' rather than throwing. Appending that would store an
@@ -1549,6 +1554,7 @@ wss.on('connection', (ws) => {
             textOf: r => r.reply,
             regenerate: feedback => dm.setupChat({ ...setupOpts, toneFeedback: feedback }),
             soften: r => ({ ...r, reply: softenForChildren(r.reply) }),
+            mapText: (r, edit) => ({ ...r, reply: edit(r.reply) }),
           })).value;
         }
         // The chat reply is conversation only. Live (E9W9YT) the model wrote

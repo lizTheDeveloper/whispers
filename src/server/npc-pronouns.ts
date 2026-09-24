@@ -409,6 +409,10 @@ export function correctNpcPronouns(
     if (fixable.length === 0) { why('someone else with those pronouns could be meant'); continue; }
     const firstEnd = local.length > 0 ? local[0]![1] : sStart;
     if (fixable.some(f => f.at < firstEnd)) { why('pronoun before the name'); continue; }
+    // "Barnaby him, you said…": a pronoun right against the name is not
+    // the NPC's pronoun but a garbled word — swapped, it read "Barnaby it,"
+    // (round 16, NUMMRL). Left as written.
+    if (fixable.some(f => npc.spans.some(([, e]) => e <= f.at && /^\s+$/.test(text.slice(e, f.at))))) { why('pronoun right after the name'); continue; }
     const planned: Swap[] = [];
     let ok = true;
     for (const f of fixable) {

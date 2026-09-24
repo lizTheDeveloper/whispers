@@ -1152,7 +1152,7 @@ ${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for
    * briefing — they should want to be somewhere in it before they are asked
    * who they are. Keep the influences in the prose and out of the content.
    */
-  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed; /** The host asked for gentle peril: the register holds from the first sight of the world. */ gentlePeril?: boolean; /** The tone gate's feedback on the last draft (tone-gate.ts). */ toneFeedback?: string }): Promise<string> {
+  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed; /** The host asked for gentle peril: the register holds from the first sight of the world. */ gentlePeril?: boolean; /** The tone gate's feedback on the last draft (tone-gate.ts). */ toneFeedback?: string; /** The players' own characters, as far as the setup knows (never named to the reader). */ partyNames?: string[] }): Promise<string> {
     // Plot hooks (and NPC motivations) are DM secrets and are deliberately
     // not given to this prompt: whatever it knows, the player may read.
     const places = opts.seed.locations.slice(0, 4).map(l => `${l.name}: ${l.description}`).join('\n');
@@ -1167,6 +1167,11 @@ ${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for
     const pronounRule = npcPronounBlock(pronouns);
     const toneRule = opts.gentlePeril ? `\n\n${childToneRule([], { gentlePeril: true })}` : '';
     const feedback = opts.toneFeedback?.trim() ? `\n\n${opts.toneFeedback.trim()}` : '';
+    // Round 16 (NUMMRL): the host, who plays Liz, read "You and Liz stand…".
+    const party = (opts.partyNames ?? []).filter(Boolean);
+    const partyRule = party.length > 0
+      ? `\n\nTHE READER: ${party.join(', ')} ${party.length === 1 ? 'is the player character' : 'are the players\' own characters'}, and the reader is one of them — which one is not yet known. Never name ${party.length === 1 ? 'them' : 'any of them'}: the reader is "you", and anyone with them is "your companion" ("You and your companion stand…", never "You and ${party[0]} stand…").`
+      : '';
 
     const systemPrompt = `You are a TTRPG Dungeon Master ("${opts.preset}" style) introducing a player to a world they are about to make a character for.
 
@@ -1182,7 +1187,7 @@ Places:
 ${places}
 
 People:
-${people}${pronounRule ? `\n\n${pronounRule}` : ''}${toneRule}${feedback}`;
+${people}${pronounRule ? `\n\n${pronounRule}` : ''}${partyRule}${toneRule}${feedback}`;
 
     return callProse({
       messages: [

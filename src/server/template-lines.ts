@@ -108,6 +108,24 @@ export function appendBeat(text: string, beat: string): string {
   return /[.!?…]["'”’»)\]*_]*$/.test(t) ? `${t} ${b}` : `${t}. ${b}`;
 }
 
+/**
+ * DM prose without the stock beats the server appended to it this turn —
+ * compel, invoke, outcome-correction lines — for the memory writers
+ * (round 16, NUMMRL: "The worry about Biz flared up again" was stored as
+ * Liz's own memory, from a compel line). What the table reads keeps them.
+ */
+export function withoutStockBeats(text: string, beats: string[]): string {
+  let out = text ?? '';
+  for (const beat of beats) {
+    const b = beat?.trim();
+    if (!b) continue;
+    const at = out.indexOf(b);
+    if (at < 0) continue;
+    out = `${out.slice(0, at).replace(/\s+$/, '')} ${out.slice(at + b.length).replace(/^\s+/, '')}`;
+  }
+  return out === text ? text : out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /** The line when a character spends a fate point on their high concept. Names only, no pronouns. No two share a four-word phrase. */
 export function invokeLines(name: string, aspect: string): string[] {
   return [
@@ -127,7 +145,7 @@ export function invokeLines(name: string, aspect: string): string[] {
     `${name} remembers what "${aspect}" means; the problem shrinks to size.`,
     `A little "${aspect}" goes a long way: ${name} turns it around.`,
     `"${aspect}", through and through — that is how ${name} wins the moment.`,
-    `A fate point on "${aspect}"? Money well spent, ${name}.`,
+    `Betting on "${aspect}"? Money well spent, ${name}.`,
     `Nobody does "${aspect}" quite like ${name} does. Proof, right here.`,
     `${name} calls on "${aspect}" and luck answers.`,
     `With "${aspect}" behind the effort, ${name} pulls it off.`,
@@ -148,13 +166,13 @@ export function invokeLines(name: string, aspect: string): string[] {
 export function compelLines(name: string, trouble: string): string[] {
   return [
     `${name} feels the pull of old habits — "${trouble}" — and the universe grants a small mercy in return.`,
-    `But "${trouble}" rears its head, complicating everything — though fate offers ${name} a consolation.`,
+    `But "${trouble}" rears its head, complicating everything — though ${name} gets a small consolation.`,
     `"${trouble}" — the words could be ${name}'s motto, and today they earn a point.`,
     `Guess who is back? "${trouble}". ${name} pays for it now and collects later.`,
     `${name}'s "${trouble}" makes itself known at precisely the wrong moment — as it always does.`,
     `Of course — "${trouble}". ${name} cannot help it, and the story quietly takes note.`,
     `"${trouble}" tugs at ${name} again; the story bends around it, and ${name} earns a little luck for later.`,
-    `There it is again: "${trouble}". It costs ${name} now, but fate keeps count.`,
+    `There it is again: "${trouble}". It costs ${name} now, but somebody is keeping count.`,
     `One point to ${name}, courtesy of "${trouble}".`,
     `${name} and "${trouble}", together again; the story takes the detour, and ${name} is owed one.`,
     `Right on cue, "${trouble}" gets in ${name}'s way. Worth a point, at least.`,
