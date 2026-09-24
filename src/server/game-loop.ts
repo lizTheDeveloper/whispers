@@ -26,6 +26,12 @@ export const QUIET_TURNS_BEFORE_PAUSE = 6;
 // How long a character waits for a whisper before deciding alone. Read once
 // at import (like index.ts's ROOM_TEARDOWN_GRACE_MS) so tests can shrink it.
 const WHISPER_WINDOW_MS = parseInt(process.env.WHISPER_WINDOW_MS ?? '30000', 10);
+// The first window of a session opens right after the arrival, the
+// introductions and the first scene's narration land at once — a wall of
+// text. Seen live: a player reading it (or on another tab) first saw the
+// window at 3s left and lost the turn. It gets a second window's worth of
+// reading time on top.
+const FIRST_WHISPER_WINDOW_MS = parseInt(process.env.FIRST_WHISPER_WINDOW_MS ?? String(WHISPER_WINDOW_MS * 2), 10);
 
 const BASE_COMPACTION_THRESHOLD = 35;
 const BASE_COMPACTION_KEEP_RECENT = 12;
@@ -71,7 +77,11 @@ export class GameLoop {
   private llmAbort = new AbortController();
   private quietTurns = 0;
   private pendingWhisperTimer: ReturnType<typeof setTimeout> | null = null;
-  private openWhisperPrompt: ServerMessage | null = null;
+  private openWhisperPrompt: Extract<ServerMessage, { type: 'whisper-prompt' }> | null = null;
+  // Wall-clock close of the open whisper window while its countdown runs;
+  // null while none is open or while a pause holds it.
+  private whisperDeadline: number | null = null;
+  private firstWhisperWindow = true;
   private sceneTurnCount = 0;
   private locationTurnCount = 0;
   private lastLocationName = '';
@@ -479,7 +489,10 @@ export class GameLoop {
       // The window was held; give the table a fresh countdown for it, and
       // re-send its prompt so every client restarts theirs.
       this.armWhisperTimer(WHISPER_WINDOW_MS);
-      if (this.openWhisperPrompt) this.broadcastFn(this.openWhisperPrompt);
+      if (this.openWhisperPrompt) {
+        this.openWhisperPrompt = { ...this.openWhisperPrompt, windowMs: WHISPER_WINDOW_MS, remainingMs: WHISPER_WINDOW_MS };
+        this.broadcastFn(this.openWhisperPrompt);
+      }
     }
     const gate = this.resumeGate;
     this.resumeGate = null;
@@ -792,15 +805,24 @@ export class GameLoop {
     // is skipped when saved words are already in hand.
     const carrying = this.whisperQueue.get(characterId);
     if (carrying) this.whisperQueue.delete(characterId);
-    const whisperPrompt: ServerMessage = { type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length };
+    const carryingSaved = !!carrying && carrying.length > 0;
+    // The window's length travels with the prompt so the client counts down
+    // from what the server will actually wait, not a number of its own.
+    const windowMs = carryingSaved ? 0 : (this.firstWhisperWindow ? FIRST_WHISPER_WINDOW_MS : WHISPER_WINDOW_MS);
+    const whisperPrompt: Extract<ServerMessage, { type: 'whisper-prompt' }> = {
+      type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions,
+      goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length,
+      ...(carryingSaved ? {} : { windowMs, remainingMs: windowMs }),
+    };
     this.broadcastFn(whisperPrompt);
 
     let whisper: string | null;
-    if (carrying && carrying.length > 0) {
-      whisper = carrying.join('\n');
+    if (carryingSaved) {
+      whisper = carrying!.join('\n');
     } else {
+      this.firstWhisperWindow = false;
       this.openWhisperPrompt = whisperPrompt;
-      whisper = await this.waitForWhisper(characterId, WHISPER_WINDOW_MS);
+      whisper = await this.waitForWhisper(characterId, windowMs);
       this.openWhisperPrompt = null;
     }
     // A whisper that landed in a window the pause was holding is kept: the
@@ -1639,13 +1661,26 @@ export class GameLoop {
     });
   }
 
+  /**
+   * The open whisper window as a (re)joining tab should see it: the prompt,
+   * with the time actually left on the server's countdown. Null when no
+   * window is counting down (none open, or a pause is holding it — resume
+   * re-broadcasts the prompt with a fresh countdown).
+   */
+  openWhisperWindow(): Extract<ServerMessage, { type: 'whisper-prompt' }> | null {
+    if (!this.openWhisperPrompt || this.whisperDeadline === null) return null;
+    return { ...this.openWhisperPrompt, remainingMs: Math.max(0, this.whisperDeadline - Date.now()) };
+  }
+
   /** (Re)start the countdown on the open whisper window; it closes with no whisper when it runs out. */
   private armWhisperTimer(timeoutMs: number): void {
     const resolve = this.pendingWhisperResolve;
     if (!resolve) return;
     this.clearWhisperTimer();
+    this.whisperDeadline = Date.now() + timeoutMs;
     this.pendingWhisperTimer = setTimeout(() => {
       this.pendingWhisperTimer = null;
+      this.whisperDeadline = null;
       if (this.pendingWhisperResolve === resolve) {
         this.pendingWhisperResolve = null;
         this.pendingWhisperCharacterId = null;
@@ -1655,6 +1690,7 @@ export class GameLoop {
   }
 
   private clearWhisperTimer(): void {
+    this.whisperDeadline = null;
     if (this.pendingWhisperTimer) {
       clearTimeout(this.pendingWhisperTimer);
       this.pendingWhisperTimer = null;

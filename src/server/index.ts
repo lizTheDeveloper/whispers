@@ -752,6 +752,14 @@ wss.on('connection', (ws) => {
       // After the phase-change, so the game view it mounts is there to paint
       // the banner — a refresh mid-pause must not look like a hung table.
       sendPauseState(ws, campaign.id, campaign.phase);
+      // A refresh mid-window gets the open whisper prompt back, with the
+      // time the server's countdown really has left — not a fresh 30s that
+      // outlives the window, and not nothing (the prompt is not in the
+      // replay log).
+      if (campaign.phase === 'playing') {
+        const openWindow = gameLoops.get(msg.joinCode)?.openWhisperWindow();
+        if (openWindow) send(ws, openWindow);
+      }
 
       // Sent last and deliberately not awaited: sendWorldIntroduction makes an
       // LLM call with its own multi-second/retry timeout, and a slow or
