@@ -47,3 +47,11 @@ export function referTo(name: string, pronouns: string | null | undefined): Pron
 export function capitalize(word: string): string {
   return word ? word[0]!.toUpperCase() + word.slice(1) : word;
 }
+
+/**
+ * Verb agreement for `r`'s subject: "she collapses" / "they collapse" /
+ * "Ash collapses". Irregulars are passed in: agree(r, 'is', 'are').
+ */
+export function agree(r: PronounSet, singular: string, plural: string): string {
+  return r.plural ? plural : singular;
+}

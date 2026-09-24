@@ -26,7 +26,10 @@ import {
   premiseImpliesArrival, hasArrivalBeat, fallbackArrival, narratesTransport,
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
+  kinAddressTerms, highConceptsToNames, takenOutLine, outcomeLines, whisperInboxMessage,
 } from './narrative-guards.js';
+import { checkedWhisperVerdict } from './whisper-verdict.js';
+import { referTo } from '../shared/pronouns.js';
 
 /**
  * Consecutive turns with no whisper from any human before the table pauses
@@ -62,7 +65,7 @@ function getFirstName(fullName: string): string {
 }
 
 /** Grounding for the epilogue and closing reflections, stated once so both say the same thing. */
-const ENDING_FACTS_RULE = 'Items and places: who holds an item and where something is are exactly as the lists given say — an item handed over is no longer the party\'s; a room belongs to the place the record puts it in. If you are not sure where something happened or who has an item, do not say.';
+const ENDING_FACTS_RULE = 'Items and places: who holds an item and where something is are exactly as the lists given say — an item handed over is no longer the party\'s; a room belongs to the place the record puts it in. Never say an item was handed over, given, taken or put anywhere unless the item list or the record says so — a plan, a hope or a memory of someone eyeing it is not the item changing hands. A question listed as still open stays open: do not answer it. If you are not sure where something happened or who has an item, do not say.';
 
 /** A character's condition as it stands now: only consequences they still carry (a recovered one is gone from state). */
 export function currentCondition(state: Pick<CharacterState, 'consequences'>): string {
@@ -430,7 +433,9 @@ export class GameLoop {
     if (!text || this.characters.size === 0) return text;
     try {
       const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id));
-      const fixed = namesInNarration(text, terms);
+      // "the Curious Kid With a Sketchbook steps forward" is Biz stepping forward.
+      const party = Array.from(this.characters.values()).map(c => ({ name: c.definition.name, highConcept: c.definition.highConcept }));
+      const fixed = namesInNarration(highConceptsToNames(text, party), terms);
       if (fixed !== text) console.log(`[guard] address term in narration replaced by a name: "${text.slice(0, 80)}" → "${fixed.slice(0, 80)}"`);
       return fixed;
     } catch (e) {
@@ -452,11 +457,11 @@ export class GameLoop {
    * over-eager rewrite leaves the guarded text as it was; a cancelled call
    * (pause, End Game) is re-thrown for the loop to handle.
    */
-  private async consistentProse(text: string): Promise<string> {
+  private async consistentProse(text: string, actor?: string): Promise<string> {
     const guarded = this.guardText(text);
     if (!guarded || this.characters.size === 0) return guarded;
     try {
-      return await withConsistentPronouns(guarded, this.pronounMembers());
+      return await withConsistentPronouns(guarded, this.pronounMembers(), { actor, npcNames: this.knownNpcNames() });
     } catch (e) {
       if (isLlmAbort(e)) throw e;
       console.error('[pronouns] consistency check failed, text left as written:', e);
@@ -469,25 +474,29 @@ export class GameLoop {
    * parks and redoes only the check, never the DM call before it. Null when
    * the game was stopped.
    */
-  private checkedProse(text: string): Promise<string | null> {
-    return this.haltable(() => this.consistentProse(text), () => this.guardText(text));
+  private checkedProse(text: string, actor?: string): Promise<string | null> {
+    return this.haltable(() => this.consistentProse(text, actor), () => this.guardText(text));
   }
 
   /** Extracted world facts without the party recorded as NPCs (see withoutPartyEntities). */
   private worldFacts<T extends { newEntities: Array<{ name: string }> }>(facts: T): T {
     const names = Array.from(this.characters.values()).map(c => c.definition.name);
-    const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id).map(t => t.address));
-    return withoutPartyEntities(facts, names, terms);
+    const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id).filter(t => !t.derived).map(t => t.address));
+    const concepts = Array.from(this.characters.values()).map(c => c.definition.highConcept).filter(Boolean);
+    return withoutPartyEntities(facts, names, terms, concepts);
   }
 
   /** What `speakerId` calls each companion, when that is not simply their name ("Mom" for Liz). */
   private addressTermsOf(speakerId: string): AddressTerm[] {
     const speaker = this.characters.get(speakerId);
     if (!speaker) return [];
-    return (speaker.definition.relationships ?? []).flatMap(r => {
+    const own = (speaker.definition.relationships ?? []).flatMap(r => {
       const target = Array.from(this.characters.values()).find(o => o.id !== speakerId && this.namesMatch(r.to, o.definition.name));
       return target && r.address?.trim() ? [{ name: target.definition.name, address: r.address.trim() }] : [];
     });
+    // "mother" with no address term on the sheet: "Mom, Liz" still collapses.
+    const companions = Array.from(this.characters.values()).filter(o => o.id !== speakerId).map(o => o.definition.name);
+    return [...own, ...kinAddressTerms(speaker.definition.relationships ?? [], companions)];
   }
 
   /**
@@ -707,7 +716,8 @@ export class GameLoop {
       return sceneText;
     } else {
       console.log('[game-loop] Opening had no arrival beat — adding one built from the premise');
-      lead = [fallbackArrival(premise, names), dmArrival].filter(Boolean);
+      const pronouns = Array.from(this.characters.values()).map(c => this.ownPronouns(c));
+      lead = [fallbackArrival(premise, names, pronouns), dmArrival].filter(Boolean);
     }
     return [...lead, sceneText].filter(Boolean).join('\n\n');
   }
@@ -1265,6 +1275,16 @@ export class GameLoop {
 
     decision.innerThought = decision.innerThought.replace(/\bi\b/g, 'I').replace(/\bi'/g, "I'");
 
+    // The character's own report of how it took the whisper, checked against
+    // what it actually did (see whisper-verdict.ts).
+    if (whisper) {
+      const checked = checkedWhisperVerdict(whisper, decision.chosenAction, decision.spokenWords, decision.whisperedInfluence);
+      if (checked !== decision.whisperedInfluence) {
+        console.log(`[game-loop] ${character.definition.name} said it followed the whisper, but "${decision.chosenAction.slice(0, 60)}" shares nothing with it — counted as partial`);
+        decision.whisperedInfluence = checked;
+      }
+    }
+
     let actionTranscript = `${character.definition.name}: ${decision.chosenAction}`;
     if (decision.spokenWords) {
       actionTranscript += ` — "${decision.spokenWords}"`;
@@ -1403,7 +1423,7 @@ export class GameLoop {
         ? `${firstName} pushes through, but the cost is felt immediately.`
         : resolution.outcome === 'success-with-cost'
         ? `${firstName} succeeds, but not without a price.`
-        : `${firstName} acts decisively, and the moment shifts in their favor.`;
+        : outcomeLines(firstName, this.ownPronouns(character)).success;
       resolution.narration = outcomeNarration;
     }
 
@@ -1432,23 +1452,7 @@ export class GameLoop {
         const dmSaid = resolution.outcome;
         resolution.outcome = correctOutcome;
         if (dmSaid === 'success' && (correctOutcome === 'tie' || correctOutcome === 'success-with-cost' || correctOutcome === 'failure')) {
-          const correctionBeats: Record<string, string[]> = {
-            tie: [
-              `But the victory isn't clean — something slips, cracks, or shifts in the process.`,
-              `Yet something catches — a snag, a cost, a complication they didn't foresee.`,
-              `The moment teeters between triumph and consequence.`,
-            ],
-            'success-with-cost': [
-              `But the price is steep — the effort leaves its mark.`,
-              `Success, yes — but the kind that leaves bruises.`,
-              `They push through, but the strain shows.`,
-            ],
-            failure: [
-              `But the numbers don't lie — the attempt falls short, and the situation shifts against them.`,
-              `Yet despite the effort, circumstances conspire — and the moment slips away.`,
-              `But fate has other plans — the attempt crumbles under scrutiny.`,
-            ],
-          };
+          const correctionBeats: Record<string, string[]> = outcomeLines(getFirstName(character.definition.name), this.ownPronouns(character)).correction;
           const beats = correctionBeats[correctOutcome] ?? [];
           if (beats.length > 0) {
             resolution.narration = resolution.narration.trimEnd().replace(/\.?$/, '. ') + beats[(this.state.currentTurn ?? 0) % beats.length];
@@ -1558,7 +1562,7 @@ export class GameLoop {
     for (const cid of affectedCharIds) {
       const c = this.characters.get(cid);
       if (c && c.state.stress >= 3 && c.state.consequences.length >= 2) {
-        const takenOutMsg = `${c.definition.name} is TAKEN OUT — overwhelmed by stress and injuries, they collapse or are forced to retreat. The opposition decides what happens next.`;
+        const takenOutMsg = takenOutLine(c.definition.name, this.ownPronouns(c));
         this.addTranscript('system', takenOutMsg);
         this.broadcastFn({ type: 'narration', text: takenOutMsg, sceneNumber: this.state.currentScene });
         c.state.stress = 1;
@@ -1575,7 +1579,7 @@ export class GameLoop {
       const aidText = `${decision.chosenAction} ${decision.spokenWords ?? ''}`;
       for (const other of this.characters.values()) {
         if (other.id === characterId || !isTakenOut(other.state) || !downBeforeTurn.has(other.id)) continue;
-        const namesForThem = [getFirstName(other.definition.name), other.definition.name, ...this.addressTermsOf(characterId).filter(t => t.name === other.definition.name).map(t => t.address)];
+        const namesForThem = [getFirstName(other.definition.name), other.definition.name, ...this.addressTermsOf(characterId).filter(t => t.name === other.definition.name && !t.derived).map(t => t.address)];
         if (aidsCharacter(aidText, namesForThem)) {
           this.recoverFromTakenOut(other, `${getFirstName(character.definition.name)} helps ${getFirstName(other.definition.name)} up`);
         }
@@ -1650,7 +1654,8 @@ export class GameLoop {
       }
     }
 
-    const checkedResolution = await this.checkedProse(resolution.narration);
+    // A ruling is about its actor even where it never names them ("The ink's glow dims before her eyes…").
+    const checkedResolution = await this.checkedProse(resolution.narration, character.definition.name);
     if (checkedResolution === null) return;
     resolution.narration = checkedResolution;
     this.addTranscript('dm', resolution.narration);
@@ -1864,7 +1869,7 @@ export class GameLoop {
       const memText = memories.map(m => m.content).join('. ');
       const trustArc = c.state.whisperTrust >= 0.7 ? 'deeply trusts the guiding voice'
         : c.state.whisperTrust >= 0.4 ? 'remains uncertain about the whispers'
-        : 'has grown wary of the voice in their mind';
+        : `has grown wary of the voice in ${referTo(getFirstName(c.definition.name), this.ownPronouns(c)).possessive} mind`;
       const carrying = c.state.inventory?.length ? `carrying ${c.state.inventory.join(', ')}` : 'carrying nothing';
       return `${c.definition.name} (${c.definition.highConcept}): ${currentCondition(c.state)}, ${carrying}, stress ${c.state.stress}/3, ${c.state.fatePoints} FP, ${trustArc}. Key memories: ${memText || 'none'}`;
     }).join('\n');
@@ -1893,6 +1898,7 @@ export class GameLoop {
     };
     const voiceHint = presetVoices[campaign?.dm_preset] ?? 'Write in the DM\'s voice — warm, reflective, slightly bittersweet.';
 
+    let epilogueText = '';
     try {
       const epilogue = await callProse({
         messages: [
@@ -1909,6 +1915,7 @@ export class GameLoop {
       });
       const text = (await this.consistentProse(epilogue.trim())).trim();
       if (text && text.length > 20) {
+        epilogueText = text;
         this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
         console.log(`[game-loop] Epilogue generated (${text.length} chars)`);
       }
@@ -1916,7 +1923,7 @@ export class GameLoop {
       console.error('[game-loop] Epilogue generation failed:', e);
     }
 
-    await this.generateCharacterClosingReflections(scenes, currentScene, facts);
+    await this.generateCharacterClosingReflections(scenes, currentScene, facts, epilogueText);
   }
 
   /**
@@ -1925,10 +1932,11 @@ export class GameLoop {
    * is ours" after it was handed over; an atrium put in the wrong building).
    */
   private endingFacts(): string {
-    const { items, places } = this.worldBible.getEndingFacts(this.campaignId);
+    const { items, places, openThreads } = this.worldBible.getEndingFacts(this.campaignId);
     return [
       items.length > 0 ? `\n\nItems, latest known whereabouts:\n${items.map(i => `- ${i}`).join('\n')}` : '',
       places.length > 0 ? `\n\nPlaces the party went (what each one is):\n${places.map(p => `- ${p}`).join('\n')}` : '',
+      openThreads.length > 0 ? `\n\nStill unresolved when the session ended (leave these open):\n${openThreads.map(t => `- ${t}`).join('\n')}` : '',
     ].join('');
   }
 
@@ -1943,7 +1951,11 @@ export class GameLoop {
     return text;
   }
 
-  private async generateCharacterClosingReflections(scenes: Array<{ scene_number: number; summary: string }>, currentScene: string, facts = ''): Promise<void> {
+  private async generateCharacterClosingReflections(scenes: Array<{ scene_number: number; summary: string }>, currentScene: string, facts = '', epilogue = ''): Promise<void> {
+    // The epilogue already says how things ended (and what stayed open); the
+    // reflections must agree with it — live, Liz's claimed a hand-over the
+    // epilogue itself said never happened.
+    const ending = epilogue ? `\n\nHow the story ended (this is true — agree with it): ${epilogue}` : '';
     const finished = scenes.map(s => s.summary).join(' ').slice(0, 500);
     const sceneSummaries = [finished, currentScene.slice(-1000)].filter(Boolean).join('\n');
     for (const [charId, char] of this.characters) {
@@ -1959,7 +1971,7 @@ export class GameLoop {
         const reflection = await callProse({
           messages: [
             { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
-            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.\n\nWhat happened: ${sceneSummaries}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. One line each. ${ENDING_FACTS_RULE}${facts}` },
+            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.\n\nWhat happened: ${sceneSummaries}${ending}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. Your memories include plans and hopes, not only things that happened: only the record and the ending say what happened. One line each. ${ENDING_FACTS_RULE}${facts}` },
           ],
           // Two short lines (~80 tokens), but reasoning comes out of the same
           // budget: 200 was enough to come back empty or cut off.
@@ -2043,7 +2055,7 @@ export class GameLoop {
     if (queue.length >= GameLoop.WHISPER_QUEUE_LIMIT) {
       return {
         status: 'rejected', characterId: targetId, characterName: target.definition.name,
-        message: `${target.definition.name} is still carrying your last whispers — wait for their next choice.`,
+        message: whisperInboxMessage(target.definition.name, this.ownPronouns(target), 'full'),
       };
     }
     queue.push(text);
@@ -2051,7 +2063,7 @@ export class GameLoop {
     this.heardWhisper();
     return {
       status: 'queued', characterId: targetId, characterName: target.definition.name,
-      message: `${target.definition.name} will carry your whisper into their next choice.`,
+      message: whisperInboxMessage(target.definition.name, this.ownPronouns(target), 'queued'),
     };
   }
 
@@ -2300,19 +2312,31 @@ export class GameLoop {
 
   private knownNpcNames(): string[] {
     try {
-      return (this.db.prepare('SELECT name FROM entities WHERE campaign_id = ? AND type = ?').all(this.campaignId, 'npc') as Array<{ name: string }>).map(r => r.name);
+      return (this.db.prepare('SELECT name FROM entities WHERE campaign_id = ? AND type = ?').all(this.campaignId, 'npc') as Array<{ name: string }>)
+        .map(r => r.name).filter(n => !this.isPartyName(n));
     } catch {
       return [];
     }
   }
 
+  /**
+   * A name that is really a party member: their name, or their high concept
+   * recorded as an NPC by an older fact extraction ("Curious Kid With a
+   * Sketchbook" — which a chip then called "Curious").
+   */
+  private isPartyName(name: string): boolean {
+    const n = name.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '');
+    return Array.from(this.characters.values()).some(c =>
+      this.namesMatch(name, c.definition.name) || (!!c.definition.highConcept && c.definition.highConcept.trim().toLowerCase() === n));
+  }
+
   private extractNpcNamesFromNarration(narration: string): string[] {
-    const npcs = this.db.prepare(
+    const npcs = (this.db.prepare(
       'SELECT name FROM entities WHERE campaign_id = ? AND type = ? AND alive = 1'
-    ).all(this.campaignId, 'npc') as Array<{ name: string }>;
-    const narLower = narration.toLowerCase();
+    ).all(this.campaignId, 'npc') as Array<{ name: string }>).filter(n => !this.isPartyName(n.name));
     return npcs
-      .filter(n => narLower.includes(getFirstName(n.name).toLowerCase()))
+      // The name as a word, as written ("Pell"), not any substring ("curious" in "a curious hush").
+      .filter(n => new RegExp(`(?<![\\w'’-])${getFirstName(n.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w'’-])`).test(narration))
       .map(n => getFirstName(n.name));
   }
 

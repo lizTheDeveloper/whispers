@@ -414,11 +414,11 @@ export class WorldBible {
 
   /**
    * Where things stand at the end, for the epilogue and closing reflections:
-   * each item the party has seen with its latest known holder or place, and
-   * each place the party actually went. Events carry no location, so "what
+   * each item the party has seen with its latest known holder or place, each
+   * place the party actually went, and the questions still open. Events carry no location, so "what
    * happened where" is not recorded here — only where the party has been.
    */
-  getEndingFacts(campaignId: string): { items: string[]; places: string[] } {
+  getEndingFacts(campaignId: string): { items: string[]; places: string[]; openThreads: string[] } {
     const items = (this.db.prepare(
       `SELECT i.name,
               COALESCE(e.name, json_extract(c.definition, '$.name')) AS holder_name,
@@ -437,7 +437,10 @@ export class WorldBible {
         : `${i.name} — not carried by anyone in the party`);
     const places = (this.db.prepare('SELECT name, description FROM locations WHERE campaign_id = ? AND visited = 1 ORDER BY name').all(campaignId) as Array<{ name: string; description: string | null }>)
       .map(l => l.description ? `${l.name}: ${l.description.slice(0, 140)}` : l.name);
-    return { items, places };
+    // Questions the story raised and never answered: the ending must leave them open.
+    const openThreads = (this.db.prepare('SELECT description FROM events WHERE campaign_id = ? AND outcome IS NULL AND scene_number > 0 ORDER BY scene_number DESC LIMIT 6').all(campaignId) as Array<{ description: string }>)
+      .map(e => e.description);
+    return { items, places, openThreads };
   }
 
   updateItemHolder(campaignId: string, itemName: string, holderId: string | null): void {

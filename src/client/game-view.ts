@@ -229,10 +229,10 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
           // s.name is character.definition.name — attacker-controlled (a
           // player can name a character anything, including markup), so it
           // must go through textContent, never be concatenated into HTML.
+          // Card rows are per scene; the session totals are counted from
+          // each verdict as it is shown (renderThought), which also covers
+          // the scene End Game interrupted — it never gets a card.
           const total = s.followed + s.partial + s.ignored;
-          sessionStats.followed += s.followed;
-          sessionStats.partial += s.partial;
-          sessionStats.ignored += s.ignored;
           const pct = total > 0 ? Math.round((s.followed / total) * 100) : 0;
           const sign = s.trustDelta >= 0 ? '+' : '';
 
@@ -486,6 +486,9 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
   function renderThought(msg: { characterName: string; innerThought?: string; whisperInfluence?: string }): void {
     if (msg.innerThought) appendProse(msg.innerThought, 'whisper', '(', ')');
     if (msg.whisperInfluence && msg.whisperInfluence !== 'none') {
+      if (msg.whisperInfluence === 'followed') sessionStats.followed++;
+      else if (msg.whisperInfluence === 'partially-followed') sessionStats.partial++;
+      else sessionStats.ignored++;
       const label = msg.whisperInfluence === 'followed' ? 'heeded your whisper'
         : msg.whisperInfluence === 'partially-followed' ? 'partially heeded your whisper'
         : 'resisted your whisper';

@@ -14,7 +14,11 @@
  * of he/she in model prose produced clumsy, mixed text ("…clinging to their
  * boots as Biz steps…"); instead the character interview asks each player
  * how their character is referred to, and the prompts carry that answer.
+ * What IS here are the server's own templated lines about a character
+ * (taken out, fallback outcomes, the whisper inbox), written in that
+ * character's stated pronouns via src/shared/pronouns.ts.
  */
+import { agree, capitalize, referTo } from '../shared/pronouns.js';
 
 // ─── Arrival ───────────────────────────────────────────────────────────────
 
@@ -109,9 +113,19 @@ function destinationFrom(premise: string): string | null {
  * premise, names the party, and invents nothing beyond "they were somewhere
  * else a moment ago" — which the premise itself already says.
  */
-export function fallbackArrival(premise: string, names: string[]): string {
+export function fallbackArrival(premise: string, names: string[], pronouns: Array<string | null | undefined> = []): string {
   const who = joinNames(names);
   const dest = destinationFrom(premise);
+  if (names.length === 1) {
+    // One arrival: "Liz lands hard… she was in her own life", in the
+    // character's own pronouns — never "Liz land hard… they".
+    const r = referTo(names[0]!, pronouns[0]);
+    const S = capitalize(r.subject);
+    const has = agree(r, 'has', 'have');
+    const was = agree(r, 'was', 'were');
+    const where = dest ? `${r.subject} ${has} landed in ${dest}` : `${r.subject} ${agree(r, 'is', 'are')} somewhere else entirely`;
+    return `${who} lands hard. One moment ${r.subject} ${was} in ${r.possessive} own life; the next, ${where}. ${S} ${agree(r, 'blinks', 'blink')}, disoriented, at a place ${r.subject} ${has} never seen before.`;
+  }
   const where = dest ? `they have landed in ${dest}` : 'they are somewhere else entirely';
   return `${who} land hard. One moment they were in their own lives; the next, ${where}. They blink, disoriented, at a place they have never seen before.`;
 }
@@ -148,6 +162,54 @@ export interface AddressTerm {
   name: string;
   /** What the speaker calls them ("Mom"). */
   address: string;
+  /**
+   * Not on the sheet: read off the relation ("mother" → "Mom") by
+   * kinAddressTerms. Such a term only collapses a name stacked on it
+   * ("Mom, Liz" → "Mom"); it never replaces a bare name or a bare "Mom".
+   */
+  derived?: boolean;
+}
+
+/**
+ * The name stacked on an address term, after it: " Liz", ", Liz,", " (Liz)",
+ * " — Liz". A comma closing ", Liz," goes with it, so "to Mom, Liz, to
+ * keep…" reads "to Mom to keep…"; "Mom — Liz — look" reads "Mom — look".
+ * Never a possessive ("Mom, Liz's bag" is two people).
+ */
+const STACKED_NAME = (name: string) => {
+  const n = String.raw`${name}\b(?!['’]s)`;
+  return String.raw`(?:,\s*${n}(?:,(?=\s))?|\s+\(\s*${n}\s*\)|\s*[—–]\s*${n}|\s+${n})`;
+};
+
+/** Words a speaker commonly calls a relation by, when the sheet gives the relation but no address term. */
+const KIN_ADDRESS: Array<[RegExp, string[]]> = [
+  [/^(?:mother|mom|mum|mommy|mummy|mama|mamma|ma)$/i, ['Mom', 'Mum', 'Mama', 'Mommy', 'Mummy', 'Mother', 'Ma']],
+  [/^(?:father|dad|daddy|papa|pa)$/i, ['Dad', 'Daddy', 'Papa', 'Father', 'Pa']],
+  [/^(?:grandmother|grandma|granny|gran|nana)$/i, ['Grandma', 'Granny', 'Gran', 'Nana', 'Grandmother']],
+  [/^(?:grandfather|grandpa|gramps|granddad|grandad)$/i, ['Grandpa', 'Gramps', 'Granddad', 'Grandad', 'Grandfather']],
+  [/^(?:aunt|auntie|aunty)$/i, ['Aunt', 'Auntie', 'Aunty']],
+  [/^(?:uncle)$/i, ['Uncle']],
+];
+
+/**
+ * Address terms read off relations, for companions at the table: a sheet
+ * that says Liz is Biz's "mother" but gives no address term still means
+ * "Mom, Liz" is "Mom" in Biz's mouth and "Liz" in narration. Marked
+ * `derived` (see AddressTerm): they only collapse a stacked name.
+ */
+export function kinAddressTerms(relationships: Array<{ to: string; relation: string; address?: string }>, tableNames: string[]): AddressTerm[] {
+  const out: AddressTerm[] = [];
+  for (const r of relationships) {
+    const to = r.to?.trim();
+    const target = tableNames.find(n => to && (n.trim().toLowerCase() === to.toLowerCase() || firstName(n).toLowerCase() === firstName(to).toLowerCase()));
+    if (!target) continue;
+    const words = KIN_ADDRESS.find(([re]) => re.test(r.relation?.trim() ?? ''))?.[1] ?? [];
+    for (const w of words) {
+      if (r.address?.trim().toLowerCase() === w.toLowerCase()) continue;
+      out.push({ name: target, address: w, derived: true });
+    }
+  }
+  return out;
 }
 
 const VOCATIVE_LEAD = String.raw`(?:hey|oh|please|okay|ok|look|listen|come on|thanks|thank you|sorry|yes|no|right|wait|so|and|but|well)`;
@@ -167,9 +229,9 @@ export function repairAddress(text: string, terms: AddressTerm[], opts: { vocati
     const address = t.address.trim();
     if (!address || address.toLowerCase() === first.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase()) continue;
     const name = `(?:${esc(t.name.trim())}|${esc(first)})`;
-    // "Mom Liz" / "Mom, Liz" → "Mom"
-    out = out.replace(new RegExp(`\\b(${esc(address)})(?:,)?\\s+${name}\\b(?!['’]s)`, 'g'), '$1');
-    if (!opts.vocative) continue;
+    // "Mom Liz" / "Mom, Liz," / "mom Liz" / "Mom (Liz)" / "Mom — Liz —" → "Mom"
+    out = out.replace(new RegExp(`\\b(${esc(address)})${STACKED_NAME(name)}`, 'gi'), '$1');
+    if (!opts.vocative || t.derived) continue;
     // Sentence-initial vocative: "Liz, can you…" / "Liz! Look."
     out = out.replace(new RegExp(`(^|[.!?…]\\s+|["“(]\\s*)${name}(?=\\s*[,!?])`, 'g'), `$1${address}`);
     // After a lead-in: "Hey Liz," / "Please, Liz,"
@@ -195,20 +257,40 @@ const NOT_A_NAME_BEFORE = /(?:\b(?:her|his|their|my|your|our|its|the|a|an|this|t
  */
 export function namesInNarration(text: string, terms: AddressTerm[]): string {
   if (!text) return text;
+  // "their mom Liz" / "Mom, Liz," / "Mom (Liz)" in narration is just "Liz",
+  // for every term — derived ones included. "her mom" alone stays, and so
+  // does "her mother, Liz" (lower case, then a comma: an appositive).
+  const stacked = (t: string) => {
+    let out = t;
+    for (const term of terms) {
+      const address = term.address.trim();
+      const name = firstName(term.name);
+      if (!address || !name || address.toLowerCase() === name.toLowerCase()) continue;
+      const nameRe = `(?:${esc(term.name.trim())}|${esc(name)})`;
+      out = out.replace(
+        new RegExp(`(?:\\b(?:her|his|their|my|your|our)\\s+)?\\b(${esc(address)})(${STACKED_NAME(nameRe)})`, 'gi'),
+        (match: string, term: string, rest: string) =>
+          // "their mother, Liz" is an appositive — the relation, then the
+          // name — and good prose; "their mom Liz" and "Mom, Liz" are not.
+          /^[a-z]/.test(term) && !/^\s+[^\s(—–]/.test(rest) ? match : name,
+      );
+    }
+    return out;
+  };
   const byTerm = new Map<string, Set<string>>();
   for (const t of terms) {
     const address = t.address.trim();
     const name = firstName(t.name);
+    if (t.derived) continue;
     if (!address || !name || !/^[A-Z]/.test(address)) continue;
     if (address.toLowerCase() === name.toLowerCase() || address.toLowerCase() === t.name.trim().toLowerCase()) continue;
     if (!byTerm.has(address)) byTerm.set(address, new Set());
     byTerm.get(address)!.add(name);
   }
   const usable = [...byTerm].filter(([, names]) => names.size === 1).map(([address, names]) => ({ address, name: [...names][0]! }));
-  if (usable.length === 0) return text;
   return quoteRuns(text).map(run => {
     if (run.quoted) return run.text;
-    let t = run.text;
+    let t = stacked(run.text);
     for (const { address, name } of usable) {
       // "Mom Liz" in narration is just "Liz".
       t = t.replace(new RegExp(`\\b${esc(address)}\\s+(${esc(name)})\\b`, 'g'), '$1');
@@ -233,14 +315,16 @@ export function namesInNarration(text: string, terms: AddressTerm[]): string {
  * Party members are not NPCs: an extracted entity named as a party member,
  * or with a party address term as its name, is dropped.
  */
-export function withoutPartyEntities<T extends { newEntities: Array<{ name: string }> }>(facts: T, partyNames: string[], addressTerms: string[]): T {
+export function withoutPartyEntities<T extends { newEntities: Array<{ name: string }> }>(facts: T, partyNames: string[], addressTerms: string[], highConcepts: string[] = []): T {
   const taken = new Set([
     ...partyNames.flatMap(n => [n.trim(), firstName(n)]),
     ...addressTerms.map(a => a.trim()),
+    // "Curious Kid With a Sketchbook" is Biz, described — not an NPC.
+    ...highConcepts.map(h => h.trim()),
   ].filter(Boolean).map(n => n.toLowerCase()));
   const kept = facts.newEntities.filter(e => {
     const name = e.name.trim().toLowerCase();
-    return !taken.has(name) && !taken.has(name.replace(/^the\s+/, ''));
+    return !taken.has(name) && !taken.has(name.replace(/^(?:the|a|an)\s+/, ''));
   });
   return kept.length === facts.newEntities.length ? facts : { ...facts, newEntities: kept };
 }
@@ -290,4 +374,80 @@ const AID = /\b(?:help(?:s|ed|ing)?|tend(?:s|ed|ing)?|reviv(?:e|es|ed|ing)|rous(
 export function aidsCharacter(text: string, names: string[]): boolean {
   if (!AID.test(text)) return false;
   return names.filter(Boolean).some(n => new RegExp(`\\b${esc(n)}\\b`, 'i').test(text));
+}
+
+// ─── High concepts are not names ───────────────────────────────────────────
+
+/**
+ * A party member's high concept used as a noun phrase in DM prose — "the
+ * Curious Kid With a Sketchbook steps forward" — is that member, so it
+ * becomes their name ("Biz steps forward"). Only the whole phrase, with an
+ * optional leading article, in any case; quoted speech is left alone, and
+ * so is the phrase set beside the name it describes ("Biz — Curious Kid
+ * With a Sketchbook, 10 years old", the plain introduction).
+ */
+export function highConceptsToNames(text: string, party: Array<{ name: string; highConcept?: string | null }>): string {
+  if (!text) return text;
+  const concepts = party.filter(p => p.highConcept && p.highConcept.trim().split(/\s+/).length >= 2);
+  if (concepts.length === 0) return text;
+  return quoteRuns(text).map(run => {
+    if (run.quoted) return run.text;
+    let t = run.text;
+    for (const p of concepts) {
+      const phrase = esc(p.highConcept!.trim()).replace(/\s+/g, '\\s+');
+      const name = firstName(p.name);
+      const besideName = new RegExp(`\\b${esc(name)}\\s*[—–,:(-]\\s*$`);
+      t = t.replace(new RegExp(`\\b(?:(?:the|a|an)\\s+)?${phrase}(?![\\w'’-])`, 'gi'), (match: string, offset: number, whole: string) =>
+        // "Biz — Curious Kid With a Sketchbook": describing them beside their name.
+        besideName.test(whole.slice(Math.max(0, offset - name.length - 6), offset)) ? match : name);
+    }
+    return t;
+  }).join('');
+}
+
+// ─── Templated lines about a character ─────────────────────────────────────
+
+/** "Liz is TAKEN OUT — …, she collapses or is forced to retreat." */
+export function takenOutLine(name: string, pronouns: string | null | undefined): string {
+  const r = referTo(name, pronouns);
+  return `${name} is TAKEN OUT — overwhelmed by stress and injuries, ${r.subject} ${agree(r, 'collapses', 'collapse')} or ${agree(r, 'is', 'are')} forced to retreat. The opposition decides what happens next.`;
+}
+
+/**
+ * The loop's own outcome lines for a character: the fallback success when
+ * the ruling had no prose, and the beat appended when the FATE math corrects
+ * a "success" the DM narrated. In the character's pronouns, or their name.
+ */
+export function outcomeLines(name: string, pronouns: string | null | undefined): { success: string; correction: Record<'tie' | 'success-with-cost' | 'failure', string[]> } {
+  const r = referTo(name, pronouns);
+  const S = capitalize(r.subject);
+  const didnt = `${r.subject} didn't`;
+  return {
+    success: `${name} acts decisively, and the moment shifts in ${r.possessive} favor.`,
+    correction: {
+      tie: [
+        `But the victory isn't clean — something slips, cracks, or shifts in the process.`,
+        `Yet something catches — a snag, a cost, a complication ${didnt} foresee.`,
+        `The moment teeters between triumph and consequence.`,
+      ],
+      'success-with-cost': [
+        `But the price is steep — the effort leaves its mark.`,
+        `Success, yes — but the kind that leaves bruises.`,
+        `${S} ${agree(r, 'pushes', 'push')} through, but the strain shows.`,
+      ],
+      failure: [
+        `But the numbers don't lie — the attempt falls short, and the situation shifts against ${r.object}.`,
+        `Yet despite the effort, circumstances conspire — and the moment slips away.`,
+        `But fate has other plans — the attempt crumbles under scrutiny.`,
+      ],
+    },
+  };
+}
+
+/** The whisper ack when a whisper waits for the character's next choice, or cannot. */
+export function whisperInboxMessage(name: string, pronouns: string | null | undefined, kind: 'queued' | 'full'): string {
+  const r = referTo(firstName(name), pronouns);
+  return kind === 'full'
+    ? `${name} is still carrying your last whispers — wait for ${r.possessive} next choice.`
+    : `${name} will carry your whisper into ${r.possessive} next choice.`;
 }

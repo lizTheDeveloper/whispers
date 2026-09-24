@@ -207,7 +207,8 @@ describe('whisper window end to end (sockets, canned LLM)', () => {
     const ack2 = await pq.waitFor('whisper-ack', 10_000) as any;
     expect(ack2.status).toBe('queued');
     expect(ack2.characterName).toBe('Vex Ashgrove');
-    expect(ack2.message).toMatch(/carry your whisper into their next choice/i);
+    // No pronouns stated for Vex: the name, never a guessed form (round 6).
+    expect(ack2.message).toMatch(/carry your whisper into Vex's next choice/i);
 
     // The spectator seat has no voice: refused out loud, never silently.
     sendMsg(specWs, { type: 'whisper', text: 'anyone hear me?' });

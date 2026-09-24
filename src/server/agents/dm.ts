@@ -248,6 +248,7 @@ export function describeParty(members: PartyMember[]): string {
     hasAges ? 'Characters act their stated ages — a child thinks, talks and is treated like a child.' : '',
     anyUnstated ? 'Never guess a gender this block does not state — not from a name, an age, or the other side of a relation (a mother\'s child is not therefore a son). Where it is not stated, use the character\'s name or "they", and gender-neutral words for them: kid, child, parent, sibling — never son, daughter, boy, girl, he or she.' : '',
     'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
+    `In narration, call each party member by their name, never by their high concept: the phrase after each name above describes them and is not something anyone is called${members[0] ? ` ("${members[0].name.trim().split(/\s+/)[0]} steps forward", never "the ${members[0].highConcept} steps forward")` : ''}.`,
     hasAddress ? `Address terms are personal to the relationship: a term like "Mom" is what one character calls another, never that person\'s name. Only that character uses it, and only in their own dialogue; NPCs and everyone else use the name. In narration, resolutions, scene summaries and the epilogue, characters are called by their NAMES${addressExample} — even when a character\'s own action uses the address term; an address term appears only inside that character\'s quoted speech.` : '',
   ].filter(Boolean).join('\n');
 }

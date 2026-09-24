@@ -43,6 +43,10 @@ const canned = {
   proposals: undefined as string[] | undefined,
   /** What the pronoun-consistency rewrite returns (undefined → echo 'ok', which is rejected). */
   pronounRewrite: {} as Record<string, string>,
+  /** The ruling's state changes (by character name → resolved to the id at call time). */
+  stateChanges: [] as Array<{ characterId: string; field: string; action: string; value: unknown }>,
+  /** How the character says it took the whisper. */
+  influence: 'ignored' as 'followed' | 'partially-followed' | 'ignored',
 };
 
 vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
@@ -69,10 +73,10 @@ vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
     if (all.includes('Choose your action now')) {
       const who = all.match(/You ARE (\w+)/)?.[1] ?? '';
       const d = canned.decisions[who] ?? { chosenAction: 'I study the stamp on the nearest form very carefully', spokenWords: null };
-      return { ...d, innerThought: 'The forms are the key to getting home.', whisperedInfluence: 'ignored', trustDelta: 0 };
+      return { ...d, innerThought: 'The forms are the key to getting home.', whisperedInfluence: canned.influence, trustDelta: 0 };
     }
     if (all.includes('FATE resolution steps')) {
-      return { diceExpression: '4dF', difficulty: 0, skill: 'Notice', outcome: 'success', narration: canned.resolution, stateChanges: [] };
+      return { diceExpression: '4dF', difficulty: 0, skill: 'Notice', outcome: 'success', narration: canned.resolution, stateChanges: canned.stateChanges };
     }
     if (all.includes('Summarize')) return { summary: 'The queue moved.' };
     return 'ok';
@@ -147,7 +151,7 @@ let seq = 0;
  * A fresh table with Liz and Biz, run until `until` says stop (or a timeout).
  * `lizState` lets a test start Liz already taken out.
  */
-async function runLoop(opts: { seed?: WorldSeed; liz?: CharacterDefinition; biz?: CharacterDefinition; lizState?: typeof STATE; bizState?: typeof STATE; until: (m: ServerMessage, all: ServerMessage[]) => boolean; timeoutMs?: number; endGame?: boolean; setup?: (campaignId: string) => void }) {
+async function runLoop(opts: { seed?: WorldSeed; liz?: CharacterDefinition; biz?: CharacterDefinition; lizState?: typeof STATE; bizState?: typeof STATE; until: (m: ServerMessage, all: ServerMessage[]) => boolean; timeoutMs?: number; endGame?: boolean; setup?: (campaignId: string) => void; onMessage?: (m: ServerMessage, loop: any) => void }) {
   const { createRoom } = await import('../src/server/room.js');
   const { setWorldSeed, markSeedAccepted, seedWorld } = await import('../src/server/world-seed.js');
   const { GameLoop } = await import('../src/server/game-loop.js');
@@ -174,8 +178,14 @@ async function runLoop(opts: { seed?: WorldSeed; liz?: CharacterDefinition; biz?
   const done = new Promise<void>((resolve) => {
     loop = new GameLoop(db, campaignId, (m) => {
       broadcasts.push(m);
+      opts.onMessage?.(m, loop);
       if (opts.until(m, broadcasts)) setImmediate(() => { loop.stop(); resolve(); });
-    }, () => {}, state, (_id, m) => broadcasts.push(m));
+    }, () => {}, state, (_id, m) => {
+      broadcasts.push(m);
+      opts.onMessage?.(m, loop);
+      // Owner-only messages (options, guidance, thoughts) can end a run too.
+      if (['whisper-guidance', 'character-thought'].includes(m.type) && opts.until(m, broadcasts)) setImmediate(() => { loop.stop(); resolve(); });
+    });
   });
   const running = loop.start().catch((e) => { console.error("LOOP FAILED", e); });
   await Promise.race([done, new Promise(r => setTimeout(r, opts.timeoutMs ?? 15_000))]);
@@ -737,5 +747,132 @@ describe('the ending knows where the items and places are', () => {
     expect(reflection).toBeDefined();
     expect(reflection).toMatch(/Blank Form 27-B[^\n]*Clerk Oswin Pell/);
     expect(reflection).toMatch(/not sure where something happened or who has an item, do not say/i);
+  }, 30_000);
+});
+
+// ─── Round 6: the same fixes, in play ──────────────────────────────────────
+
+describe('round 6, in play', () => {
+  it('the taken-out line speaks of Liz as "she"', async () => {
+    const worn = { ...STATE, stress: 3, consequences: ['Bruised Ribs', 'Sprained Wrist'] };
+    const { broadcasts, lizId } = await runLoop({
+      liz: LIZ_STATED, biz: BIZ_STATED, lizState: worn, bizState: worn,
+      setup: () => { canned.stateChanges = []; },
+      until: m => m.type === 'narration' && m.text.includes('TAKEN OUT'),
+      onMessage: (m, loop) => {
+        // Whoever acts, their ruling adds a point of stress to Liz.
+        if (m.type === 'dice-roll' && canned.stateChanges.length === 0) {
+          const liz = [...loop.characters.keys()].find((k: string) => k.startsWith('liz-g-'));
+          canned.stateChanges = [{ characterId: liz, field: 'stress', action: 'set', value: 3 }];
+        }
+      },
+    });
+    canned.stateChanges = [];
+    void lizId;
+    const line = narrations(broadcasts).find(t => t.includes('TAKEN OUT'))!;
+    expect(line).toBeDefined();
+    expect(line).toContain('Liz is TAKEN OUT — overwhelmed by stress and injuries, she collapses or is forced to retreat.');
+  }, 30_000);
+
+  it("a resolution about its actor that never names them is still checked", async () => {
+    // Both they/them here, so whoever acts first is misgendered by "her".
+    const resolution = "The ink's glow dims before her eyes. A cold tingle settles on her fingertips, and the path she hoped to find fades.";
+    const fixed = "The ink's glow dims before their eyes. A cold tingle settles on their fingertips, and the path they hoped to find fades.";
+    canned.resolution = resolution;
+    canned.pronounRewrite = { [resolution]: fixed };
+    try {
+      const { broadcasts, calls } = await runLoop({ liz: { ...LIZ, pronouns: 'they/them' }, biz: BIZ_STATED, until: m => m.type === 'resolution' });
+      expect(calls.filter(c => c.includes('You correct how people are referred to')).length).toBe(1);
+      const res = broadcasts.find(m => m.type === 'resolution') as Extract<ServerMessage, { type: 'resolution' }>;
+      expect(res.text).toContain(fixed);
+    } finally {
+      canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
+      canned.pronounRewrite = {};
+    }
+  }, 30_000);
+
+  it('a high concept is never a name: not in DM prose, not in a chip', async () => {
+    const bizCurious: CharacterDefinition = { ...BIZ_STATED, highConcept: 'Curious Kid With a Sketchbook' };
+    const saved = canned.narration;
+    canned.narration = 'A bell dings, and the Curious Kid With a Sketchbook steps forward while a curious hush falls over the queue.';
+    try {
+      const { broadcasts, calls } = await runLoop({
+        biz: bizCurious,
+        setup: (campaignId) => {
+          // What fact extraction once recorded: the kid, described, as an NPC.
+          db.prepare("INSERT INTO entities (id, campaign_id, type, name, alive) VALUES (?, ?, 'npc', 'Curious Kid With a Sketchbook', 1)").run(`hc-${campaignId}`, campaignId);
+        },
+        until: m => m.type === 'whisper-guidance',
+      });
+      const shown = narrations(broadcasts).join('\n');
+      expect(shown).toContain('Biz steps forward');
+      expect(shown).not.toMatch(/the Curious Kid With a Sketchbook steps/i);
+      // The plain introduction still describes Biz beside the name.
+      expect(shown).toContain('Biz — Curious Kid With a Sketchbook');
+      const guidance = broadcasts.find(m => m.type === 'whisper-guidance') as Extract<ServerMessage, { type: 'whisper-guidance' }>;
+      expect(guidance.suggestions.join(' ')).not.toMatch(/\bCurious\b/);
+      // And the DM is told.
+      expect(calls.some(c => /by their names?, never (?:by )?their high concept/i.test(c))).toBe(true);
+    } finally {
+      canned.narration = saved;
+    }
+  }, 30_000);
+
+  it('"Mom, Liz" in Biz\'s options and chips is "Mom", even when the sheet gives no address term', async () => {
+    const bizNoAddress: CharacterDefinition = { ...BIZ, relationships: [{ to: 'Liz', relation: 'mother' }] };
+    canned.proposals = ['I whisper to Mom, Liz, to keep watch by the door', 'I hide and watch the clerk'];
+    try {
+      const { broadcasts } = await runLoop({ biz: bizNoAddress, until: (m) => m.type === 'whisper-guidance' && m.characterId.startsWith('biz-') });
+      const props = broadcasts.find(m => m.type === 'action-proposals' && m.characterName === 'Biz') as Extract<ServerMessage, { type: 'action-proposals' }>;
+      expect(props.actions[0]).toBe('I whisper to Mom to keep watch by the door');
+      const g = broadcasts.find(m => m.type === 'whisper-guidance' && m.characterId.startsWith('biz-')) as Extract<ServerMessage, { type: 'whisper-guidance' }>;
+      expect(g.suggestions.join(' ')).not.toMatch(/Mom, Liz/);
+    } finally {
+      canned.proposals = undefined;
+    }
+  }, 30_000);
+
+  it('the closing reflections get the epilogue, the open threads, and "no item changed hands unless the record says so"', async () => {
+    const { calls } = await runLoop({
+      until: m => m.type === 'whisper-prompt',
+      endGame: true,
+      setup: (campaignId) => {
+        db.prepare("INSERT INTO events (id, campaign_id, scene_number, description, participants, outcome) VALUES (?, ?, 1, 'Who stamped the Ever-Seal is still unknown', '[]', NULL)").run(`ev-${campaignId}`, campaignId);
+        for (const who of ['liz', 'biz']) {
+          const id = db.prepare("SELECT id FROM characters WHERE campaign_id = ? AND id LIKE ?").get(campaignId, `${who}-g-%`) as { id: string };
+          db.prepare("INSERT INTO character_memories (id, character_id, campaign_id, scene_number, turn_number, type, content, importance) VALUES (?, ?, ?, 1, 1, 'event', ?, 0.9)").run(`m6-${id.id}`, id.id, campaignId, 'Tilly Tink eyed the seal.');
+        }
+      },
+    });
+    const epilogue = calls.find(c => c.includes('session epilogues'))!;
+    expect(epilogue).toMatch(/Who stamped the Ever-Seal is still unknown/);
+    const reflection = calls.find(c => c.includes('closing reflection'))!;
+    expect(reflection).toBeDefined();
+    expect(reflection).toContain(canned.epilogue);
+    expect(reflection).toMatch(/Who stamped the Ever-Seal is still unknown/);
+    expect(reflection).toMatch(/never say an item was handed over, given, taken or put anywhere unless the item list/i);
+    expect(epilogue).toMatch(/never say an item was handed over, given, taken or put anywhere unless the item list/i);
+  }, 30_000);
+
+  it('a "followed" verdict for an action that shares nothing with the whisper is shown as partial', async () => {
+    canned.influence = 'followed';
+    canned.decisions = { Liz: { chosenAction: 'I climb the ladder to the top shelf and search the dusty ledgers', spokenWords: null }, Biz: { chosenAction: 'I climb the ladder to the top shelf and search the dusty ledgers', spokenWords: null } };
+    try {
+      let sent = false;
+      const { broadcasts } = await runLoop({
+        until: m => m.type === 'character-thought' && m.whisperInfluence !== 'none',
+        onMessage: (m, loop) => {
+          if (m.type === 'whisper-prompt' && !sent) {
+            sent = true;
+            setImmediate(() => loop.handleWhisper('Ask the clerk about the missing seal', { characterId: m.characterId, isOwner: false }));
+          }
+        },
+      });
+      const thought = broadcasts.find(m => m.type === 'character-thought' && m.whisperInfluence !== 'none') as Extract<ServerMessage, { type: 'character-thought' }>;
+      expect(thought.whisperInfluence).toBe('partially-followed');
+    } finally {
+      canned.influence = 'ignored';
+      canned.decisions = {};
+    }
   }, 30_000);
 });
