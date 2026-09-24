@@ -20,9 +20,11 @@ import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
   withoutSeedSpoilers, withoutSetupFieldDumps, withoutSetupMechanics, withoutFalseDraftClaim, setupUnmetForModel, seedWithHostNouns, seedForHost, withHiddenSeedFields,
+  asksForWorldEdit, claimsWorldEdit, withoutFalseEditClaim,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
+import { FIELD_LIMITS, isValidShortField, isValidLongField, validateWorldSeedShape, clampWorldSeed, acceptableSeed } from './field-limits.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent, wantsNoSpoilers, nextSetupQuestion, setupToneRule } from './agents/dm.js';
 import { softenForChildren } from './narrative-guards.js';
@@ -33,7 +35,7 @@ import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
   getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewDraft, setInterviewStatus, getInterviewBySession, listTableCharacters,
-  interviewSheet, mergeCharacterDraft, statedAddressTerms, withStatedAddressTerms, withStatedStuntDescriptions, repeatsEarlierReply, interviewFallbackReply,
+  interviewSheet, mergeCharacterDraft, statedAddressTerms, withStatedAddressTerms, withStatedStuntDescriptions, repeatsEarlierReply, interviewFallbackReply, pronounsStatedIn, withoutPronounQuestion,
   type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness, checkInterviewReadiness } from './character-readiness.js';
@@ -266,23 +268,18 @@ function openNegotiation(
 // full CharacterDefinition schema (that's a later, planned task) — just a
 // floor against pathological/abusive payloads reaching the DB, the LLM, or
 // (post the innerHTML fixes in game-view.ts) every other client's DOM.
-const MAX_SHORT_FIELD = 256;
-const MAX_LONG_FIELD = 5000;
-const MAX_LIST_ITEMS = 20;
+// The limits themselves live in field-limits.ts, shared with the world
+// drafter's prompt and its clamp (live 5YHBZS: a drafted disposition broke
+// the accept-time limit and the host could never accept the world).
+const MAX_SHORT_FIELD = FIELD_LIMITS.short;
+const MAX_LONG_FIELD = FIELD_LIMITS.long;
+const MAX_LIST_ITEMS = FIELD_LIMITS.list;
 // The FATE ladder this game actually implements (game-loop.ts's difficulty
 // cap/floor) runs Mediocre(0) through Legendary(8) with no named rungs below
 // 0 — so a skill rating outside that range cannot come from a legitimate
 // build, only from a malformed or adversarial payload.
 const MIN_SKILL_RATING = 0;
 const MAX_SKILL_RATING = 8;
-
-function isValidShortField(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= MAX_SHORT_FIELD;
-}
-
-function isValidLongField(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= MAX_LONG_FIELD;
-}
 
 /**
  * `skills` was the one field validateCharacterDefinitionShape never checked
@@ -381,48 +378,6 @@ function windowInterviewHistory(transcript: InterviewTurn[]): InterviewTurn[] {
   const recent = transcript.slice(-(INTERVIEW_HISTORY_WINDOW - 1));
   if (intro.role !== 'assistant') return recent;
   return recent[0] === intro ? recent : [intro, ...recent];
-}
-
-function isValidBoundedString(value: unknown, max: number): boolean {
-  return typeof value === 'string' && value.length <= max;
-}
-
-function isValidNullableBoundedString(value: unknown, max: number): boolean {
-  return value === null || isValidBoundedString(value, max);
-}
-
-/**
- * WorldSeedSchema validates shape but not size — a host-supplied seed is
- * persisted verbatim, expanded into unbounded locations/entities/items/events
- * rows, and then injected into every DM prompt for the rest of the campaign.
- * Bound it the same way submit-character bounds a character definition:
- * reject rather than truncate, so the host gets an explicit reason instead of
- * a silently thinned-out world.
- */
-function validateWorldSeedShape(seed: import('../shared/types.js').WorldSeed): string | null {
-  if (!isValidLongField(seed.premise)) return `Premise must be at most ${MAX_LONG_FIELD} characters.`;
-  if (seed.locations.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} locations are allowed.`;
-  for (const loc of seed.locations) {
-    if (!isValidShortField(loc.name)) return `Location names must be 1-${MAX_SHORT_FIELD} characters.`;
-    if (!isValidLongField(loc.description)) return `Location descriptions must be at most ${MAX_LONG_FIELD} characters.`;
-    if (!isValidNullableBoundedString(loc.terrain, MAX_SHORT_FIELD)) return `Location terrain must be at most ${MAX_SHORT_FIELD} characters.`;
-  }
-  if (seed.npcs.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} NPCs are allowed.`;
-  for (const npc of seed.npcs) {
-    if (!isValidShortField(npc.name)) return `NPC names must be 1-${MAX_SHORT_FIELD} characters.`;
-    if (!isValidLongField(npc.description)) return `NPC descriptions must be at most ${MAX_LONG_FIELD} characters.`;
-    if (!isValidNullableBoundedString(npc.disposition, MAX_SHORT_FIELD)) return `NPC disposition must be at most ${MAX_SHORT_FIELD} characters.`;
-    if (!isValidNullableBoundedString(npc.motivation, MAX_LONG_FIELD)) return `NPC motivation must be at most ${MAX_LONG_FIELD} characters.`;
-    if (npc.pronouns != null && !isValidNullableBoundedString(npc.pronouns, MAX_SHORT_FIELD)) return `NPC pronouns must be at most ${MAX_SHORT_FIELD} characters.`;
-  }
-  if (seed.plotHooks.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} plot hooks are allowed.`;
-  if (!seed.plotHooks.every(h => isValidLongField(h))) return `Plot hooks must be at most ${MAX_LONG_FIELD} characters each.`;
-  if (seed.items.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} items are allowed.`;
-  for (const item of seed.items) {
-    if (!isValidShortField(item.name)) return `Item names must be 1-${MAX_SHORT_FIELD} characters.`;
-    if (!isValidLongField(item.description)) return `Item descriptions must be at most ${MAX_LONG_FIELD} characters.`;
-  }
-  return null;
 }
 
 function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Campaign, setupChat: Array<{ role: string; content: string }> = []): void {
@@ -1383,8 +1338,15 @@ wss.on('connection', (ws) => {
         // The interviewer is told what is still missing from the sheet so
         // far — the running draft, not just a finished sheet — or it asks
         // again for a name the player already gave.
-        const before = checkInterviewReadiness(interviewSheet(interview));
         const fullHistory = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
+        // Pronouns the player stated in any message are answered (live
+        // 5YHBZS: "I use they/them" in Biz's first message, then "How should
+        // I refer to you?"). They go on the sheet whether or not the model
+        // wrote them down, and are never asked for again.
+        const statedPronouns = pronounsStatedIn(fullHistory.filter(t => t.role === 'user').map(t => t.content));
+        const withPronouns = (sheet: import('../shared/types.js').CharacterDefinition | null) =>
+          statedPronouns && !sheet?.pronouns?.trim() ? mergeCharacterDraft(sheet, { pronouns: statedPronouns }) : sheet;
+        const before = checkInterviewReadiness(withPronouns(interviewSheet(interview)));
         const history = windowInterviewHistory(fullHistory);
         const tableCharacters = listTableCharacters(db, campaign.id, currentPlayer.sessionToken);
         const interviewOpts = {
@@ -1396,6 +1358,7 @@ wss.on('connection', (ws) => {
           history,
           unmet: before.detail,
           tableCharacters,
+          statedPronouns,
         };
         let reply = await dm.interviewForCharacter(interviewOpts);
         // Live (WXKC2C): Liz's second reply was her first, word for word,
@@ -1439,10 +1402,11 @@ wss.on('connection', (ws) => {
             tableCharacters,
           );
         };
-        const sheetAsOfReply = withStated(reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview));
+        const sheetAsOfReply = withStated(withPronouns(reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview)));
         reply.reply = repeated
           ? interviewFallbackReply(checkInterviewReadiness(sheetAsOfReply))
           : guardInterviewReply(reply.reply, sheetAsOfReply, tableMembers);
+        if (statedPronouns) reply.reply = withoutPronounQuestion(reply.reply, interviewFallbackReply(checkInterviewReadiness(sheetAsOfReply)));
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
         // interview was fetched BEFORE the await above — a stale snapshot
@@ -1460,7 +1424,7 @@ wss.on('connection', (ws) => {
         // stated (a clarifying question comes back with `definition: null`
         // and changes nothing). The checklist is computed from that draft.
         const merged = reply.definition ? mergeCharacterDraft(interviewSheet(current), reply.definition) : interviewSheet(current);
-        const draft = withStated(merged);
+        const draft = withStated(withPronouns(merged));
         if ((reply.definition || draft !== merged) && draft) setInterviewDraft(db, interview.id, draft);
         const draftReadiness = checkInterviewReadiness(draft);
         const storedReadiness = checkInterviewReadiness(current.definition);
@@ -1532,6 +1496,12 @@ wss.on('connection', (ws) => {
       // pop the ASSISTANT message instead, desync in-memory history from the
       // database, and the next saveSetupChat would permanently delete a
       // message the host already watched arrive.
+      // A drafted, not-yet-accepted world the host asks to change in the
+      // chat is redrafted with that request (live 5YHBZS: "Please shorten
+      // Mistress Prune's disposition" got "Please try accepting the world
+      // again" and nothing changed — the chat never redrafted a world).
+      const draftedSeed = isSeedAccepted(db, campaign.id) ? null : getWorldSeed(db, campaign.id);
+      let editRequest = asksForWorldEdit(msg.text, draftedSeed);
       try {
         const before = currentReadiness(campaign);
         const setupOpts = {
@@ -1540,6 +1510,7 @@ wss.on('connection', (ws) => {
           history: currentPlayer.setupChat,
           unmet: setupUnmetForModel(before),
           hostTableRole: campaign.hostTableRole,
+          worldDrafted: Boolean(draftedSeed),
         };
         let reply = await dm.setupChat(setupOpts);
         // Round 15 (RZBU7G): at a table whose host asked for gentle peril,
@@ -1586,6 +1557,16 @@ wss.on('connection', (ws) => {
           const direction = (reply.done && reply.dmInstructions) || campaign.dmInstructions;
           const draftComing = Boolean(getWorldSeed(db, campaign.id)) || (influenceCount >= MIN_INFLUENCES && Boolean(direction));
           reply.reply = withoutFalseDraftClaim(reply.reply, { draftComing, fallback: nextSetupQuestion(before.detail) });
+        }
+        // The reply cannot change the world card; only a redraft can. A reply
+        // that claims a change means the host asked for one: it is redrafted
+        // below, and the reply says so instead of claiming it is done.
+        if (draftedSeed) {
+          if (!editRequest && claimsWorldEdit(reply.reply)) {
+            console.log('[dm-chat] the reply claims a change to the drafted world; redrafting it with the host\'s message');
+            editRequest = true;
+          }
+          if (editRequest) reply.reply = withoutFalseEditClaim(reply.reply, { redrafting: true });
         }
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 
@@ -1635,12 +1616,12 @@ wss.on('connection', (ws) => {
       const needsSeed = readiness.unmet.includes('seed');
       const canDraft = getInfluences(db, after.id).length >= MIN_INFLUENCES && Boolean(after.dmInstructions);
 
-      if (needsSeed && canDraft) {
+      if ((needsSeed && canDraft) || editRequest) {
         // Its own try/catch: an LLM outage or a Zod rejection here is routine
         // and must not touch chat history, which is already saved and shown.
         try {
           const stock = after.scenarioId ? loadStockScenario(after.scenarioId) : null;
-          const seed = seedWithHostNouns(await dm.draftWorldSeed({
+          const seed = clampWorldSeed(seedWithHostNouns(await dm.draftWorldSeed({
             preset: after.dmPreset,
             systemId: after.systemId,
             influences: getInfluences(db, after.id),
@@ -1648,7 +1629,8 @@ wss.on('connection', (ws) => {
             history: currentPlayer.setupChat,
             existing: getWorldSeed(db, after.id) ?? stock?.seed ?? null,
             gentlePeril: tableWantsGentlePeril(db, after.id),
-          }), currentPlayer.setupChat.filter(m => m.role === 'user').map(m => m.content));
+            revision: editRequest ? msg.text : undefined,
+          }), currentPlayer.setupChat.filter(m => m.role === 'user').map(m => m.content)));
 
           // accept-world-seed is fully synchronous and can complete — mark
           // accepted, seed the world bible, advance the phase — during this
@@ -1666,7 +1648,9 @@ wss.on('connection', (ws) => {
           sendReadiness(ws, joinRoom(db, currentJoinCode)!);
         } catch (e) {
           console.error('[dm-chat] draft failed:', e);
-          send(ws, { type: 'error', message: 'The DM replied, but could not draft a world yet. Try again.' });
+          send(ws, { type: 'error', message: editRequest
+            ? 'The DM could not redraft the world with that change, so the card is unchanged. Try again.'
+            : 'The DM replied, but could not draft a world yet. Try again.' });
         }
       }
     }
@@ -1683,6 +1667,10 @@ wss.on('connection', (ws) => {
       // stored draft's are put back before anything is checked or written.
       if (spoilerFreeHost(campaign, currentPlayer!.setupChat)) parsed.data = withHiddenSeedFields(parsed.data, getWorldSeed(db, campaign.id));
 
+      // The server never refuses its own text: an over-long field exactly as
+      // the server drafted it is clamped here (live 5YHBZS). A field the
+      // host rewrote is theirs, and still refused with a reason.
+      parsed.data = acceptableSeed(parsed.data, getWorldSeed(db, campaign.id));
       const sizeError = validateWorldSeedShape(parsed.data);
       if (sizeError) { send(ws, { type: 'error', message: sizeError }); return; }
 
@@ -1762,7 +1750,7 @@ wss.on('connection', (ws) => {
         if (isValidLongField(msg.note) && msg.note.trim()) {
           history.push({ role: 'user', content: `Redraft the world: ${msg.note}` });
         }
-        const seed = seedWithHostNouns(await dm.draftWorldSeed({
+        const seed = clampWorldSeed(seedWithHostNouns(await dm.draftWorldSeed({
           preset: campaign.dmPreset,
           systemId: campaign.systemId,
           influences: getInfluences(db, campaign.id),
@@ -1770,7 +1758,7 @@ wss.on('connection', (ws) => {
           history,
           existing: getWorldSeed(db, campaign.id),
           gentlePeril: tableWantsGentlePeril(db, campaign.id),
-        }), history.filter(m => m.role === 'user').map(m => m.content));
+        }), history.filter(m => m.role === 'user').map(m => m.content)));
         // The draft above sat behind a real LLM call, which the host's own
         // accept-world-seed (fully synchronous, no await of its own) can
         // complete during and after. If that happened, the seed actually in

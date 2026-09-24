@@ -12,7 +12,7 @@
  *
  * Pure: no database, no LLM. The game loop applies the plan.
  */
-import { sameItem, isStack, singleOf, itemHead, namesOneThing, withoutCount, mergeCount, lessOne } from './narrative-guards.js';
+import { sameItem, isStack, singleOf, itemHead, namesOneThing, withoutCount, mergeCount, lessOne, moveShownInProse } from './narrative-guards.js';
 
 /** One move as the DM states it. `from`/`to`: a player character's name, an NPC's name, "world", or null (appears / is gone). */
 export interface ItemMove {
@@ -135,6 +135,13 @@ export function planItemMoves(
     elsewhere?: string[];
     /** Things the record has an NPC holding. */
     npcItems?: Array<{ name: string; heldBy: string }>;
+    /** The acting character's id, on a ruling; none on a narration beat. */
+    actorId?: string;
+    /**
+     * The ruling's or beat's prose. Given, a move from a party member other
+     * than the actor stands only when the prose shows it (moveShownInProse).
+     */
+    prose?: string;
   } = {},
 ): MovePlan {
   const inventories = new Map(party.map(p => [p.id, [...p.inventory]]));
@@ -184,6 +191,14 @@ export function planItemMoves(
           rejected.push(`[items] refused a move of "${move.item}" from ${from.name} to ${describe(to)}: ${from.name} does not hold "${move.item}"${like.length > 1 ? ` (${like.map(l => `"${l}"`).join(', ')} could each be meant)` : ''} (holds: ${inv.join(', ') || 'nothing'})`);
           continue;
         }
+      }
+      // Live (5YHBZS): Liz swept "Biz's loose bottle cap" into her tote; Biz
+      // had dropped none and the ruling never mentions a cap, but the DM moved
+      // `Bottle cap: Biz → Liz`. A companion's thing moves only when the
+      // prose names it, or hands over "it"/"one".
+      if (!dropsOne && opts.prose !== undefined && from.id !== opts.actorId && !moveShownInProse(move.item, opts.prose) && !moveShownInProse(held, opts.prose)) {
+        rejected.push(`[items] refused a move of "${move.item}" from ${from.name} to ${describe(to)}: ${from.name} is not the one acting, and the ruling's prose never shows it change hands (no "${itemHead(held) ?? held}", no "it" handed over)`);
+        continue;
       }
       const one = isStack(held) && (dropsOne || move.qty === 1 || !isStack(move.item));
       item = one ? singleOf(held) : held;

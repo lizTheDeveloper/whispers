@@ -163,8 +163,8 @@ describe('round 11 in play: items', () => {
     expect(beats.length).toBeGreaterThanOrEqual(1);
     for (const p of [...rulings, ...beats]) {
       const block = p.match(/<items_on_hand>([\s\S]*?)<\/items_on_hand>/)?.[1] ?? '';
-      expect(block).toMatch(/^- Liz: [^\n]*Granola bar/m);
-      expect(block).toMatch(/^- Biz: [^\n]*Bottle caps/m);
+      expect(block).toMatch(/^- Liz: [^\n]*granola bar/m);
+      expect(block).toMatch(/^- Biz: [^\n]*bottle caps/m);
       expect(block).toMatch(/never have it turn up again/);
     }
   });
@@ -173,6 +173,6 @@ describe('round 11 in play: items', () => {
     const { itemsOnHandBlock } = await import('../src/server/agents/dm.js');
     const block = itemsOnHandBlock([{ name: 'Liz', inventory: [] }, { name: 'Biz', inventory: ['Pen'] }]);
     expect(block).toMatch(/^- Liz: nothing$/m);
-    expect(block).toMatch(/^- Biz: Pen$/m);
+    expect(block).toMatch(/^- Biz: pen$/m);
   });
 });

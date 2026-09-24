@@ -405,3 +405,65 @@ export function withHiddenSeedFields(incoming: WorldSeed, stored: WorldSeed | nu
     }),
   };
 }
+
+// ─── Changing a drafted world from the chat ────────────────────────────────
+
+/** Verbs by which a host asks for a change. */
+const EDIT_VERB = /\b(?:shorten|shorter|trim|cut|chang(?:e|ing)|rename|remov(?:e|ing)|drop|replac(?:e|ing)|rewrite|re-?draft|edit|fix|swap|add|tweak|adjust|update|make|give|turn|lose|delete|simplify|condense|reword|spookier|scarier|gentler|softer|longer|less|more)\b/i;
+/** What a change can be to: the world and its fields. */
+const WORLD_PART = /\b(?:world|card|draft|seed|premise|npcs?|characters?|people|dispositions?|descriptions?|motivations?|locations?|places?|rooms?|terrain|hooks?|plot|items?|things?|names?|pronouns?)\b/i;
+
+/**
+ * The host's chat message asks for a change to the drafted world: a change
+ * verb, and a part of the world or one of its names. Live (5YHBZS): "Please
+ * shorten Mistress Prune's disposition to one short sentence and keep
+ * everything else." — the chat never redrafted an existing world, and the
+ * DM answered "Please try accepting the world again" with nothing changed.
+ */
+export function asksForWorldEdit(text: string, seed: WorldSeed | null): boolean {
+  if (!seed || !text?.trim() || !EDIT_VERB.test(text)) return false;
+  if (WORLD_PART.test(text)) return true;
+  const names = [...seed.npcs.map(n => n.name), ...seed.locations.map(l => l.name), ...seed.items.map(i => i.name)];
+  const words = (t: string) => t.toLowerCase().replace(/^(?:the|a|an)\s+/, '').match(/[a-z0-9'’-]{3,}/g) ?? [];
+  const said = new Set(words(text));
+  return names.some(n => words(n).some(w => said.has(w) && !/^(?:the|and|of)$/.test(w)));
+}
+
+/** A sentence claiming the world was changed, or that accepting will now work. */
+const EDIT_CLAIM = [
+  /\b(?:I|we)(?:['’]ve|\s+have|\s+just)?\s+(?:\w+\s+){0,2}?(?:shortened|trimmed|changed|updated|fixed|revised|rewritten|rewrote|edited|adjusted|cut|removed|renamed|redrafted|tweaked|condensed|simplified|replaced|swapped)\b/i,
+  /\b(?:try|go\s+ahead\s+and)\s+(?:accepting|to\s+accept|accept)\b/i,
+  /\baccept(?:ing)?\s+(?:the\s+|your\s+|this\s+)?(?:world\s+|card\s+)?again\b/i,
+  /\b(?:remains?|stays?|is\s+still|left)\s+(?:exactly\s+)?(?:as\s+it\s+was|the\s+same|unchanged|untouched)\b/i,
+  /\b(?:is|has\s+been|was)\s+(?:now\s+)?(?:shortened|trimmed|changed|updated|fixed|revised|rewritten|edited|adjusted|cut|removed|renamed|condensed)\b/i,
+  /\b(?:should|will)\s+(?:now\s+)?(?:work|go\s+through|smooth\s+out|clear\s+(?:up|the\s+error))\b/i,
+];
+
+/** A setup reply that claims it changed the world (EDIT_CLAIM) — the chat reply cannot change it. */
+export function claimsWorldEdit(reply: string): boolean {
+  return !!reply && EDIT_CLAIM.some(re => re.test(reply));
+}
+
+/**
+ * A setup reply without its claims to have changed the world, and with what
+ * is really happening said instead: `redrafting` — the server is redrafting
+ * the world card from the host's request, and the new draft replaces the
+ * card — or not, in which case the card has not changed.
+ */
+export function withoutFalseEditClaim(reply: string, opts: { redrafting: boolean }): string {
+  const truth = opts.redrafting
+    ? "I'm redrafting the world card with that change now — the new draft will replace the one on your card, so check it before you accept."
+    : "I haven't changed the world card — nothing I say in this chat edits it. Ask me for the change you want (for example, \"shorten the clerk's disposition\"), or redraft it from the card.";
+  if (!claimsWorldEdit(reply)) return opts.redrafting ? `${reply.trim()} ${truth}`.trim() : reply;
+  let dropped = 0;
+  const out = reply.split(/(\n+)/).map(p => {
+    if (/^\n+$/.test(p)) return p;
+    return p.split(SENTENCE_SPLIT).filter(sn => {
+      const bad = EDIT_CLAIM.some(re => re.test(sn));
+      if (bad) dropped++;
+      return !bad;
+    }).join(' ');
+  }).join('').replace(/\n{3,}/g, '\n\n').trim();
+  console.log(`[dm-chat] dropped ${dropped} sentence(s) claiming a change to the world card; ${opts.redrafting ? 'a redraft is on its way' : 'no redraft follows'}`);
+  return out ? `${out}\n\n${truth}` : truth;
+}

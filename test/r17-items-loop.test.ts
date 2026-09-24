@@ -1,6 +1,5 @@
-// Round 14 in play (live 7RAAQ7, the LLM mocked with its lines): the DM's
-// itemMoves are the record; prose is a cross-check. See r14-items.test.ts
-// for the pure pieces.
+// Round 17 in play (live 5YHBZS, the LLM mocked with its lines). See
+// r17-items.test.ts for the pure pieces.
 // @vitest-environment node
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -23,7 +22,7 @@ const PONDER = 'The Pen of Perpetual Pondering in Liz\'s hand begins to hum, a l
 
 const ids = { liz: '', biz: '' };
 type Ruling = { narration: string; stateChanges?: (i: typeof ids) => unknown[]; itemMoves?: unknown[] };
-type Script = { liz: string; biz: string; lizRuling: Ruling; bizRuling: Ruling; beat?: Ruling };
+type Script = { liz: string; biz: string; lizRuling: Ruling; bizRuling: Ruling; beat?: Ruling & { location?: string; npcs?: string[] }; options?: string[] };
 const quiet: Ruling = { narration: 'Button squeaks at the clock.' };
 let script: Script = { liz: 'I read the fine print.', biz: 'I look at the clock.', lizRuling: quiet, bizRuling: quiet };
 
@@ -37,14 +36,14 @@ vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
     if (all.includes('Choose your action now')) {
       return { chosenAction: isLiz ? script.liz : script.biz, spokenWords: null, innerThought: 'Stay close.', whisperedInfluence: 'ignored', trustDelta: 0 };
     }
-    if (all.includes('Propose 2-4 actions')) return { actions: ['I ask Clerk Ozymandias which form sends us home.', 'I tell my companion to stay close.'].map(description => ({ description, reasoning: 'r' })) };
+    if (all.includes('Propose 2-4 actions')) return { actions: (script.options ?? ['I ask Clerk Ozymandias which form sends us home.', 'I tell my companion to stay close.']).map(description => ({ description, reasoning: 'r' })) };
     if (all.includes('FATE resolution steps')) {
       const ruling = all.includes('ACTING CHARACTER (narrate THEIR action, not another party member\'s): Liz') ? script.lizRuling : script.bizRuling;
       return { diceExpression: '4dF', difficulty: 1, skill: 'Notice', outcome: 'success', narration: ruling.narration, stateChanges: ruling.stateChanges?.(ids) ?? [], ...(ruling.itemMoves ? { itemMoves: ruling.itemMoves } : {}) };
     }
     if (all.includes('Pacing:')) {
       const beat = script.beat ?? { narration: 'The lobby hums.' };
-      return { narration: beat.narration, currentLocationName: '', activeNpcs: [], isSceneEnd: false, ...(beat.itemMoves ? { itemMoves: beat.itemMoves } : {}) };
+      return { narration: beat.narration, currentLocationName: (beat as any).location ?? '', activeNpcs: (beat as any).npcs ?? [], isSceneEnd: false, ...(beat.itemMoves ? { itemMoves: beat.itemMoves } : {}) };
     }
     if (all.includes('You extract episodic memories')) return { memories: [{ type: 'social', content: 'I kept close to my family.', emotionalValence: 0, importance: 0.9 }] };
     if (all.includes('Summarize')) return { summary: 'The lobby spun.' };
@@ -64,7 +63,7 @@ process.env.PACE_MAX_MS = '0';
 let dataDir: string;
 let db: Database.Database;
 beforeAll(async () => {
-  dataDir = mkdtempSync(join(tmpdir(), 'whispers-r14i-'));
+  dataDir = mkdtempSync(join(tmpdir(), 'whispers-r17i-'));
   process.env.DATA_DIR = join(__dirname, '..', 'data');
   process.env.STATE_DIR = dataDir;
   db = (await import('../src/server/db.js')).getDb();
@@ -105,14 +104,14 @@ async function setUp(tag: string): Promise<{ campaignId: string; joinCode: strin
     ],
     plotHooks: ['The Lanyard is unassigned.'],
     // "Granola Bar" is what the extractor made of the party's bar live; "Silver Key" a world item.
-    items: [{ name: 'The Pen of Perpetual Pondering', description: 'A pen that hums.' }, { name: 'Granola Bar', description: 'Sentimental snack token' }, { name: 'Silver Key', description: 'Shiny key' }],
+    items: [{ name: 'The Pen of Perpetual Pondering', description: 'A pen that hums.' }, { name: 'Granola Bar', description: 'Sentimental snack token' }, { name: 'Silver Key', description: 'Shiny key' }, { name: 'Brass Button', description: 'Warm, humming.' }],
   };
-  const { campaignId, joinCode } = room.createRoom(db, { name: `R14 ${tag}`, dmPreset: 'chronicler', systemId: 'fate-core' });
+  const { campaignId, joinCode } = room.createRoom(db, { name: `R17 ${tag}`, dmPreset: 'chronicler', systemId: 'fate-core' });
   setWorldSeed(db, campaignId, seed);
   markSeedAccepted(db, campaignId);
   seedWorld(db, campaignId, seed);
-  ids.liz = `liz-r14-${campaignId}`;
-  ids.biz = `biz-r14-${campaignId}`;
+  ids.liz = `liz-r17-${campaignId}`;
+  ids.biz = `biz-r17-${campaignId}`;
   for (const [id, definition, playerName] of [[ids.liz, LIZ_SHEET, 'Liz'], [ids.biz, BIZ_SHEET, 'Biz']] as const) {
     const session = room.createSession(db, { campaignId, joinCode, playerName, isHost: playerName === 'Liz' });
     const pending = { id, campaignId, joinCode, sessionToken: session.token, playerName, definition, aiFeedback: 'ok' };
@@ -150,107 +149,45 @@ async function round(tag: string, s: Script, inventories?: { liz?: string[]; biz
   return { ...out, campaignId, liz: inventoryOf(ids.liz), biz: inventoryOf(ids.biz) };
 }
 
-const worldHolder = (campaignId: string, name: string) => db.prepare('SELECT holder_id FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) as { holder_id: string | null } | undefined;
+const itemRow = (campaignId: string, name: string) => db.prepare('SELECT name, holder_id, properties FROM items WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) as { name: string; holder_id: string | null; properties: string } | undefined;
 
-describe('round 14 in play: the DM\'s itemMoves are the record', () => {
-  it('1. "Mama Pigeon … offers a granola bar to Biz" (no moves in the beat): Liz keeps her bar', async () => {
-    const r = await round('offer', { liz: 'I read the fine print.', biz: 'I look at the clock.', lizRuling: quiet, bizRuling: quiet, beat: { narration: OFFER } });
-    expect(r.liz).toContain('Granola bar');
-    expect(r.biz).not.toContainEqual(expect.stringMatching(/granola/i));
-  }, 40_000);
 
-  it('1b. the same beat with itemMoves [] and Biz taking it in the ruling from Mama Pigeon: Biz has one, Liz keeps hers', async () => {
-    const r = await round('offer-moves', {
-      liz: 'I read the fine print.', biz: 'Take the granola bar from Mama Pigeon and step toward the Chalk-Dust Threshold.',
-      lizRuling: quiet,
-      bizRuling: { narration: 'Biz accepts the granola bar, the wrapper crinkling loudly in the sudden silence.', itemMoves: [{ item: 'Granola bar', from: 'Mama Pigeon', to: 'Biz' }] },
-      beat: { narration: OFFER, itemMoves: [] },
-    });
-    expect(r.liz).toContain('Granola bar');
-    expect(r.biz.filter(i => /granola bar/i.test(i))).toHaveLength(1);
-  }, 40_000);
+const SWEEP_ACTION = "Sweep Biz's loose bottle cap into my tote bag pocket while turning back to apologize to the Humming Oak Door.";
+const SWEEP_RULING = 'The door’s humming drops from a sharp G-sharp to a low, satisfied hum that vibrates in her chest, but as she takes Biz’s hand, a sudden draft from the missing manual whips her hair across her face, carrying the scent of wet ink and ozone. "The apology is accepted, but the manual\'s draft is still circulating," Prune states dryly, "so consider the next corridor a bit... breezy."';
 
-  it('2. eaten by the clerk (itemMoves): gone, and "Biz holds the granola bar up" in the next beat never brings it back', async () => {
-    const r = await round('eaten', {
-      liz: 'I read the fine print.', biz: 'Give the granola bar to Mr. Ozymandias.',
-      lizRuling: { narration: HOLDS_AGAIN },
-      bizRuling: { narration: EATEN, itemMoves: [{ item: 'Granola Bar', from: 'Biz', to: 'Clerk Ozymandias' }] },
-    }, { liz: ['Tote bag', 'Pen'], biz: ['Bottle caps', 'Granola bar'] });
-    expect(r.biz).toEqual(['Bottle caps']);
-    expect(r.liz).toEqual(['Tote bag', 'Pen']);
-  }, 40_000);
-
-  it('2b. the live shape: the ruling removed it in stateChanges and its own prose "holds the granola bar up" — not re-added as "Granola Bar"', async () => {
-    const r = await round('eaten-legacy', {
-      liz: 'I read the fine print.', biz: 'Give the granola bar to Mr. Ozymandias.',
-      lizRuling: { narration: HOLDS_AGAIN },
-      bizRuling: { narration: EATEN, stateChanges: i => [{ characterId: i.biz, field: 'inventory', action: 'remove', value: 'Granola bar' }] },
-    }, { liz: ['Tote bag', 'Pen'], biz: ['Bottle caps', 'Granola bar'] });
-    expect(r.biz).toEqual(['Bottle caps']);
-    expect(r.liz).toEqual(['Tote bag', 'Pen']);
-  }, 40_000);
-
-  it('3. the tote snags and tears: the tote stays, the pen goes to the floor and shows as a world item', async () => {
-    const r = await round('tote', {
-      liz: 'I reach for the Lanyard.', biz: 'I look at the clock.',
-      lizRuling: { narration: TOTE, itemMoves: [{ item: 'Pen', from: 'Liz', to: 'world' }], stateChanges: i => [{ characterId: i.liz, field: 'inventory', action: 'remove', value: 'Tote bag' }] },
+describe('round 17 in play', () => {
+  it('2. the phantom cap: Biz → Liz with no cap in Liz\'s ruling moves nothing', async () => {
+    const r = await round('phantom-cap', {
+      liz: SWEEP_ACTION, biz: 'I look at the clock.',
+      lizRuling: { narration: SWEEP_RULING, itemMoves: [{ item: 'Bottle cap', from: 'Biz', to: 'Liz' }] },
       bizRuling: quiet,
-    });
-    expect(r.liz).toEqual(['Tote bag', 'Granola bar']);
-    expect(worldHolder(r.campaignId, 'Pen')).toEqual({ holder_id: null });
-  }, 40_000);
-
-  it('4. the key slips from Biz\'s fingers (beat), Liz scoops it up (ruling): Liz has it, Biz does not', async () => {
-    const r = await round('key', {
-      liz: SCOOP_ACTION, biz: 'I squeeze Mom\'s hand.',
-      lizRuling: { narration: SCOOP, itemMoves: [{ item: 'Silver Key', from: 'world', to: 'Liz' }] },
-      bizRuling: quiet,
-      beat: { narration: SLIP, itemMoves: [{ item: 'Silver Key', from: 'Biz', to: 'world' }] },
-    }, { liz: ['Pen'], biz: ['Bottle caps', 'Silver Key'] });
-    expect(r.liz).toEqual(['Pen', 'Silver Key']);
+    }, { liz: ['Tote bag', 'Bottle caps ×2', 'Pen'], biz: ['Bottle caps'] });
+    expect(r.liz).toEqual(['Tote bag', 'Bottle caps ×2', 'Pen']);
     expect(r.biz).toEqual(['Bottle caps']);
-    expect(worldHolder(r.campaignId, 'Silver Key')?.holder_id).toBe(ids.liz);
   }, 40_000);
 
-  describe('5. the DM\'s prompts: exact inventories, world items held by nobody, the moves rule', () => {
-    let r: Awaited<ReturnType<typeof round>>;
-    beforeAll(async () => {
-      r = await round('prompts', { liz: 'I read the fine print.', biz: 'I look at the clock.', lizRuling: { narration: PONDER, itemMoves: [] }, bizRuling: quiet }, { liz: ['Tote bag', 'Pen'], biz: ['Bottle caps', 'Pen'] });
-    }, 40_000);
-    it('rulings and narration beats', () => {
-      const dm = r.prompts.filter(p => p.text.includes('FATE resolution steps') || p.text.includes('Pacing:'));
-      expect(dm.length).toBeGreaterThanOrEqual(3);
-      for (const p of dm) {
-        expect(p.text).toMatch(/^- Liz: tote bag, pen$/m);
-        expect(p.text).toMatch(/^- The Pen of Perpetual Pondering — not held by anyone in the party$/m);
-        expect(p.text).toMatch(/"pen" \((?:Liz, Biz|Biz, Liz)\) and "The Pen of Perpetual Pondering" are different things/);
-        expect(p.text).toMatch(/"itemMoves"/);
-      }
+  it('4. "Missing Manual" named as present is not filed as an NPC', async () => {
+    const r = await round('manual', {
+      liz: 'I read the fine print.', biz: 'I look at the clock.', lizRuling: quiet, bizRuling: quiet,
+      beat: { narration: 'A draft from the missing manual riffles the forms on the counter.', location: 'The Lobby of First Impressions', npcs: ['Missing Manual', 'Clerk Ozymandias'] },
     });
-    it('"The Pen of Perpetual Pondering in Liz\'s hand" (moves: []) gives Liz no second pen', () => {
-      expect(r.liz).toEqual(['Tote bag', 'Pen']);
-    });
-  });
+    const row = db.prepare('SELECT name FROM entities WHERE campaign_id = ? AND name = ?').get(r.campaignId, 'Missing Manual');
+    expect(row).toBeUndefined();
+  }, 40_000);
 
-  describe('6. the ending: reflections and the epilogue get what each holds and what is gone', () => {
-    let r: Awaited<ReturnType<typeof round>>;
-    beforeAll(async () => {
-      r = await round('ending', {
-        liz: 'I read the fine print.', biz: 'Give the granola bar to Mr. Ozymandias.',
-        lizRuling: quiet,
-        bizRuling: { narration: EATEN, itemMoves: [{ item: 'Granola bar', from: 'Biz', to: 'Clerk Ozymandias' }] },
-      }, { liz: ['Tote bag', 'Pen'], biz: ['Bottle caps', 'Granola bar'] }, { end: true });
-    }, 40_000);
-    it('both prompts', () => {
-      const reflections = r.prompts.filter(p => p.kind === 'prose' && p.text.includes('closing reflection'));
-      const epilogue = r.prompts.filter(p => p.kind === 'prose' && p.text.includes('session epilogues'));
-      expect(reflections.length).toBe(2);
-      expect(epilogue.length).toBeGreaterThanOrEqual(1);
-      for (const p of [...reflections, ...epilogue]) {
-        expect(p.text).toMatch(/^- Liz: Tote bag, Pen$/m);
-        expect(p.text).toMatch(/^- Biz: Bottle caps$/m);
-        expect(p.text).toMatch(/Gone[^\n]*Granola bar/);
-      }
-    });
-  });
+  it('5. an option that has Biz hold the brass button Biz does not hold is dropped', async () => {
+    const r = await round('button', {
+      liz: 'I read the fine print.', biz: 'I look at the clock.', lizRuling: quiet, bizRuling: quiet,
+      options: ['Tell Biz to hold the brass button steady while I read the slot.', 'Ask Clerk Ozymandias which form sends us home.'],
+    }, { liz: ['Tote bag', 'Pen'], biz: ['Bottle caps'] });
+    const offered = r.seen.filter(m => m.type === 'action-proposals' && m.characterName === 'Liz').flatMap(m => m.actions as string[]);
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered.some(a => /brass button/.test(a))).toBe(false);
+  }, 40_000);
+
+  it('6. the DM is shown plain things in lowercase', async () => {
+    const r = await round('case', { liz: 'I read the fine print.', biz: 'I look at the clock.', lizRuling: quiet, bizRuling: quiet }, { liz: ['Tote bag', 'Granola bar', 'Pen'], biz: ['Bottle caps'] });
+    const ruling = r.prompts.find(p => p.text.includes('FATE resolution steps'))!;
+    expect(ruling.text).toContain('- Liz: tote bag, granola bar, pen');
+  }, 40_000);
 });

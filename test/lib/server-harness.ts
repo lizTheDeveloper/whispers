@@ -89,6 +89,33 @@ export const LLM_STUB_REPLIES = {
     dmInstructions: null,
     dmCustomPrompt: null,
   },
+  // Round 17 (live 5YHBZS): a draft whose fields break the accept-time
+  // limits — Mistress Prune's disposition ran to ~330 characters, and accept
+  // refused it twice. Selected by LONG_SEED_TRIGGER in the host's chat.
+  longWorldSeed: {
+    premise: 'Liz and Biz have landed in the Department of Inter-Planar Transit, where a smudged stamp has misfiled them as a batch of overdue tax returns.',
+    locations: [
+      { name: 'The Antechamber of Forms', description: 'A vast, circular room of slowly rotating wooden desks.', terrain: 'indoor ' + 'and humming '.repeat(30) },
+      { name: 'The Stairwell of Echoes', description: 'Every step repeats what you said on the last one.', terrain: 'indoor' },
+      { name: 'The Opaline Desk', description: 'A desk with opinions.', terrain: 'indoor' },
+    ],
+    npcs: [
+      { name: 'Mistress Prune', description: 'A spectacled bureaucrat with a dry voice.', disposition: "Irritated by the chaos of the misfiled, but deeply committed to the rules of the Department. She speaks in clipped, precise sentences and expects every form to be filled in triplicate. Underneath the starch she softens for children and anyone who apologises properly. She will not bend a rule, though she may lend you a pen.", motivation: 'She wants every form filed before the cycle resets.', pronouns: 'she/her' },
+      { name: 'Clerk Bumble', description: 'A nervous clerk who fears hardware.', disposition: 'nervous', motivation: 'Keep his desk tidy.', pronouns: 'he/him' },
+      { name: 'Mr. Whisk', description: 'A teapot who feels underappreciated.', disposition: 'huffy', motivation: 'Be called by his name.', pronouns: 'he/him' },
+    ],
+    plotHooks: ['The daily filing cycle resets at dusk.', 'A form keeps wandering off.', 'The stamp that misfiled them is missing.'],
+    items: [{ name: 'Correction Form 7-B', description: 'Floating paper with a blue smudge.' }],
+  },
+  // A setup reply claiming a change to the world it cannot make (live
+  // 5YHBZS). Selected by EDIT_CLAIM_TRIGGER in the host's latest message.
+  setupClaimsEdit: {
+    reply: 'Good catch!\n\nEverything else remains exactly as it was. Please try accepting the world again—let me know if that smooths out the error!',
+    done: true,
+    influences: ['Le Guin', 'Annihilation', 'Disco Elysium'],
+    dmInstructions: 'A haunted lighthouse, spooky but hopeful.',
+    dmCustomPrompt: 'You are running a haunted lighthouse game.',
+  },
   worldSeed: {
     premise: 'A lighthouse keeps something out, not in.',
     locations: [
@@ -145,6 +172,13 @@ export const LLM_STUB_REPLIES = {
   charInterviewGenderedReply: {
     reply: 'Liz sounds like someone who reads the fine print. How should I refer to Liz — she/her, he/him, they/them? And what would catch her attention first in the Lamp Room?',
     definition: { name: 'Liz', highConcept: 'Mom With a Clipboard Heart', trouble: '', aspects: [], personality: '', backstory: '', skills: {}, stunts: [], pronouns: null },
+  },
+  // Round 17 (live 5YHBZS): Biz's first message said "I use they/them"; the
+  // reply asked for pronouns anyway, with no sheet. Selected by
+  // PRONOUNS_ASKED_TRIGGER.
+  charInterviewAsksPronouns: {
+    reply: "Got it, Biz. You're a curious 10-year-old collector with a pocket full of bottle caps, and your trouble is wandering off after anything shiny. How should I refer to you in the sheet — she/her, he/him, they/them, or something else?",
+    definition: null,
   },
   // A thin-but-non-null definition — the model believes it is done (it is
   // not refusing, it filled in the field it has), but only `name` clears the
@@ -348,7 +382,7 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // with the judge's feedback, it offers something gentle.
           text = JSON.stringify(body.includes('<tone_feedback>') ? LLM_STUB_REPLIES.setupGentleDanger : LLM_STUB_REPLIES.setupDrawerForever);
         } else if (body.includes('You are a world builder for a TTRPG')) {
-          text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
+          text = JSON.stringify(body.includes('LONG_SEED_TRIGGER') ? LLM_STUB_REPLIES.longWorldSeed : LLM_STUB_REPLIES.worldSeed);
         } else if (body.includes('introducing a player to a world')) {
           // introduceWorld's system prompt is the only prompt in the server
           // that interpolates the campaign's dmPreset verbatim next to
@@ -373,7 +407,9 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // fixture regardless of turn count, so a test can trigger it
           // deterministically without disturbing the two-turn "done" flow
           // every other interview test relies on.
-          if (body.includes('GENDERED_REPLY_TRIGGER')) {
+          if (body.includes('PRONOUNS_ASKED_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.charInterviewAsksPronouns);
+          } else if (body.includes('GENDERED_REPLY_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.charInterviewGenderedReply);
           } else if (body.includes('UNSTATED_PRONOUNS_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.charInterviewGuessedGender);
@@ -436,7 +472,11 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // done-but-no-instructions fixture deterministically, without
           // disturbing the ordinary hostSpoke -> setupDone flow every other
           // setup test relies on.
-          if (hostSpoke && body.includes('NO_INSTRUCTIONS_TRIGGER')) {
+          const msgs = JSON.parse(body).messages as Array<{ role: string; content: string }>;
+          const latestHost = [...msgs].reverse().find(m => m.role === 'user')?.content ?? '';
+          if (hostSpoke && latestHost.includes('EDIT_CLAIM_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.setupClaimsEdit);
+          } else if (hostSpoke && body.includes('NO_INSTRUCTIONS_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.setupDoneNoInstructions);
           } else if (body.includes('MISSING_DONE_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.setupOpenNoDoneField);

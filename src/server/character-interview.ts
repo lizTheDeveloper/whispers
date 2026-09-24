@@ -404,3 +404,47 @@ export function interviewFallbackReply(readiness: CharacterReadiness): string {
   const next = readiness.detail.slice(0, 2).map(d => d.replace(/[.!?]+$/, '')).join('; ');
   return `Got it — that is on the sheet. Still to settle: ${next}.`;
 }
+
+/** A pronoun set written with a slash: "they/them", "she/her", "he/they", "xe/xem". */
+const PRONOUN_PAIR = String.raw`\b((?:she|he|they|it|xe|ze|zie|fae|ey)\s*\/\s*(?:her|hers|him|his|them|theirs|its|it|xem|xir|zir|hir|faer|em|they|she|he)(?:\s*\/\s*(?:her|hers|him|his|them|theirs|its|xem|xir|zir|hir|faer|em))?)\b`;
+/** Words that make it the speaker's own: "I use", "I'm", "Pronouns:", "please use". */
+const OWN_PRONOUNS = new RegExp(String.raw`(?:\bpronouns?\b[^.!?\n]{0,24}?|\b(?:I\s+use|I\s+go\s+by|go\s+by|I['’]m|I\s+am|use)\s+)` + PRONOUN_PAIR, 'i');
+
+/**
+ * The pronouns the player stated for their own character in any message,
+ * or null: "I use they/them", "Pronouns: she/her", "my pronouns are he/him",
+ * or a message that is only the pronouns. Live (5YHBZS): Biz's first
+ * message said "I use they/them" and the interview asked for pronouns anyway.
+ * The latest statement wins.
+ */
+export function pronounsStatedIn(lines: string[]): string | null {
+  let found: string | null = null;
+  for (const line of lines) {
+    const whole = line.trim().match(new RegExp(String.raw`^(?:please\s+)?${PRONOUN_PAIR}(?:\s+please)?[.!]?$`, 'i'));
+    const m = whole ?? line.match(OWN_PRONOUNS);
+    if (m) found = m[1]!.toLowerCase().replace(/\s+/g, '');
+  }
+  return found;
+}
+
+/** A question asking how the character is referred to. */
+const PRONOUN_QUESTION = /\bpronouns?\b|\brefer\s+to\s+(?:you|them|him|her)\b|\b(?:she\/her|he\/him|they\/them)\b/i;
+
+/**
+ * An interview reply without its question about pronouns — for a player who
+ * has already stated them (pronounsStatedIn). `fallback` when nothing is left.
+ */
+export function withoutPronounQuestion(reply: string, fallback: string): string {
+  if (!reply || !PRONOUN_QUESTION.test(reply)) return reply;
+  let dropped = 0;
+  const out = reply.split(/(\n+)/).map(p => {
+    if (/^\n+$/.test(p)) return p;
+    return p.split(/(?<=[.!?…]["”’']?)\s+/).filter(s => {
+      const ask = /\?/.test(s) && PRONOUN_QUESTION.test(s);
+      if (ask) dropped++;
+      return !ask;
+    }).join(' ');
+  }).join('').replace(/\n{3,}/g, '\n\n').trim();
+  if (dropped > 0) console.log(`[char-chat] dropped ${dropped} question(s) about pronouns the player already stated`);
+  return out || fallback;
+}

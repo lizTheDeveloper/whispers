@@ -49,7 +49,7 @@ describe('1. eaten is consumed, not a hand-over', () => {
 
   it('consumed things are listed as eaten in the DM\'s items block', () => {
     const block = itemsOnHandBlock([{ name: 'Liz', inventory: ['Pen'] }], { gone: ['Granola bar'], eaten: ['Granola bar'] });
-    expect(block).toMatch(/Eaten or used up[^\n]*Granola bar/);
+    expect(block).toMatch(/Eaten or used up[^\n]*granola bar/);
     expect(block).toMatch(/not even (?:with )?an NPC/i);
   });
 });

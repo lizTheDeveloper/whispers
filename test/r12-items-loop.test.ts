@@ -155,8 +155,8 @@ describe('round 12 in play: items', () => {
     const opening = prompts.find(p => p.includes('OPENING OF THE ADVENTURE'));
     expect(opening).toBeDefined();
     const block = opening!.match(/<items_on_hand>([\s\S]*?)<\/items_on_hand>/)?.[1] ?? '';
-    expect(block).toMatch(/^- Liz: Canvas tote bag, Pen$/m);
-    expect(block).toMatch(/^- Biz: Bottle caps$/m);
+    expect(block).toMatch(/^- Liz: canvas tote bag, pen$/m);
+    expect(block).toMatch(/^- Biz: bottle caps$/m);
     expect(opening).toMatch(/PROPS:/);
     expect(opening).toMatch(/introductions[^\n]*only what <items_on_hand> lists/i);
   });

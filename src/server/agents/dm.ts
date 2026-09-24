@@ -4,7 +4,7 @@ import { DmNarrationSchema, DmResolutionSchema, CharacterValidationSchema, Scene
 import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, CharInterviewReply, DmOpening } from './schemas.js';
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { PLAIN_PROSE_STYLE } from './style.js';
-import { repetitionNotes } from '../narrative-guards.js';
+import { repetitionNotes, proseItemName, itemHead } from '../narrative-guards.js';
 import { npcPronounBlock, seedNpcPronouns, neutralPronouns, neutralNounRule, partyPronounLine } from '../npc-pronouns.js';
 import { repairGenderedNouns } from '../pronoun-consistency.js';
 import { influenceKey } from '../world-readiness.js';
@@ -12,6 +12,7 @@ import { wantsNoSpoilers } from '../../shared/spoilers.js';
 import { safeDataFile } from '../data-paths.js';
 import { SENTENCE_SPLIT } from '../sentences.js';
 import { publicDisposition } from '../world-seed.js';
+import { seedLimitsForPrompt } from '../field-limits.js';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, CharacterRelationship, TranscriptMessage, DiceResult, WorldSeed, TableRole } from '../../shared/types.js';
 
@@ -546,17 +547,20 @@ Storytelling principles:
  */
 export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string[] }>, extra: { world?: Array<{ name: string; heldBy?: string | null }>; gone?: string[]; eaten?: string[] } = {}): string {
   if (party.length === 0) return '';
-  const lines = party.map(p => `- ${p.name}: ${p.inventory && p.inventory.length > 0 ? p.inventory.join(', ') : 'nothing'}`);
+  // Live (5YHBZS): "holds a Tote bag and a Granola bar", "her Pen" — the
+  // record's capitals leaked into prose. Plain things are shown in lowercase
+  // (proseItemName); a label or a title keeps its capitals.
+  const lines = party.map(p => `- ${p.name}: ${p.inventory && p.inventory.length > 0 ? p.inventory.map(proseItemName).join(', ') : 'nothing'}`);
   // Live (7RAAQ7): the world's "The Pen of Perpetual Pondering" beside Liz's
   // and Biz's "Pen" — the DM put the world's pen "in Liz's hand". World
   // things are listed as nobody's in the party, and a shared word is spelled out.
-  const world = extra.world ?? [];
+  const world = (extra.world ?? []).map(w => ({ ...w, name: proseItemName(w.name) }));
   const worldBlock = world.length > 0
     ? `\nNot held by anyone in the party (in the world, or kept by the NPC named):\n${world.map(w => `- ${w.name} — ${w.heldBy ? `held by ${w.heldBy}` : 'not held by anyone in the party'}`).join('\n')}`
     : '';
   const clashes = world.flatMap(w => {
     const holders = new Map<string, string[]>();
-    for (const p of party) for (const i of p.inventory ?? []) {
+    for (const p of party) for (const i of (p.inventory ?? []).map(proseItemName)) {
       if (itemHeadWord(i) && itemHeadWord(i) === itemHeadWord(w.name) && i.trim().toLowerCase() !== w.name.trim().toLowerCase()) holders.set(i, [...(holders.get(i) ?? []), p.name]);
     }
     return [...holders].map(([i, who]) => `"${i}" (${who.join(', ')}) and "${w.name}" are different things: never call one by the other's name, and never put "${w.name}" in a party member's hand unless an itemMoves entry gives it to them.`);
@@ -565,11 +569,11 @@ export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string
   // the granola bar he has been hoarding". Eaten is gone from the world too.
   // And one stamp went by four names (The Stamp, Stamp of Clarity, Square
   // Stamp, Ink-Stained Stamp): the NAMES line.
-  const eaten = (extra.eaten ?? []).filter(Boolean);
-  const gone = (extra.gone ?? []).filter(g => g && !eaten.some(e => e.trim().toLowerCase() === g.trim().toLowerCase()));
+  const eaten = (extra.eaten ?? []).filter(Boolean).map(proseItemName);
+  const gone = (extra.gone ?? []).filter(g => g && !eaten.some(e => e.trim().toLowerCase() === g.trim().toLowerCase())).map(proseItemName);
   const goneLine = gone.length > 0 ? `\nGone for good (eaten, used up, given away, lost): ${gone.join(', ')} — no one in the party has these; never have one turn up again in anyone's hand, bag or pocket.` : '';
   const eatenLine = eaten.length > 0 ? `\nEaten or used up — these no longer exist anywhere, not even with an NPC: ${eaten.join(', ')}. Never narrate anyone holding, pocketing, hoarding, chewing or offering one again.` : '';
-  return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}${worldBlock}${goneLine}${eatenLine}${clashes.length > 0 ? `\n${clashes.join('\n')}` : ''}\nNAMES: call every thing by its exact name as listed here, in prose and in itemMoves — never a new name for a thing already listed, not even a fancier or more specific one.\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it and the thing itself ("the pen lands in Biz's palm", not just "it" or "a soft arc of black plastic"). One from a stack (a bottle cap from "Bottle caps") is one: the giver keeps the rest. Things are held, not eaten: nobody chews or swallows a thing that is not food.\n</items_on_hand>`;
+  return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}${worldBlock}${goneLine}${eatenLine}${clashes.length > 0 ? `\n${clashes.join('\n')}` : ''}\nNAMES: call every thing by its exact name as listed here, in prose and in itemMoves — never a new name for a thing already listed, not even a fancier or more specific one. In prose, write a thing listed in lowercase as the ordinary words it is, in lowercase mid-sentence ("she holds a tote bag and a granola bar", "her pen" — never "a Tote bag", "her Pen"); only a name with its own capitals (a label like "Form 7-B", a title like "The Pen of Perpetual Pondering") keeps them.\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it and the thing itself ("the pen lands in Biz's palm", not just "it" or "a soft arc of black plastic"). One from a stack (a bottle cap from "Bottle caps") is one: the giver keeps the rest. Things are held, not eaten: nobody chews or swallows a thing that is not food.\n</items_on_hand>`;
 }
 
 /** The last word of an item's name before "of …" or a label: "The Pen of Perpetual Pondering" → pen. */
@@ -594,7 +598,12 @@ export const ITEM_MOVES_RULE = `ITEM MOVES: every time your narration moves a th
 export function itemsNotOnHandBlock(name: string, items: string[]): string {
   if (items.length === 0) return '';
   const list = items.length === 1 ? `the ${items[0]}` : `${items.slice(0, -1).map(i => `the ${i}`).join(', ')} and the ${items[items.length - 1]}`;
-  return `\n<items_not_on_hand>\n${name}'s action reaches for ${list}, which is not on ${name}'s line in <items_on_hand>: it is gone — eaten, used up, given away or lost earlier in the story. Do not refuse the action, and do not let the item turn up: narrate ${name} reaching for it and finding it gone (a gentle beat, not a scolding), then resolve what they were trying to do with what they do have or with a quick improvisation.\n</items_not_on_hand>`;
+  // Live (5YHBZS): told Correction Form 7-B was gone, the ruling still wrote
+  // "the damp form tears clean off its staple" — the thing under another
+  // name. Its noun is named, and every way of handling it ruled out.
+  const nouns = [...new Set(items.map(i => itemHead(i)).filter((n): n is string => !!n))];
+  const nounLine = nouns.length > 0 ? ` That goes for it under any name — no ${nouns.map(n => `"${n}"`).join(', no ')} of any kind (a damp one, a torn one, "the ${nouns[0]}") in ${name}'s hands.` : '';
+  return `\n<items_not_on_hand>\n${name}'s action reaches for ${list}, which is not on ${name}'s line in <items_on_hand>: it is gone — eaten, used up, given away or lost earlier in the story. It is not in ${name}'s hands at any point in this ruling. Do not refuse the action, and do not let the item turn up: narrate ${name} reaching for it and finding it gone (a gentle beat, not a scolding), then resolve what they were trying to do with what they do have or with a quick improvisation. Never narrate ${name} holding, reading, signing, tearing, folding, handing over or otherwise using it, and never have it tear, crumple, slip or fall from ${name}'s grip.${nounLine} Give it no itemMoves entry.\n</items_not_on_hand>`;
 }
 
 export interface ScenePacing {
@@ -978,6 +987,8 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     hostTableRole?: TableRole | null;
     /** The tone gate flagged the last reply (tone-gate.ts): the phrases, quoted, for one fresh try. */
     toneFeedback?: string;
+    /** A world is drafted and waiting on the host's card. */
+    worldDrafted?: boolean;
   }): Promise<DmSetupReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'setting tone genre campaign');
     const unmetBlock = opts.unmet.length > 0
@@ -1010,7 +1021,8 @@ Be conversational and enthusiastic. Ask one or two questions at a time, never a 
 Accumulate every influence the host names into "influences" — return the full list every time, not just new ones.
 When you have enough to build a world, set "done": true and fill in dmInstructions (a summary of how they want this run) and dmCustomPrompt (your tailored direction for running it).
 Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.
-"reply" is only what you SAY to the host, in plain conversation. Never copy dmInstructions or dmCustomPrompt into it, and never lay out a field-by-field draft there (no "Plot Hook:", "Key NPCs:", "Current Situation:", "Secrets:" or "Twist:" headings) — the host sees the drafted world on its own card. You do not draft that card in this chat and cannot make it appear by saying so: the server drafts it after a reply with "done": true and dmInstructions, once three influences are recorded, and the host sees it arrive. Never say you have drafted a world or ask the host to review a world card.
+"reply" is only what you SAY to the host, in plain conversation. Never copy dmInstructions or dmCustomPrompt into it, and never lay out a field-by-field draft there (no "Plot Hook:", "Key NPCs:", "Current Situation:", "Secrets:" or "Twist:" headings) — the host sees the drafted world on its own card. You do not draft that card in this chat and cannot make it appear by saying so: the server drafts it after a reply with "done": true and dmInstructions, once three influences are recorded, and the host sees it arrive. Never say you have drafted a world or ask the host to review a world card.${opts.worldDrafted ? `
+A WORLD IS DRAFTED and on the host's card. You cannot edit it from this chat. When the host asks to change something in it, the server redrafts the card from their message after your reply: say in a sentence that you will redraft it with that change. Never say you have changed, shortened, fixed or updated it, that the rest "remains as it was", or that accepting will work now.` : ''}
 PLAYER CHARACTERS: never give the host's player characters a gender the host has not stated — not in "reply", dmInstructions, dmCustomPrompt or anywhere else. Use the host's own relation words: if the host says "my kid Biz", write "her kid Biz" or "Biz", never "son", "daughter", "boy" or "girl"; if the host gave no pronouns for a character, use their name.${spoilerBlock}
 ${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` : ''}${unmetBlock}
 
@@ -1091,6 +1103,8 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
     existing: WorldSeed | null;
     /** The host asked for gentle peril: the premise, NPCs and hooks are drafted in the register too. */
     gentlePeril?: boolean;
+    /** The host's request for a change to the existing draft, made in the setup chat. */
+    revision?: string;
   }): Promise<WorldSeed> {
     const transcript = opts.history.map(m => `[${m.role}] ${m.content}`).join('\n');
     // Round 14 (7RAAQ7): Button's pronouns were it/its and its description
@@ -1102,6 +1116,10 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
       : '';
     const existingBlock = opts.existing
       ? `\n\nYou previously drafted this world. Revise it — keep what works, change what the conversation asks for:\n${JSON.stringify(opts.existing, null, 2)}${lockedBlock}`
+      : '';
+    // Live (5YHBZS): the host asked to shorten one disposition and keep the rest.
+    const revisionBlock = opts.existing && opts.revision?.trim()
+      ? `\n\nTHE HOST'S REQUEST — make exactly this change, and keep everything else as it is:\n"${opts.revision.trim()}"`
       : '';
 
     const systemPrompt = `You are a world builder for a TTRPG. You output ONLY JSON. No prose, no roleplay, no markdown.
@@ -1117,6 +1135,8 @@ Requirements:
 - plotHooks: at least 3 unresolved situations, phrased as things that are already happening
 - items: 0 or more notable objects
 
+${seedLimitsForPrompt()}
+
 Make places and people specific enough to walk into. Avoid generic fantasy furniture unless the influences call for it.
 
 PLAYER CHARACTERS: never give the host's player characters a gender the host has not stated — not in the premise or anywhere else in this world. Use the host's own relation words: if the host says "my kid Biz", write "her kid Biz" or "Biz", never "son", "daughter", "boy" or "girl"; if the host gave no pronouns for a character, use their name.
@@ -1128,7 +1148,7 @@ ${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for
     return callLlm({
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Setup conversation:\n${transcript}\n\nDM direction: ${opts.dmInstructions}${existingBlock}\n\nBuild the world.` },
+        { role: 'user', content: `Setup conversation:\n${transcript}\n\nDM direction: ${opts.dmInstructions}${existingBlock}${revisionBlock}\n\nBuild the world.` },
       ],
       schema: WorldSeedSchema,
       temperature: 0.8,
@@ -1217,6 +1237,8 @@ ${people}${pronounRule ? `\n\n${pronounRule}` : ''}${partyRule}${toneRule}${feed
     unmet: string[];
     /** Characters already at this table (live, awaiting approval, or being made by another player). */
     tableCharacters?: Array<{ name: string; highConcept: string; pronouns?: string | null }>;
+    /** Pronouns the player already stated for this character (pronounsStatedIn). */
+    statedPronouns?: string | null;
   }): Promise<CharInterviewReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'character creation aspects skills stunts');
     // No plot hooks: whatever this prompt knows can end up in the player's
@@ -1230,6 +1252,9 @@ ${people}${pronounRule ? `\n\n${pronounRule}` : ''}${partyRule}${toneRule}${feed
       : '';
     const unmetBlock = opts.unmet.length > 0
       ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nEvery reply asks about at least one of these — the way a person would, one or two at a time.\n`
+      : '';
+    const pronounsBlock = opts.statedPronouns?.trim()
+      ? `\nPRONOUNS ALREADY GIVEN: the player said this character uses ${opts.statedPronouns.trim()}. Put "${opts.statedPronouns.trim()}" in "pronouns", use them, and never ask about pronouns or how to refer to them again.\n`
       : '';
 
     const systemPrompt = `You are a character creation API for a TTRPG. You help a player named ${opts.playerName} build a character through conversation, for a world that already exists.
@@ -1249,7 +1274,7 @@ Open indirect. Use direct questions only to close the gaps listed below. Never p
 Aim them at characters with INTERNAL TENSION: a clear strength and a clear vulnerability. The trouble should create genuine dilemmas, not minor inconveniences, and it should have somewhere to bite in THIS world.
 
 If age matters to who they are — especially if they are a child or elderly — find out roughly how old they are.
-${worldBlock}${tableBlock}${unmetBlock}${ruleContext ? `\nRules reference:\n${ruleContext}\n` : ''}
+${worldBlock}${tableBlock}${unmetBlock}${pronounsBlock}${ruleContext ? `\nRules reference:\n${ruleContext}\n` : ''}
 
 CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON.
 

@@ -31,6 +31,7 @@ import {
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
   withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames, withoutCount, itemCount, lessOne,
+  withoutItemLikeEntities, isSilentThing, optionsWithoutUnheldHolds, narratesGoneItemInHand,
   withoutMechanics, withoutStrayPronounAfterName, fixIndefiniteArticles, troubleShown,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
@@ -780,10 +781,12 @@ export class GameLoop {
   }
 
   /** Extracted world facts without the party recorded as NPCs (see withoutPartyEntities). */
-  private worldFacts<T extends { newEntities: Array<{ name: string }>; newItems?: Array<{ name: string }> }>(facts: T): T {
+  private worldFacts<T extends { newEntities: Array<{ name: string }>; newItems?: Array<{ name: string }> }>(facts: T, text = ''): T {
     const names = Array.from(this.characters.values()).map(c => c.definition.name);
     const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id).filter(t => !t.derived).map(t => t.address));
-    const out = withoutPartyEntities(facts, names, terms, this.allSheetPhrases());
+    // Live (5YHBZS): "Missing Manual" filed as an NPC. A thing is a person
+    // only when the extracted-from text shows it speak or act.
+    const out = withoutItemLikeEntities(withoutPartyEntities(facts, names, terms, this.allSheetPhrases()), text);
     // "Black Plastic Object" is the pen in flight, not a new thing (live WXKC2C).
     if (!out.newItems) return out;
     const held = Array.from(this.characters.values()).flatMap(c => c.state.inventory ?? []);
@@ -1000,7 +1003,7 @@ export class GameLoop {
    * real inventories, refused when it does not fit, and the world bible
    * follows. Returns who changed and the moves that stood.
    */
-  private applyItemMoves(moves: ItemMove[], prose = ''): { changed: Set<string>; applied: AppliedMove[] } {
+  private applyItemMoves(moves: ItemMove[], prose = '', actorId?: string): { changed: Set<string>; applied: AppliedMove[] } {
     const changed = new Set<string>();
     try {
       const chars = Array.from(this.characters.values());
@@ -1018,6 +1021,8 @@ export class GameLoop {
         looseItems: loose.filter(here).map(p => p.name),
         elsewhere: loose.filter(p => !here(p)).map(p => p.name),
         npcItems: places.filter(p => !p.gone && p.heldBy).map(p => ({ name: p.name, heldBy: p.heldBy! })),
+        actorId,
+        prose,
       });
       for (const note of plan.rejected) console.warn(note);
       for (const note of plan.notes) console.log(note);
@@ -1062,6 +1067,16 @@ export class GameLoop {
     } catch (err) {
       console.error('[items] applying the DM\'s itemMoves failed, inventories left as they were:', err);
       return { changed, applied: [] };
+    }
+  }
+
+  /** Every thing the record knows by name — the world's items and the party's starting kit — for the options filter. */
+  private knownItemNames(): string[] {
+    try {
+      return [...this.worldBible.getItemNames(this.campaignId), ...Array.from(this.characters.values()).flatMap(c => startingKit(c.definition))];
+    } catch (err) {
+      console.error('[items] known item list failed, filtering options without it:', err);
+      return [];
     }
   }
 
@@ -1643,6 +1658,12 @@ export class GameLoop {
       for (const npcName of narration.activeNpcs) {
         // "Wanders Off After Anything Shiny" named as present is Biz's trouble, not someone here.
         if (this.isPartyName(npcName)) continue;
+        // "Missing Manual" named as present is a thing, not someone here —
+        // unless it speaks or acts in this beat, or is already someone.
+        if (isSilentThing(npcName, narration.narration) && !this.allNpcs().some(n => n.name.toLowerCase() === npcName.toLowerCase())) {
+          console.log(`[world-bible] "${npcName}" named as present is a thing that never speaks or acts — not filed as an NPC`);
+          continue;
+        }
         this.worldBible.updateEntityLocation(this.campaignId, npcName, loc.id);
         this.worldBible.ensureEntity(this.campaignId, npcName, loc.id);
         this.worldBible.markEntityKnown(this.campaignId, npcName);
@@ -1800,6 +1821,13 @@ export class GameLoop {
       const heldNow = partyItems.flatMap(p => p.inventory);
       const before = proposals.actions.map(a => a.description);
       proposals.actions = optionsWithoutMouthedThings(optionsWithoutGoneItems(proposals.actions, goneItems, heldNow), [...heldNow, ...goneItems]);
+      // Live (5YHBZS): "Tell Biz to hold the brass button steady" — Biz did not hold it.
+      proposals.actions = optionsWithoutUnheldHolds(proposals.actions, {
+        owner: character.definition.name,
+        inventories: partyItems,
+        known: this.knownItemNames(),
+        terms: ownTerms,
+      });
       const cut = before.filter(d => !proposals.actions.some(a => a.description === d));
       if (cut.length > 0) console.log(`[items] ${character.definition.name}: dropped option(s) that reach for a gone thing or mouth a thing: ${cut.map(d => `"${d}"`).join(', ')}`);
     }
@@ -2141,6 +2169,7 @@ export class GameLoop {
       // out of the narration before anything — memory included — reads it.
       { mapText: (r, edit) => ({ ...r, narration: edit(r.narration) }) },
     );
+    const missingItems = this.missingItemsFor(character, decision.chosenAction);
     const ruling = this.haltable(() => resolveGated(
         decision.spokenWords
           ? `${decision.chosenAction} — says: "${decision.spokenWords}"`
@@ -2152,7 +2181,7 @@ export class GameLoop {
           stress: character.state.stress, consequences: character.state.consequences, fatePoints: character.state.fatePoints,
           aspects: character.definition.aspects, highConcept: character.definition.highConcept, trouble: character.definition.trouble,
           inventory: character.state.inventory,
-          missingItems: this.missingItemsFor(character, decision.chosenAction),
+          missingItems,
           worldItems: this.worldItemsForPrompt(),
           goneItems: this.goneForGood(),
           eatenItems: this.eatenItems(),
@@ -2180,6 +2209,13 @@ export class GameLoop {
     this.broadcastFn({ type: 'dice-roll', result: diceResult, context: decision.chosenAction });
     const resolution = await ruling;
     if (!resolution) return;
+    // Round 17 (5YHBZS): told Correction Form 7-B was gone, the ruling wrote
+    // "the damp form tears clean off its staple". Logged, not regenerated:
+    // a noun in the prose is too weak a signal to spend a second ruling on.
+    if (missingItems.length > 0) {
+      const handled = narratesGoneItemInHand(resolution.narration, missingItems);
+      if (handled.length > 0) console.warn(`[items] ${character.definition.name}'s ruling still handles ${handled.map(h => `"${h}"`).join(', ')}, told it was gone: "${resolution.narration.slice(0, 160)}"`);
+    }
 
     if (resolution.narration === '__FALLBACK__') {
       const fallbackAction = (decision.chosenAction
@@ -2320,7 +2356,7 @@ export class GameLoop {
       const legacy = resolution.stateChanges.filter(c => c.field === 'inventory');
       if (legacy.length > 0) console.log(`[items] the ruling sent itemMoves; its ${legacy.length} inventory stateChange(s) are set aside`);
       resolution.stateChanges = resolution.stateChanges.filter(c => c.field !== 'inventory');
-      moved = this.applyItemMoves(resolution.itemMoves, resolution.narration);
+      moved = this.applyItemMoves(resolution.itemMoves, resolution.narration, characterId);
       for (const cid of moved.changed) affectedCharIds.add(cid);
     }
     const released = [
@@ -2577,7 +2613,7 @@ export class GameLoop {
         .then(facts => {
           const total = facts.newLocations.length + facts.newEntities.length + facts.newItems.length + facts.newEvents.length + facts.newRelationships.length;
           if (total > 0) {
-            this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
+            this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts, recentForExtraction.map(m => m.content).join('\n')), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
             console.log(`[game-loop] Periodic extraction (turn ${this.state.currentTurn}): ${total} facts (${facts.newEvents.length} events, ${facts.newRelationships.length} rels, ${facts.newEntities.length} entities)`);
           }
         })
@@ -2600,7 +2636,7 @@ export class GameLoop {
 
     try {
       const facts = await this.extractor.extractFacts(toExtract, this.state.currentScene);
-      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts, toExtract.map(m => m.content).join('\n')), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
     } catch (e) {
       console.error('Mid-scene fact extraction failed:', e);
     }
@@ -2682,7 +2718,7 @@ export class GameLoop {
         events: facts.newEvents.length,
         relationships: facts.newRelationships.length,
       }));
-      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts, this.transcript.map(m => m.content).join('\n')), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
     } catch (e: any) {
       console.error('[game-loop] Fact extraction failed:', e.message?.slice(0, 200));
     }

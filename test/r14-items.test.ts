@@ -129,13 +129,13 @@ describe('5. the items block names who holds what, world items as held by nobody
     gone: ['Granola bar'],
   });
   it('lists the party, the world and what is gone', () => {
-    expect(block).toMatch(/^- Liz: Tote bag, Pen$/m);
+    expect(block).toMatch(/^- Liz: tote bag, pen$/m);
     expect(block).toMatch(/^- The Pen of Perpetual Pondering — not held by anyone in the party$/m);
-    expect(block).toMatch(/^- Silver Key — held by Clerk Ozymandias$/m);
-    expect(block).toMatch(/Gone for good[^\n]*: Granola bar/);
+    expect(block).toMatch(/^- silver key — held by Clerk Ozymandias$/m);
+    expect(block).toMatch(/Gone for good[^\n]*: granola bar/);
   });
   it('spells out a name clash', () => {
-    expect(block).toMatch(/"Pen" \(Liz, Biz\) and "The Pen of Perpetual Pondering" are different things/);
+    expect(block).toMatch(/"pen" \(Liz, Biz\) and "The Pen of Perpetual Pondering" are different things/);
   });
   it('the moves rule says damaged is not gone, and an NPC\'s thing comes from the NPC', () => {
     expect(ITEM_MOVES_RULE).toMatch(/itemMoves/);

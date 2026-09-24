@@ -2577,3 +2577,141 @@ export function withoutInventedPcSurnames(text: string, party: Array<{ name: str
   console.log(`[guard] invented surname for a player character: ${changedSpan(text, out)}`);
   return out;
 }
+
+// ─── Round 17 (live 5YHBZS) ────────────────────────────────────────────────
+
+/**
+ * Prose that supports a move of `item`: it names the thing (its head noun or
+ * that noun's kin, any number — "caps" for "Bottle cap"), or hands over
+ * "it", "them" or "one" ("Biz presses it into Liz's palm"). Live: Liz's
+ * ruling never mentioned a cap, but the DM moved `Bottle cap: Biz → Liz`.
+ */
+export function moveShownInProse(item: string, prose: string): boolean {
+  if (!prose) return false;
+  const nouns = itemNouns(item);
+  if (nouns.length > 0 && new RegExp(`\\b${nounAlt(nouns)}\\b`, 'i').test(prose)) return true;
+  const verb = `(?:${GIVE_VERB}|${HANDOFF_VERB}|${SELF_TAKE}|sweep(?:s|ing)?|swept|scoop(?:s|ed|ing)?|flick(?:s|ed)?|slid(?:e|es)?|drop(?:s|ped)?)`;
+  return new RegExp(`\\b${verb}\\s+(?:\\w+\\s+){0,2}?(?:it|them|one|another)\\b`, 'i').test(prose);
+}
+
+/** A sentence that finds a thing gone rather than handling it. */
+const FOUND_GONE = /\b(?:gone|missing|empty|nothing|no\s+longer|vanish\w*|nowhere|absent|not\s+there|isn['’]t\s+there|can['’]?not\s+find|can['’]t\s+find|no\s+sign|only\s+(?:finds|lint|crumbs|air)|finds?\s+(?:only|no)|where\s+\w+\s+(?:was|used\s+to\s+be)|lost)\b/i;
+
+/**
+ * The gone things (`items`) a ruling still handles: a sentence outside
+ * quotes that names one by its noun and does not find it gone. Live: Liz
+ * reached for "Correction Form 7-B", the ruling was told it was gone, and
+ * wrote "the damp form tears clean off its staple". For the log.
+ */
+export function narratesGoneItemInHand(prose: string, items: string[]): string[] {
+  if (!prose) return [];
+  return items.filter(item => {
+    const nouns = itemNouns(item);
+    if (nouns.length === 0) return false;
+    const re = new RegExp(`\\b${nounAlt(nouns)}\\b`, 'i');
+    return unquotedSentences(prose).some(s => re.test(s) && !FOUND_GONE.test(s));
+  });
+}
+
+/** Head nouns of things, never people. */
+const THING_NOUNS = new Set(['manual', 'form', 'ticket', 'key', 'stamp', 'book', 'ledger', 'letter', 'note', 'map', 'card', 'pen', 'pencil', 'button', 'coin', 'badge', 'token', 'file', 'folder', 'document', 'paper', 'scroll', 'envelope', 'receipt', 'clipboard', 'lanyard', 'compass', 'lantern', 'bottle', 'cap', 'box', 'bag', 'tote', 'umbrella', 'notebook', 'pamphlet', 'brochure', 'certificate', 'permit', 'license', 'licence', 'pass', 'voucher', 'seal', 'ribbon', 'memo', 'report', 'record', 'register', 'index', 'catalogue', 'catalog', 'directory', 'guide', 'handbook', 'rulebook', 'instructions', 'slip', 'stub', 'tag', 'label', 'sticker', 'wrapper', 'bar', 'snack', 'cup', 'mug', 'teacup', 'spoon', 'fork', 'plate', 'jar', 'tin', 'crate', 'chest', 'trunk', 'basket', 'purse', 'wallet', 'coat', 'hat', 'scarf', 'glove', 'shoe', 'boot', 'ring', 'necklace', 'locket', 'watch', 'glasses', 'spectacles', 'lens', 'magnifier', 'stapler', 'staple', 'paperclip', 'ink', 'inkwell', 'quill', 'eraser', 'ruler', 'rubber', 'whistle', 'bell', 'candle', 'torch', 'flashlight', 'battery', 'rope', 'chain', 'lock', 'padlock', 'hinge', 'screw', 'bolt', 'nail']);
+/** A title before a name: a person, whatever their name's last word. */
+const PERSON_TITLE = /^(?:mr|mrs|ms|mx|dr|sir|dame|lady|lord|madame|madam|mistress|miss|master|clerk|captain|officer|agent|auntie|aunt|uncle|mama|papa|granny|grandma|grandpa|old|little|saint|st|professor|prof|keeper|warden|inspector|sergeant|judge|mayor|chief)\.?\s/i;
+
+/** A name that is a thing's: its head noun is a thing's ("Missing Manual", "Form 7-B") and it has no person's title. */
+export function isItemLikeName(name: string): boolean {
+  const bare = name.trim().replace(/^(?:the|a|an)\s+/i, '');
+  if (!bare || PERSON_TITLE.test(bare)) return false;
+  const head = itemHead(bare);
+  return !!head && THING_NOUNS.has(head);
+}
+
+const SPEECH_OR_ACT = String.raw`(?:says|said|asks|asked|whispers|whispered|replies|replied|shouts|shouted|mutters|muttered|squeaks|squeaked|speaks|spoke|answers|answered|calls|called|insists|insisted|declares|declared|snaps|snapped|sighs|sighed|laughs|laughed|chirps|chirped|announces|announced|grumbles|grumbled|hisses|hissed|sings|sang|croaks|croaked|pipes|piped|introduces|walks|walked|hops|hopped|waddles|waddled|scuttles|scuttled|marches|marched|bows|bowed|winks|winked|nods|nodded|blinks|blinked|waves|waved|shrugs|shrugged|tells|told|demands|demanded|begs|begged|offers|offered)`;
+
+/** `name` speaks or acts in `text`: "the Missing Manual says", "says the Missing Manual", "the manual squeaks". */
+function speaksOrActs(name: string, text: string): boolean {
+  if (!text) return false;
+  const bare = name.trim().replace(/^(?:the|a|an)\s+/i, '');
+  const head = itemHead(bare);
+  const who = `(?:(?:the\\s+)?${esc(bare)}${head ? `|the\\s+(?:[\\w'’-]+\\s+){0,2}?${esc(head)}` : ''})`;
+  return new RegExp(`\\b${who}\\s*,?\\s+(?:\\w+ly\\s+)?${SPEECH_OR_ACT}\\b`, 'i').test(text)
+    || new RegExp(`\\b${SPEECH_OR_ACT}\\s+${who}\\b`, 'i').test(text);
+}
+
+/**
+ * Extracted world facts without things filed as people: live, "Missing
+ * Manual" became an NPC ("Source of draft and ozone scent", disposition
+ * "circulating"). An entity with a thing's name (isItemLikeName) is kept
+ * only when `text` shows it speaking or acting.
+ */
+export function withoutItemLikeEntities<T extends { newEntities: Array<{ name: string }> }>(facts: T, text: string): T {
+  const dropped: string[] = [];
+  const kept = facts.newEntities.filter(e => {
+    if (!isItemLikeName(e.name) || speaksOrActs(e.name, text)) return true;
+    dropped.push(e.name);
+    return false;
+  });
+  if (dropped.length === 0) return facts;
+  console.log(`[world-bible] not filed as NPCs (things that never speak or act): ${dropped.map(d => `"${d}"`).join(', ')}`);
+  return { ...facts, newEntities: kept };
+}
+
+/** Whether `name` (an NPC the DM names as present) is a thing that does not speak or act in `text`. */
+export function isSilentThing(name: string, text: string): boolean {
+  return isItemLikeName(name) && !speaksOrActs(name, text);
+}
+
+const HOLD_VERB = String.raw`(?:hold|holds|holding|keep|keeps|keeping|use|uses|using|carry|carries|carrying|clutch|clutches|clutching|grip|grips|gripping)`;
+
+/**
+ * Options that have someone hold, use or keep a thing only when they hold
+ * it. Live: Liz was offered "Tell Biz to hold the brass button steady" — the
+ * button lay on the desk. A named companion (or an address term for one)
+ * who holds, uses or keeps a known thing must hold it; "I" must not be
+ * holding what a companion holds. Never empties the list.
+ */
+export function optionsWithoutUnheldHolds<T extends { description: string }>(
+  options: T[],
+  ctx: { owner: string; inventories: Array<{ name: string; inventory: string[] }>; known: string[]; terms: Array<{ name: string; address: string }> },
+): T[] {
+  const things = [...new Set([...ctx.known, ...ctx.inventories.flatMap(p => p.inventory)])].filter(t => itemNouns(t).length > 0);
+  if (things.length === 0) return options;
+  const holds = (who: string, thing: string) => (ctx.inventories.find(p => p.name === who)?.inventory ?? []).some(i => sameItem(i, thing) || itemHead(i) === itemHead(thing));
+  const subjects: Array<{ re: string; who: string; self: boolean }> = [];
+  for (const p of ctx.inventories) {
+    const self = firstName(p.name).toLowerCase() === firstName(ctx.owner).toLowerCase();
+    subjects.push({ re: `${esc(p.name)}|${esc(firstName(p.name))}`, who: p.name, self });
+  }
+  for (const t of ctx.terms) if (t.address.trim()) subjects.push({ re: esc(t.address.trim()), who: t.name, self: false });
+  const me = ctx.inventories.find(p => firstName(p.name).toLowerCase() === firstName(ctx.owner).toLowerCase())?.name ?? ctx.owner;
+  const cut: string[] = [];
+  const kept = options.filter(o => {
+    for (const thing of things) {
+      const N = nounAlt(itemNouns(thing));
+      const tail = `\\s*,?\\s+(?:to\\s+)?(?:\\w+ly\\s+)?${HOLD_VERB}\\s+(?:onto\\s+|on\\s+to\\s+)?${DET}(?:my\\s+|your\\s+|our\\s+|some\\s+|those\\s+|these\\s+)?${ADJS}${N}\\b`;
+      for (const s of subjects) {
+        if (s.self) continue;
+        if (new RegExp(`\\b(?:${s.re})${tail}`, 'i').test(o.description) && !holds(s.who, thing)) { cut.push(o.description); return false; }
+      }
+      if (new RegExp(`\\bI${tail}`).test(o.description) && !holds(me, thing) && ctx.inventories.some(p => p.name !== me && holds(p.name, thing))) { cut.push(o.description); return false; }
+    }
+    return true;
+  });
+  if (kept.length === 0) return options;
+  if (cut.length > 0) console.log(`[items] dropped option(s) where someone holds, uses or keeps a thing they do not hold: ${cut.map(c => `"${c}"`).join(', ')}`);
+  return kept;
+}
+
+/**
+ * An item's name as the DM should see it in a sentence: a plain thing in
+ * lowercase ("Tote bag" → "tote bag", "Granola Bar" → "granola bar"); a
+ * name with its own capitals — a label or number ("Correction Form 7-B"),
+ * a title ("The Pen of Perpetual Pondering"), a possessor ("Badger's
+ * Spectacles"), a person's title ("Mr. Whisk") — as it is. Live: "holds a
+ * Tote bag and a Granola bar", "her Pen".
+ */
+export function proseItemName(name: string): string {
+  const core = withoutCount(name);
+  if (/\d/.test(core) || /\bof\b/i.test(core) || /^the\s/i.test(core) || /['’]s\b/.test(core) || PERSON_TITLE.test(core) || /\b[A-Z]{2,}\b/.test(core)) return name;
+  return name.toLowerCase();
+}
