@@ -26,6 +26,7 @@ import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent, wantsNoSpoilers, nextSetupQuestion } from './agents/dm.js';
 import { GameLoop, campaignWantsGentlePeril, worldIntroductionAsShown } from './game-loop.js';
+import { gateGentleTone } from './tone-gate.js';
 import { guardInterviewReply, neutralSetupNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
@@ -545,12 +546,25 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
     const dm = new DmAgent(db);
     let gentlePeril = false;
     try { gentlePeril = campaignWantsGentlePeril(db, campaign.id); } catch (e) { console.error('[world-introduction] could not read the table tone:', e); }
-    const raw = await dm.introduceWorld({
+    const introduce = (toneFeedback?: string) => dm.introduceWorld({
       preset: campaign.dmPreset,
       influences: getInfluences(db, campaign.id),
       seed,
       gentlePeril,
+      toneFeedback,
     });
+    let raw = await introduce();
+    // A gentle table: the judge reads the first sight of the world (live
+    // 7RAAQ7: "You and your companion stand bare-chested"); see tone-gate.ts.
+    if (gentlePeril && raw.trim()) {
+      raw = (await gateGentleTone({
+        kind: 'world-intro',
+        first: raw,
+        textOf: r => worldIntroductionAsShown(r, seed, true),
+        regenerate: feedback => introduce(feedback),
+        soften: r => r, // worldIntroductionAsShown softens whatever is kept
+      })).value;
+    }
     const text = worldIntroductionAsShown(raw, seed, gentlePeril);
     // introduceWorld calls callLlm with no schema, so a proxy hiccup (outage,
     // an all-whitespace body, a response that was nothing but thinking tags)

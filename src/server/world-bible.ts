@@ -590,13 +590,37 @@ export class WorldBible {
       .run(holderId, campaignId, itemName);
   }
 
+  /**
+   * The NPC already in the world that `name` is another way of naming, or
+   * null. Round 14 (7RAAQ7): "The Next Pigeon" and "Next Pigeon", "Button"
+   * and "The Glossy Button" were each filed twice. A match is, in order: the
+   * same name; the same name without a leading article; or the one NPC
+   * whose head name this is (namesSameNpc — "Barnaby" for "Barnaby the
+   * Bureaucratic Goose"). A head name two NPCs share ("Pigeon": Mama Pigeon
+   * and The Next Pigeon) matches neither.
+   */
+  findSameNpc(campaignId: string, name: string, opts: { byHeadName?: boolean } = {}): { id: string; name: string } | null {
+    const wanted = name?.trim();
+    if (!wanted) return null;
+    const rows = this.db.prepare("SELECT id, name FROM entities WHERE campaign_id = ? AND type IN ('npc', 'creature')").all(campaignId) as Array<{ id: string; name: string }>;
+    const exact = rows.find(r => r.name.trim().toLowerCase() === wanted.toLowerCase());
+    if (exact) return exact;
+    const bare = (n: string) => n.trim().replace(/^(?:the|a|an)\s+/i, '').toLowerCase();
+    const sameBare = rows.filter(r => bare(r.name) === bare(wanted));
+    if (sameBare.length === 1) return sameBare[0]!;
+    if (opts.byHeadName === false) return null;
+    const sameHead = rows.filter(r => namesSameNpc(wanted, r.name));
+    return sameHead.length === 1 ? sameHead[0]! : null;
+  }
+
   updateEntityLocation(campaignId: string, entityName: string, locationId: string): void {
+    const same = this.findSameNpc(campaignId, entityName);
     this.db.prepare('UPDATE entities SET location_id = ? WHERE campaign_id = ? AND name = ? COLLATE NOCASE')
-      .run(locationId, campaignId, entityName);
+      .run(locationId, campaignId, same?.name ?? entityName);
   }
 
   ensureEntity(campaignId: string, name: string, locationId: string): void {
-    const existing = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name);
+    const existing = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) ?? this.findSameNpc(campaignId, name);
     if (!existing) {
       const pronouns = this.pronounsOfSameNpc(campaignId, name);
       this.addEntity({ id: genId(), campaignId, type: 'npc', name, description: null, disposition: null, alive: true, locationId, metadata: pronouns ? { pronouns } : {} });
@@ -722,7 +746,7 @@ export class WorldBible {
    * existing, becomes known to the party. Seeding leaves it off — a seed is
    * the DM's private notes.
    */
-  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean; markKnown?: boolean }): void {
+  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean; markKnown?: boolean; /** Seeding: the seed's NPCs are all meant — "Clerk Marni" and "Marni's Assistant" are two people. */ seeding?: boolean }): void {
     const allowNewLocations = opts?.allowNewLocations ?? false;
     const markKnown = opts?.markKnown ?? false;
     const tx = this.db.transaction(() => {
@@ -738,12 +762,16 @@ export class WorldBible {
         }
       }
       for (const ent of diff.newEntities) {
-        const existing = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, ent.name) as any;
+        const exact = this.db.prepare('SELECT id, name FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, ent.name) as { id: string; name: string } | undefined;
+        // "Next Pigeon" when "The Next Pigeon" is already here is the same NPC (findSameNpc).
+        const same = !exact && (ent.type === 'npc' || ent.type === 'creature') ? this.findSameNpc(campaignId, ent.name, { byHeadName: !opts?.seeding }) : null;
+        if (same) console.log(`[world-bible] "${ent.name}" is ${same.name} — not filed as a new NPC`);
+        const existing = exact ?? same;
         if (existing) {
           if (ent.description) this.db.prepare('UPDATE entities SET description = ? WHERE id = ?').run(ent.description, existing.id);
           if (ent.disposition) this.db.prepare('UPDATE entities SET disposition = ? WHERE id = ?').run(ent.disposition, existing.id);
           if (ent.motivation) this.db.prepare('UPDATE entities SET motivation = ? WHERE id = ?').run(ent.motivation, existing.id);
-          if (ent.pronouns?.trim()) this.setNpcPronouns(campaignId, ent.name, ent.pronouns.trim());
+          if (ent.pronouns?.trim()) this.setNpcPronouns(campaignId, existing.name, ent.pronouns.trim());
           if (markKnown) this.db.prepare('UPDATE entities SET known_to_party = 1 WHERE id = ?').run(existing.id);
         } else {
           // "Barnaby" is Barnaby the Bureaucratic Goose: his pronouns come with the name.
@@ -796,7 +824,7 @@ export class WorldBible {
           // the same name instead of pointing back at the character that
           // actually lived it.
           const char = this.db.prepare("SELECT id FROM characters WHERE campaign_id = ? AND json_extract(definition, '$.name') = ? COLLATE NOCASE").get(campaignId, name) as any;
-          return char?.id ?? null;
+          return char?.id ?? this.findSameNpc(campaignId, name)?.id ?? null;
         };
         const idA = findId(rel.entityAName);
         const idB = findId(rel.entityBName);

@@ -582,6 +582,12 @@ Quick Fingers: +2 to Stealth when picking locks
           ? `All ${pendingCount} characters approved. ${msg.feedback}`
           : msg.feedback;
         feedback.classList.add('approved');
+        // Round 14 (7RAAQ7): the buttons kept saying "Awaiting DM review..."
+        // after the approval had come in. The review this click waited on
+        // is back; the button stays disabled (nothing to resubmit).
+        const done = pendingCount > 1 ? `All ${pendingCount} approved` : 'Approved';
+        if (/Awaiting/.test(submitBtn.textContent ?? '')) submitBtn.textContent = done;
+        if (/Awaiting/.test(chatSubmitBtn.textContent ?? '')) chatSubmitBtn.textContent = done;
       }
     } else {
       feedback.textContent = `DM feedback: ${msg.feedback}`;

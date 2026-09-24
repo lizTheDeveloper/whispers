@@ -57,7 +57,7 @@ export function seedWorld(db: Database.Database, campaignId: string, seed: World
     newItems: seed.items.map(i => ({ name: i.name, description: i.description, properties: {} })),
     newEvents: newHooks.map(hook => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
     newRelationships: [],
-  }, { allowNewLocations: true });
+  }, { allowNewLocations: true, seeding: true });
 }
 
 /**

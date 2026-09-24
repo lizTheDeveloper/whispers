@@ -16,8 +16,9 @@ import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
 import { getSessionTokenForCharacter } from './room.js';
 import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
-import { LineRotation, invokeLines, compelLines } from './template-lines.js';
-import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns } from './npc-pronouns.js';
+import { LineRotation, invokeLines, compelLines, appendBeat } from './template-lines.js';
+import { gateGentleTone, type ToneJudge, type ToneKind } from './tone-gate.js';
+import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
 import { PLAIN_PROSE_STYLE } from './agents/style.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
@@ -29,13 +30,13 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, optionsWithoutMouthedThings, changedSpan, softenForChildren, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, spokenOrNull, withoutInventedPcSurnames,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, spokenOrNull, withoutInventedPcSurnames,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
 import { startingKit } from './starting-kit.js';
 import { planItemMoves, endingItemsBlock, type ItemMove, type AppliedMove } from './item-moves.js';
-import { SENTENCE_SPLIT } from './sentences.js';
+import { SENTENCE_SPLIT, splitSentences } from './sentences.js';
 
 /**
  * Consecutive turns with no whisper from any human before the table pauses
@@ -118,6 +119,13 @@ export function publicEnding(text: string, gentle: boolean): string {
  * a public action); the character's kin word is theirs (ownKinNouns); a
  * gentle table's reflection is softened, ending included.
  */
+/** The words a bleak ending is quoted by in the tone gate's feedback: the last sentence bleakEnding reads as bleak (else the last one). */
+export function closingWords(text: string): string {
+  const sentences = text.trim().split(/\n+/).flatMap(line => splitSentences(line.replace(/^(?:SPOKEN|THOUGHT):\s*/i, ''))).map(x => x.trim()).filter(Boolean);
+  const bleak = sentences.filter(x => bleakEnding(x));
+  return (bleak[bleak.length - 1] ?? sentences[sentences.length - 1] ?? text.trim()).slice(0, 200);
+}
+
 export function publicReflection(raw: string, opts: { self?: PronounMember; members: PronounMember[]; familyTable: boolean; addressTerms?: AddressTerm[] }): { spoken?: string; thought?: string } {
   const text = raw.trim();
   const spokenMatch = text.match(/SPOKEN:\s*"?([^"\n]+)"?/i);
@@ -128,6 +136,9 @@ export function publicReflection(raw: string, opts: { self?: PronounMember; memb
     // Round 13 (WXKC2C): Biz's last words were "We are still in the queue,
     // Liz, because…" — Biz calls her "Mom", at the end as in play.
     let out = terms.length > 0 ? repairAddress(t, terms, { vocative: spoken }) : t;
+    // …and round 14 (7RAAQ7): "I am safe in Liz's grip" is "Mom's grip" — in
+    // their own last words, Biz's word for Liz is "Mom" everywhere.
+    out = ownWordsForCompanions(out, terms);
     out = opts.self ? ownKinNouns(out, opts.self, opts.members) : out;
     out = withoutWhisperMentions(out);
     if (opts.familyTable && out) out = softenEnding(softenForChildren(out));
@@ -173,6 +184,9 @@ export function characterStatusLine(opts: {
   if (sentences.length === 0) sentences.push(`${opts.name} is focused and alert.`);
   return sentences.join(' ');
 }
+
+/** DmAgent.resolve's arguments after the context. */
+type ResolveArgs = Parameters<DmAgent['resolve']> extends [unknown, ...infer R] ? R : never;
 
 export class GameLoop {
   private dm: DmAgent;
@@ -495,6 +509,7 @@ export class GameLoop {
       this.state = { ...this.state, ...checkpoint.state, phase: 'playing' };
       this.state.initiativeOrder = Array.from(this.characters.keys());
       this.sceneTurnCount = checkpoint.state.sceneTurnCount ?? 0;
+      this.lines.restore(checkpoint.state.stockLines);
 
       if (checkpoint.transcript && checkpoint.transcript.length > 0) {
         this.transcript = checkpoint.transcript;
@@ -582,6 +597,22 @@ export class GameLoop {
   private familyTable(): boolean {
     return childrenInParty(this.partyForDm()).length > 0 || this.gentlePeril();
   }
+
+  /**
+   * The gentle-table tone gate (tone-gate.ts): at a family table, `first` is
+   * judged, and a flagged draft is generated once more with the flagged
+   * phrases as feedback. Elsewhere `first` passes straight through.
+   * `soften` defaults to nothing because the DM's prose goes through
+   * guardText (softenForChildren) after this anyway.
+   */
+  private async toneGated<T>(kind: ToneKind, first: T, textOf: (v: T) => string, regenerate: (feedback: string) => Promise<T | null | undefined>, opts: { soften?: (v: T) => T; extraFlags?: (text: string) => string[]; label?: string } = {}): Promise<T> {
+    if (!this.familyTable()) return first;
+    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, judge: GameLoop.toneJudge });
+    return result.value;
+  }
+
+  /** The tone judge; tests swap in a mock. Undefined: the LLM judge on the game's proxy. */
+  static toneJudge: ToneJudge | undefined;
 
   /**
    * DM-authored prose — narration, resolutions, summaries, the epilogue —
@@ -1095,7 +1126,7 @@ export class GameLoop {
 
     // haltable: a pause mid-generation parks here and redoes the call on
     // resume, so the opening is neither delivered while paused nor doubled.
-    const opening: DmOpening | null = await this.haltable<DmOpening | null>(() => this.dm.openScene({
+    const openingCtx = {
         preset: campaign.dm_preset,
         houseRules: campaign.house_rules,
         dmInstructions: campaign.dm_instructions ?? null,
@@ -1108,11 +1139,18 @@ export class GameLoop {
         // The opening alone also reads backstories: where they come from decides how they arrive.
         party: this.partyForDm({ withBackstory: true }),
         gentlePeril: this.gentlePeril(),
-      }, {
+      };
+    const openingOpts = {
         premise, scenarioOpening, places, arrivalExpected,
         inventories: Array.from(this.characters.values()).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })),
         npcPronouns: npcPronounBlock(this.worldBible.getNpcPronouns(this.campaignId)),
-      }), (e) => {
+      };
+    // A gentle table: the judge reads the whole opening (tone-gate.ts).
+    const opening: DmOpening | null = await this.haltable<DmOpening | null>(async () => this.toneGated('opening',
+      await this.dm.openScene(openingCtx, openingOpts),
+      o => [o.arrival ?? '', o.narration ?? '', ...(o.introductions ?? []).map(x => x.text)].filter(Boolean).join('\n'),
+      feedback => this.dm.openScene({ ...openingCtx, toneFeedback: feedback }, openingOpts),
+    ), (e) => {
       console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
       return null;
     });
@@ -1382,6 +1420,7 @@ export class GameLoop {
         influences: getInfluences(this.db, this.campaignId),
         party: this.partyForDm(),
         gentlePeril: this.gentlePeril(),
+        metNpcs: this.metNpcNames(),
       },
       pacing: {
         sceneNumber: this.state.currentScene,
@@ -1401,13 +1440,20 @@ export class GameLoop {
       },
     };
     this.openingJustDelivered = false;
+    // A gentle table: every narration beat passes the tone gate (tone-gate.ts).
+    const narrateGated = async (pacing: typeof narrateArgs.pacing & { repeatedBeat?: string }) => this.toneGated('narration',
+      await this.dm.narrate(narrateArgs.ctx, pacing),
+      n => n.narration,
+      feedback => this.dm.narrate({ ...narrateArgs.ctx, toneFeedback: feedback }, pacing),
+    );
     const narration = await this.haltable(async () => {
       let narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
       if (this.isDegenerateNarration(narration.narration)) {
         console.log(`[game-loop] Degenerate narration detected ("${narration.narration.slice(0, 40)}..."), retrying`);
         narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
       }
-      return narration;
+      return this.toneGated('narration', narration, n => n.narration,
+        feedback => this.dm.narrate({ ...narrateArgs.ctx, toneFeedback: feedback }, narrateArgs.pacing));
     }, (e) => {
       console.error('[game-loop] narration failed:', e);
       return { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [] as string[], isSceneEnd: false, itemMoves: undefined } as DmNarrationResult;
@@ -1434,7 +1480,7 @@ export class GameLoop {
       console.warn(`[game-loop] narration repeats an earlier DM beat; asking once more: "${narration.narration.slice(0, 80)}"`);
       const repeated = repeatsRecentBeat(narration.narration, recentBeats)!;
       const again = await this.haltable<DmNarrationResult | undefined>(
-        () => this.dm.narrate(narrateArgs.ctx, { ...narrateArgs.pacing, repeatedBeat: repeated }),
+        () => narrateGated({ ...narrateArgs.pacing, repeatedBeat: repeated }),
         (e) => { console.error('[game-loop] re-narration after a repeated beat failed:', e); return undefined; },
       );
       if (again === null) return;
@@ -1953,15 +1999,23 @@ export class GameLoop {
     // the reading time runs under the LLM call instead of on top of it. The
     // roll is fixed here, so a pause redoes only the ruling on resume — same
     // action, same roll. On a stop the call is aborted and resolves null.
-    const ruling = this.haltable(() => this.dm.resolve(
-        {
-          preset: campaign.dm_preset, houseRules: campaign.house_rules,
-          dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
-          campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
-          influences: getInfluences(this.db, this.campaignId),
-          party: this.partyForDm(),
-          gentlePeril: this.gentlePeril(),
-        },
+    const rulingCtx = {
+      preset: campaign.dm_preset, houseRules: campaign.house_rules,
+      dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
+      campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
+      influences: getInfluences(this.db, this.campaignId),
+      party: this.partyForDm(),
+      gentlePeril: this.gentlePeril(),
+      metNpcs: this.metNpcNames(),
+    };
+    // A gentle table: the ruling passes the tone gate (tone-gate.ts) before
+    // anything else reads it — the regenerated ruling is ruled on as usual.
+    const resolveGated = async (...args: ResolveArgs) => this.toneGated('ruling',
+      await this.dm.resolve(rulingCtx, ...args),
+      r => r.narration,
+      feedback => this.dm.resolve({ ...rulingCtx, toneFeedback: feedback }, ...args),
+    );
+    const ruling = this.haltable(() => resolveGated(
         decision.spokenWords
           ? `${decision.chosenAction} — says: "${decision.spokenWords}"`
           : decision.chosenAction,
@@ -2041,7 +2095,7 @@ export class GameLoop {
           const correctionBeats: Record<string, string[]> = outcomeLines(getFirstName(character.definition.name), this.ownPronouns(character)).correction;
           const beats = correctionBeats[correctOutcome] ?? [];
           if (beats.length > 0) {
-            resolution.narration = resolution.narration.trimEnd().replace(/\.?$/, '. ') + this.lines.pick(`correction-${correctOutcome}`, beats, this.recentStoryText());
+            resolution.narration = appendBeat(resolution.narration, this.lines.pick(`correction-${correctOutcome}`, beats, this.recentStoryText()));
           }
         }
       }
@@ -2056,7 +2110,7 @@ export class GameLoop {
           : shifts === 0
           ? `(${resolution.skill} +${skillRank} ties the ${diffName} (+${resolution.difficulty}) difficulty — a tie means you succeed, but at a minor cost.)`
           : `(${resolution.skill} +${skillRank} with dice ${dSign}${diceResult.total} = +${effort} vs ${diffName} (+${resolution.difficulty}) — ${Math.abs(shifts)} shift${Math.abs(shifts) !== 1 ? 's' : ''} short.${character.state.fatePoints > 0 ? ' An aspect invoke for +2 could have changed this!' : ''})`;
-        resolution.narration = resolution.narration.trimEnd().replace(/\.?$/, '. ') + aside;
+        resolution.narration = appendBeat(resolution.narration, aside);
       }
     }
 
@@ -2100,7 +2154,8 @@ export class GameLoop {
         console.log(`[game-loop] Auto-invoke: ${character.definition.name} spends 1 FP (${currentFp} → ${newFp}) on "${bestAspect}" — ${resolution.outcome} → ${upgradedOutcome}`);
         resolution.outcome = upgradedOutcome;
         const invokeFirst = getFirstName(character.definition.name);
-        resolution.narration += ' ' + this.lines.pick('invoke', invokeLines(invokeFirst, bestAspect), this.recentStoryText());
+        const invokeLine = this.lines.pick('invoke', invokeLines(invokeFirst, bestAspect), this.recentStoryText(), { whenSpent: 'skip' });
+        if (invokeLine) resolution.narration = appendBeat(resolution.narration, invokeLine);
         this.addTranscript('system', `[${character.definition.name} invokes "${bestAspect}" for +2 — outcome upgraded to ${upgradedOutcome}! (${newFp} FP remaining)]`);
       }
     }
@@ -2258,7 +2313,8 @@ export class GameLoop {
         this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
         const compelFirst = getFirstName(character.definition.name);
         const compelTrouble = character.definition.trouble;
-        resolution.narration += `\n\n${this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText())}`;
+        const compelLine = this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText(), { whenSpent: 'skip' });
+        if (compelLine) resolution.narration += `\n\n${compelLine}`;
         affectedCharIds.add(characterId);
       }
     }
@@ -2349,6 +2405,8 @@ export class GameLoop {
     }
 
     this.state.sceneTurnCount = this.sceneTurnCount;
+    // The stock lines said this game, so a resumed game does not say them again (template-lines.ts).
+    this.state.stockLines = this.lines.snapshot();
     saveCheckpoint(this.db, this.campaignId, this.state.currentScene, this.state.currentTurn, this.state, this.transcript);
 
     if ((this.state.currentTurn ?? 0) % 4 === 0) {
@@ -2567,7 +2625,7 @@ export class GameLoop {
     try {
       const baseMessages = [
           { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Credit every deed to whoever did it in the record — what an NPC did, opened or revealed is never a party member's doing. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. Never mention the whispers, "the voice" or any voice the characters heard — each is private to one player. ${EPILOGUE_RECORD_RULE} ${ENDING_FACTS_RULE}${cast ? ` ${cast}` : ''}${toneRule ? ` ${toneRule}` : ''}` },
-          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${this.endingItems()}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.${gentle ? ' This is a gentle table: end somewhere safe and hopeful.' : ''}` },
+          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${this.endingItems()}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.${gentle ? ' This is a gentle table: end somewhere safe and hopeful. A thread still open is named before the end, never as the last words: the closing lines are warm and settled — the party together and safe, the day\'s trouble done enough to rest — never a question left hanging, a wait, or something still pulsing or unsettled.' : ''}` },
         ];
       const write = (messages: Array<{ role: string; content: string }>) => callProse({
         messages,
@@ -2582,26 +2640,23 @@ export class GameLoop {
         // (0.7), where qwen added a dropped ruler and a rescue nobody made.
         temperature: EPILOGUE_TEMPERATURE,
       });
+      // A gentle table: the epilogue passes the tone gate (tone-gate.ts),
+      // whose judge requires a warm, resolved-enough close (live 7RAAQ7
+      // ended "remains unanswered, and the beige ripples … continue their
+      // slow, wet pulse"). bleakEnding stays as a deterministic flag on top
+      // of the judge's (Z9JKG2: "stood frozen as the storm sealed the exit";
+      // WXKC2C: "technically in Ms. Hark's queue"). A flagged ending is
+      // written fresh once with the flagged phrases as feedback — never
+      // rewritten — and the one kept is softened by publicEnding.
+      let epilogue = await write(baseMessages);
+      if (gentle && epilogue.trim()) {
+        epilogue = await this.toneGated('epilogue', epilogue, t => t,
+          feedback => write([baseMessages[0]!, { ...baseMessages[1]!, content: `${baseMessages[1]!.content}\n\n${feedback}` }]),
+          { extraFlags: t => (bleakEnding(t) ? [closingWords(t)] : []) });
+      }
       // Public text: no whisper or voice, and at a gentle table an ending
       // that lands safe (see publicEnding).
-      const epilogue = await write(baseMessages);
-      let text = publicEnding((await this.consistentProse(epilogue.trim())).trim(), gentle);
-      // Live (Z9JKG2, gentle peril, a ten-year-old): "Liz and Biz stood
-      // frozen as the storm sealed the exit"; (WXKC2C) "leaving them
-      // technically in Ms. Hark's queue". A gentle ending that lands on fear,
-      // entrapment or limbo — as written, before the softener — is asked for
-      // once more; if the second is no better, the softened first stays.
-      if (gentle && (bleakEnding(epilogue) || bleakEnding(text))) {
-        console.warn(`[game-loop] gentle table, bleak epilogue; asking once more: "${text.slice(0, 80)}"`);
-        try {
-          const again = await write([...baseMessages, { role: 'assistant', content: epilogue }, { role: 'user', content: 'That ending leaves the party afraid, trapped or stuck. This is a gentle table with a child: write it again from the same record, ending somewhere safe and hopeful — the party together, a problem left open for next time, nobody trapped, frozen or afraid.' }]);
-          const retry = publicEnding((await this.consistentProse(again.trim())).trim(), gentle);
-          if (retry && retry.length > 20 && !bleakEnding(retry)) text = retry;
-        } catch (e) {
-          if (isLlmAbort(e)) throw e;
-          console.error('[game-loop] gentle epilogue retry failed; keeping the softened one:', e);
-        }
-      }
+      const text = publicEnding((await this.consistentProse(epilogue.trim())).trim(), gentle);
       if (text && text.length > 20) {
         epilogueText = text;
         this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
@@ -2706,7 +2761,18 @@ export class GameLoop {
           maxTokens: 1536,
           temperature: 0.7,
         });
-        const reflection = await write(reflectionMessages);
+        let reflection = await write(reflectionMessages);
+        // A gentle table: the reflection passes the tone gate like the
+        // epilogue (live 7RAAQ7, Liz: "…is still open, and we face it
+        // together." — only half hopeful). bleakEnding stays a deterministic
+        // flag (WXKC2C: "even if we are stuck here until the violet puddle
+        // dries"). A flagged one is written fresh once, with the phrases as
+        // feedback; publicReflection softens whatever is kept.
+        if (this.familyTable() && reflection.trim()) {
+          reflection = await this.toneGated('reflection', reflection, t => t,
+            feedback => write([reflectionMessages[0]!, { ...reflectionMessages[1]!, content: `${reflectionMessages[1]!.content}\n\n${feedback} Same format.` }]),
+            { extraFlags: t => (bleakEnding(t) ? [closingWords(t)] : []), label: char.definition.name });
+        }
 
         // The character's own words: what they call a companion ("Mom"), their
         // word for their kid, never the whisper (it is broadcast to the table),
@@ -2714,22 +2780,7 @@ export class GameLoop {
         const members = this.pronounMembers();
         const self = members.find(m => this.namesMatch(m.name, char.definition.name));
         const reflectOpts = { self, members, familyTable: this.familyTable(), addressTerms: this.addressTermsOf(charId) };
-        let reflected = publicReflection(reflection, reflectOpts);
-        // Round 13 (WXKC2C), a gentle table: "even if we are stuck here until
-        // the violet puddle dries", "We are still in the queue". Like the
-        // epilogue: a last word that lands on fear or limbo, as written, is
-        // asked for once more; if that is no better, the softened first stays.
-        if (this.familyTable() && bleakEnding(reflection)) {
-          console.warn(`[game-loop] gentle table, bleak closing reflection from ${char.definition.name}; asking once more`);
-          try {
-            const again = await write([...reflectionMessages, { role: 'assistant', content: reflection }, { role: 'user', content: 'Those last words leave you stuck, waiting, trapped or afraid. This is a gentle table with a child: write them again from the same memories, ending somewhere safe and hopeful — together, safe or on your way, a problem left open for next time, nobody stuck in a queue or unable to leave. Same format.' }]);
-            const retry = publicReflection(again, reflectOpts);
-            if ((retry.spoken || retry.thought) && !bleakEnding(again)) reflected = retry;
-          } catch (e) {
-            if (isLlmAbort(e)) throw e;
-            console.error(`[game-loop] ${char.definition.name} gentle reflection retry failed; keeping the softened one:`, e);
-          }
-        }
+        const reflected = publicReflection(reflection, reflectOpts);
         const spoken = reflected.spoken ? this.fixNpcPronouns(reflected.spoken, { speech: true }) : reflected.spoken;
         const thought = reflected.thought ? this.fixNpcPronouns(reflected.thought, { speech: true }) : reflected.thought;
 
@@ -3063,6 +3114,18 @@ export class GameLoop {
     }
 
     return suggestions.slice(0, 3);
+  }
+
+  /** The NPCs the party has met: named in a DM beat this game or an earlier scene's summary (npcsMet). */
+  private metNpcNames(): string[] {
+    try {
+      const summaries = (this.db.prepare('SELECT summary FROM scenes WHERE campaign_id = ? AND summary IS NOT NULL').all(this.campaignId) as Array<{ summary: string }>).map(r => r.summary);
+      const beats = this.transcript.filter(m => m.role === 'dm').map(m => m.content);
+      return npcsMet(this.allNpcs().map(n => n.name), [...summaries, ...beats]);
+    } catch (e) {
+      console.error('[game-loop] could not work out which NPCs the party has met:', e);
+      return [];
+    }
   }
 
   private knownNpcNames(): string[] {

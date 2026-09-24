@@ -39,6 +39,12 @@ interface CallLlmOpts<S extends z.ZodType | undefined = undefined> {
   frequencyPenalty?: number;
   presencePenalty?: number;
   /**
+   * Ask the proxy to append "/no_think" to the last user turn (qwen3 skips
+   * its reasoning). For short classification calls — the tone judge — where
+   * a reasoning pass would only add latency.
+   */
+  noThink?: boolean;
+  /**
    * Cancels the call: an aborted signal rejects promptly with an
    * LlmAbortError and is never retried (unlike a timeout or a bad reply).
    * When omitted, the ambient signal from runWithLlmSignal applies.
@@ -77,6 +83,11 @@ const ambientSignal = new AsyncLocalStorage<(() => AbortSignal | null) | null>()
  */
 export function runWithLlmSignal<T>(getSignal: (() => AbortSignal | null) | null, fn: () => T): T {
   return ambientSignal.run(getSignal, fn);
+}
+
+/** The signal a callLlm made here would pick up (runWithLlmSignal), or null. */
+export function ambientLlmSignal(): AbortSignal | null {
+  return ambientSignal.getStore()?.() ?? null;
 }
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -341,6 +352,7 @@ async function requestCompletion(opts: {
   signal: AbortSignal | null;
   frequencyPenalty?: number;
   presencePenalty?: number;
+  noThink?: boolean;
 }): Promise<Completion> {
   const { signal } = opts;
   if (signal?.aborted) throw new LlmAbortError();
@@ -361,6 +373,7 @@ async function requestCompletion(opts: {
         // Sent for a proxy that forwards them; today's game proxy drops them.
         ...(opts.frequencyPenalty !== undefined ? { frequency_penalty: opts.frequencyPenalty } : {}),
         ...(opts.presencePenalty !== undefined ? { presence_penalty: opts.presencePenalty } : {}),
+        ...(opts.noThink ? { injectNoThink: true } : {}),
       }),
       signal: requestSignal,
     });
@@ -421,7 +434,7 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
 
       const retryTemp = attempt > 0 ? Math.max(0.2, (temperature ?? 0.7) - attempt * 0.15) : (temperature ?? 0.7);
 
-      const completion = await requestCompletion({ messages: promptMessages, temperature: retryTemp, maxTokens: budget, timeout, signal, frequencyPenalty: opts.frequencyPenalty, presencePenalty: opts.presencePenalty });
+      const completion = await requestCompletion({ messages: promptMessages, temperature: retryTemp, maxTokens: budget, timeout, signal, frequencyPenalty: opts.frequencyPenalty, presencePenalty: opts.presencePenalty, noThink: opts.noThink });
       const text = completion.text;
       const cutOff = hitTokenLimit(completion);
       if (cutOff) console.warn(`[llm-client] reply stopped at max_tokens=${budget} (finish_reason=${completion.finishReason})`);

@@ -15,7 +15,10 @@ function countNonEmptyStrings(v: unknown): number {
 function countNumericSkills(v: unknown): number {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return 0;
   return Object.entries(v as Record<string, unknown>)
-    .filter(([name, rating]) => isNonEmptyString(name) && typeof rating === 'number' && Number.isFinite(rating))
+    // Above +0: a +0 (Mediocre) skill is the default every skill has, not a
+    // rating — live (7RAAQ7) Biz's sheet came back Notice 0, Stealth 0,
+    // Athletics 0, Rapport 0, was called finished, and the checklist hid.
+    .filter(([name, rating]) => isNonEmptyString(name) && typeof rating === 'number' && Number.isFinite(rating) && rating > 0)
     .length;
 }
 
@@ -59,7 +62,7 @@ export function checkCharacterReadiness(def: unknown): CharacterReadiness {
   }
   if (countNumericSkills(d.skills) < MIN_SKILLS) {
     unmet.push('skills');
-    detail.push(`${Subj} ${needs} at least ${MIN_SKILLS} skill with a rating.`);
+    detail.push(`${Subj} ${needs} at least ${MIN_SKILLS} skill rated above +0.`);
   }
   if (countNonEmptyStrings(d.stunts) < MIN_STUNTS) {
     unmet.push('stunts');
