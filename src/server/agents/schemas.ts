@@ -13,6 +13,8 @@ export type DmNarration = z.infer<typeof DmNarrationSchema>;
 
 /** The narration-only opening: the arrival, and each character as the others see them. */
 export const DmOpeningSchema = z.object({
+  /** The moment of arrival, when the premise transports the party. Optional here; the game loop enforces it. */
+  arrival: z.string().nullish().transform(v => v ?? ''),
   narration: z.string().default(''),
   currentLocationName: z.string().nullish().transform(v => v ?? ''),
   introductions: z.array(z.object({ name: z.string(), text: z.string() })).catch([]).default([]),
