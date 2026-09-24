@@ -71,9 +71,10 @@ describe('1. an NPC keeps the pronouns they were given', () => {
     seedWorld(db, 'c1', SEED);
     const wb = new WorldBible(db);
     expect(wb.getNpcPronouns('c1')).toEqual(expect.arrayContaining([
-      { name: 'Clerk Marni', pronouns: 'they/them' },
-      { name: 'Odo the Owl', pronouns: 'they/them' },
-      { name: 'The Postman’s Shadow', pronouns: 'it/its' },
+      expect.objectContaining({ name: 'Clerk Marni', pronouns: 'they/them' }),
+      // Round 19: with the kind the seed gives, when it gives one.
+      { name: 'Odo the Owl', pronouns: 'they/them', kind: 'owl' },
+      expect.objectContaining({ name: 'The Postman’s Shadow', pronouns: 'it/its' }),
     ]));
     const summary = wb.getSummary('c1');
     expect(summary).toMatch(/NPC pronouns/);

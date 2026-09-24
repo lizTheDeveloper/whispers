@@ -168,10 +168,14 @@ describe('round 18 in play: a gentle table with a ten-year-old', () => {
     for (const l of compelLines('Biz', 'Wanders off after anything shiny')) expect(biz).not.toContain(l);
   });
 
-  it('Liz\'s compel line is still the stock one, with her trouble', async () => {
-    const { compelLines } = await import('../src/server/template-lines.js');
+  // Round 19 (KAZQX3): the grown-up at a gentle table gets a warm line too,
+  // without her trouble quoted or the fate-point bookkeeping.
+  it('Liz\'s compel line is the gentle grown-up\'s, without her trouble in quotes', async () => {
+    const { compelLines, gentleAdultCompelLines } = await import('../src/server/template-lines.js');
     const liz = resolutions('clipboard clicks')[0]!;
-    expect(compelLines('Liz', 'Worries about Biz too much').some(l => liz.includes(l))).toBe(true);
+    expect(gentleAdultCompelLines('Liz').some(l => liz.includes(l))).toBe(true);
+    expect(liz).not.toContain('"Worries about Biz too much"');
+    for (const l of compelLines('Liz', 'Worries about Biz too much')) expect(liz).not.toContain(l);
   });
 
   it('Liz\'s options are judged under the grown-up\'s rule, and the threat is dropped', () => {

@@ -1313,6 +1313,9 @@ function showsEatenIt(sentence: string, item: string, mentions: (t: string) => s
 /** Eating, as a verb phrase: "takes a bite", "bites into", "chews", "swallows", "wolfs it down". Never "a bit". */
 const EAT_VERB = new RegExp(String.raw`\b(?:(?:takes?|took|taking)\s+(?:a|another|one|his|her|their|its)\s+(?:[\w-]+\s+)?(?:bite|nibble|mouthful|chomp)|(?:bites?|biting|(?<!\ba\s)bit)(?:\s+(?:into|off|down\s+on))?|eats?|ate|eating|chew(?:s|ed|ing)?|munch(?:es|ed|ing)?|nibbl(?:es?|ed|ing)|swallow(?:s|ed|ing)?|gobbl(?:es?|ed|ing)(?:\s+up)?|devour(?:s|ed|ing)?|gulp(?:s|ed|ing)?(?:\s+down)?|wolf(?:s|ed|ing)?|scarf(?:s|ed|ing)?)\b`, 'gi');
 
+/** A beak, jaws or mouth closing around something (group 1: what). */
+const MOUTH_SHUT = /\b(?:beak|bill|jaws?|mouth|maw|snout)\s+(?:\w+ly\s+)?(?:click(?:s|ed)?|snap(?:s|ped)?|clamp(?:s|ed)?|clos(?:e|es|ed)|shut(?:s)?|clos(?:e|es|ed)\s+tight)\s+(?:shut\s+|tight\s+)?(?:around|round|on|over|onto|upon)\s+([^.!?]*)/gi;
+
 /** Words that name `name` in prose: the whole name and each of its words of three letters or more ("Clerk 4-B": clerk, 4-B). */
 function nameTokens(name: string): string[] {
   const words = name.split(/\s+/).map(w => w.replace(/['’]s$/, '')).filter(w => w.length >= 3 && !['the', 'of', 'and'].includes(w.toLowerCase()));
@@ -1350,6 +1353,16 @@ export function eatenByReceiver(prose: string, receiver: string, item: string, o
   const othersRe = tokenRe(theirs);
   if (!receiverRe) return false;
   const lastAt = (re: RegExp | null, t: string) => (re ? [...t.matchAll(re)].map(m => m.index!).pop() ?? -1 : -1);
+  // Round 19 (KAZQX3): "The bird’s beak clicks shut around it" — the bar Liz
+  // had just pressed into Hazel's wing. A beak, jaws or mouth closing around
+  // it, or around the food by name, is eating it; whose mouth it is: nobody
+  // else named before it in the sentence.
+  for (const m of text.matchAll(MOUTH_SHUT)) {
+    const sentenceBefore = text.slice(0, m.index).split(SENTENCES).pop() ?? '';
+    if (lastAt(othersRe, sentenceBefore) > lastAt(receiverRe, sentenceBefore)) continue;
+    const object = (m[1] ?? '').split(/[,;:—–.!?]|\b(?:that|which|while|as|and|then|before|until|so|but)\b/i)[0]!.trim();
+    if (/^(?:it|them)$/i.test(object) || itemRe.test(object)) return true;
+  }
   for (const m of text.matchAll(EAT_VERB)) {
     const before = text.slice(0, m.index);
     const sentenceBefore = before.split(SENTENCES).pop() ?? '';
@@ -1436,8 +1449,17 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
         const nouns = itemNouns(item);
         if (nouns.length === 0) continue;
         const clear = unambiguous(item, unquoted);
+        // Round 19 (KAZQX3): "Liz holds the stale sheet up" was Liz gaining the "Fresh Sheet".
+        if (contradictedIn(unquoted, item)) continue;
         for (const member of names) {
           if (inv.get(member)!.some(i => sameItem(i, item))) continue;
+          // Round 19 (KAZQX3): "the brass key in Biz's pocket" gave Biz a
+          // "Brass Key" beside the Golden Key they held. The one thing a
+          // member holds by that noun is what the prose means — unless the
+          // sentence shows a new one being taken. Only for a world thing: a
+          // companion's handed over is a hand-over.
+          const head = itemHead(item);
+          if (head && !holderOf(item) && inv.get(member)!.filter(i => itemHead(i) === head).length === 1 && !TAKES_NEW.test(unquoted)) continue;
           if (!(clear && showsGain(unquoted, member, nouns)) && !caughtIt(unquoted, member, item, mentions)) continue;
           const from = holderOf(item);
           // A companion's thing moves only when the prose names that companion
@@ -1500,6 +1522,40 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
     prev = unquoted;
   }
   return events;
+}
+
+/** A verb by which someone takes a new thing: picks it up, grabs, snatches, finds, is handed it. */
+const TAKES_NEW = /\b(?:pick(?:s|ed|ing)?\s+(?:\w+\s+)?up|grab(?:s|bed|bing)?|snatch(?:es|ed|ing)?|takes?|took|taking|scoop(?:s|ed|ing)?|finds?|found|catch(?:es|ing)?|caught|receiv(?:e|es|ed|ing)|accept(?:s|ed|ing)?|collect(?:s|ed|ing)?|retriev(?:e|es|ed|ing)|seiz(?:e|es|ed|ing)|(?:is|was|gets|got)\s+handed)\b/i;
+
+/** Describing words that say a thing is NOT the one named with the other: "the stale sheet" is no "Fresh Sheet". */
+const CONTRASTS: Record<string, string[]> = {
+  fresh: ['stale', 'old', 'older', 'outdated', 'used', "yesterday's", 'yesterday’s'],
+  new: ['old', 'older', 'outdated', 'stale', 'used'],
+  old: ['new', 'fresh', 'newer'],
+  outdated: ['new', 'fresh', 'current'],
+  stale: ['fresh', 'new'],
+  clean: ['dirty', 'smudged', 'stained', 'filthy'],
+  blank: ['filled', 'written', 'signed'],
+  empty: ['full'],
+  full: ['empty'],
+};
+
+/**
+ * Does the text name the item's thing only with a word that contradicts its
+ * name ("the stale sheet" for "Fresh Sheet")? False when it also names it
+ * plainly or rightly ("the fresh sheet").
+ */
+function contradictedIn(text: string, item: string): boolean {
+  const nouns = itemNouns(item);
+  if (nouns.length === 0) return false;
+  const words = fullItemName(item).toLowerCase().split(/\s+/);
+  const against = [...new Set(words.flatMap(w => CONTRASTS[w] ?? []))];
+  if (against.length === 0) return false;
+  const N = nounAlt(nouns);
+  const contra = new RegExp(`\\b(?:${against.map(esc).join('|')})\\s+(?:[\\w'’-]+\\s+)?${N}\\b`, 'i');
+  if (!contra.test(text)) return false;
+  const right = new RegExp(`\\b(?:${words.filter(w => CONTRASTS[w]).map(esc).join('|')})\\s+(?:[\\w'’-]+\\s+)?${N}\\b`, 'i');
+  return !right.test(text);
 }
 
 /** Small things a hand, pocket or sleeve holds — for a thing the prose puts there that is no world item yet. */
@@ -1766,6 +1822,48 @@ export function withoutHeldParaphrases<T extends { name: string }>(items: T[], h
     if (head && GENERIC_THING.has(head)) return false;
     return !held.some(h => sameItem(h, i.name) && fullItemName(h).toLowerCase() !== fullItemName(i.name).toLowerCase());
   });
+}
+
+/**
+ * A closing thought is a first-person monologue (round 19, KAZQX3): Liz's
+ * said "the brass key in your pocket" — Biz's key. A "your" on a thing only
+ * one companion holds ("your key", "the key in your pocket") becomes that
+ * companion's name ("Biz's"). Any other "your" is left as written.
+ */
+export function companionsNotYou(text: string, companions: Array<{ name: string; inventory: string[] }>): string {
+  if (!text || !/\byour\b/i.test(text) || companions.length === 0) return text;
+  const heads = new Map<string, string[]>();
+  for (const c of companions) {
+    for (const i of c.inventory) {
+      const h = itemHead(i);
+      if (!h) continue;
+      const who = heads.get(h) ?? [];
+      if (!who.includes(c.name)) who.push(c.name);
+      heads.set(h, who);
+    }
+  }
+  let out = text;
+  for (const [head, who] of heads) {
+    if (who.length !== 1) continue;
+    const name = `${firstName(who[0]!)}'s`;
+    const N = nounAlt([head]);
+    // "the brass key in your pocket"
+    out = out.replace(new RegExp(`(\\b${N}\\s+(?:in|inside|on|within|at)\\s+)your\\b`, 'gi'), `$1${name}`);
+    // "your key", "your little brass key"
+    out = out.replace(new RegExp(`\\byour(\\s+(?:[a-z][\\w'’-]*\\s+){0,2}?${N}\\b)`, 'gi'), `${name}$1`);
+  }
+  if (out !== text) console.log(`[guard] a companion's thing in a first-person thought: ${changedSpan(text, out)}`);
+  return out;
+}
+
+/**
+ * Extracted new world items without the things that left the party for good
+ * — eaten, used up, given away (round 19, KAZQX3: Hazel ate the granola bar,
+ * and the extractor filed a loose "Granola Bar" at the Umbrella Aisle).
+ */
+export function withoutGoneThings<T extends { name: string }>(items: T[], gone: string[]): T[] {
+  if (gone.length === 0) return items;
+  return items.filter(i => !gone.some(g => sameItem(g, i.name)));
 }
 
 /** Verbs by which an option uses, gives or reaches for a thing. */
@@ -2645,7 +2743,9 @@ function describes(word: string): boolean {
  */
 export function withoutTheAfterArticle(text: string): string {
   if (!text || !/\sThe\s+[A-Z]/.test(text)) return text;
-  const out = text.replace(/\b([Aa]n?|[Tt]he|[Tt]his|[Tt]hat|[Ii]ts|[Hh]is|[Tt]heir|[Mm]y|[Yy]our|[Oo]ur)(\s+(?:[a-z][\w'’-]*,?\s+){0,3}?)The\s+(?=[A-Z])/g, (whole, article: string, mid: string) => {
+  // Round 19 (KAZQX3): "uncovered that The Typewriter" lost its "The" —
+  // "that" and "this" are as often a conjunction or a pointer as an article.
+  const out = text.replace(/\b([Aa]n?|[Tt]he|[Ii]ts|[Hh]is|[Tt]heir|[Mm]y|[Yy]our|[Oo]ur)(\s+(?:[a-z][\w'’-]*,?\s+){0,3}?)The\s+(?=[A-Z])/g, (whole, article: string, mid: string) => {
     const words = mid.trim() ? mid.trim().split(/\s+/) : [];
     if (words.length === 0) return `${article}${mid}`;
     if (/,$/.test(words[words.length - 1]!) || !words.every(describes)) return whole;

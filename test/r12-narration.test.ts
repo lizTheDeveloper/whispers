@@ -176,8 +176,8 @@ describe('1c. the pronouns reach everyone who could mention the NPC', () => {
     const all = wb.getNpcPronouns('c1');
     expect(all.map(n => n.name)).not.toContain('Barnaby');
     expect(all.map(n => n.name)).not.toContain('Pudding');
-    expect(all).toContainEqual({ name: 'Barnaby the Bureaucratic Goose', pronouns: 'it/its' });
-    expect(all).toContainEqual({ name: 'Archivist Pudding', pronouns: 'they/them' });
+    expect(all).toContainEqual(expect.objectContaining({ name: 'Barnaby the Bureaucratic Goose', pronouns: 'it/its' }));
+    expect(all).toContainEqual(expect.objectContaining({ name: 'Archivist Pudding', pronouns: 'they/them' }));
     expect(wb.findSameNpc('c1', 'Barnaby')?.name).toBe('Barnaby the Bureaucratic Goose');
     expect(namesSameNpc('Barnaby', 'Barnaby the Bureaucratic Goose')).toBe(true);
     expect(namesSameNpc('Pudding', 'Officer Tick-Tock')).toBe(false);
@@ -189,11 +189,12 @@ describe('1c. the pronouns reach everyone who could mention the NPC', () => {
     const atrium = wb.getLocationByName('c1', 'The Filing Atrium')!;
     wb.updateEntityLocation('c1', 'Officer Tick-Tock', atrium.id);
     const list = wb.getNpcPronounsForParty('c1', atrium.id, 'A goose waddles by. Barnaby honks.');
-    expect(list).toContainEqual(TICKTOCK);
-    expect(list).toContainEqual(BARNABY);
+    expect(list).toContainEqual(expect.objectContaining(TICKTOCK));
+    expect(list).toContainEqual(expect.objectContaining(BARNABY));
     // Pudding: not met, not here, not named — a character has no reason to know them yet.
     expect(list.map(n => n.name)).not.toContain('Archivist Pudding');
-    expect(wb.getPlayerKnowledge('c1', atrium.id)).toMatch(/Officer Tick-Tock it\/its/);
+    // Round 19: with its kind, fixed like its pronouns.
+    expect(wb.getPlayerKnowledge('c1', atrium.id)).toMatch(/Officer Tick-Tock \(it\/its, automaton\)/);
   });
 
   it('the world introduction prompt lists each NPC with their pronouns and the fixed-pronoun rule; gentle peril goes in too', async () => {

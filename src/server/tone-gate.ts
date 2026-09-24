@@ -421,6 +421,8 @@ export interface PhraseRemoval {
   removed: Array<{ phrase: string; dropped: string }>;
   /** Phrases left in because taking them out would leave nothing. */
   kept: string[];
+  /** Phrases no longer in the text (the softener changed or took them out): nothing to remove. */
+  absent: string[];
 }
 
 /**
@@ -435,9 +437,11 @@ export interface PhraseRemoval {
 export function withoutFlaggedPhrases(text: string, phrases: string[], opts: { people?: ToneContext['people'] } = {}): PhraseRemoval {
   const removed: PhraseRemoval['removed'] = [];
   const kept: string[] = [];
+  const absent: string[] = [];
   let out = text ?? '';
   for (const phrase of phrases) {
-    if (!phrase?.trim() || !has(out, phrase)) continue;
+    if (!phrase?.trim()) continue;
+    if (!has(out, phrase)) { absent.push(phrase); continue; }
     const parts = out.split(/(\n+)/);
     let done = false;
     for (let pi = 0; pi < parts.length && !done; pi++) {
@@ -468,7 +472,7 @@ export function withoutFlaggedPhrases(text: string, phrases: string[], opts: { p
     }
     if (!done) kept.push(phrase);
   }
-  return { text: out, removed, kept };
+  return { text: out, removed, kept, absent };
 }
 
 const PRONOUN = /(?<![\p{L}'’-])(she|he|her|hers|him|his)(?![\p{L}'’-])/iu;
@@ -517,6 +521,9 @@ function removeFlagged(text: string, phrases: string[], what: string, people?: T
   const r = withoutFlaggedPhrases(text, phrases, { people });
   for (const x of r.removed) console.warn(`[tone-gate] ${what}: removed flagged "${x.phrase}" — dropped: "${x.dropped.slice(0, 160)}"`);
   for (const k of r.kept) console.warn(`[tone-gate] ${what}: flagged "${k}" kept — removing it would leave nothing, or a pronoun with no one to point to`);
+  // Round 19 (KAZQX3): the epilogue's backstop logged neither: the softener
+  // had already taken the judge's phrase out, and the check skipped it silently.
+  for (const a of r.absent) console.log(`[tone-gate] ${what}: flagged "${a}" is no longer in the text after softening — nothing to remove`);
   return r.text;
 }
 
@@ -577,10 +584,20 @@ export async function gateGentleTone<T>(opts: {
   };
   // A draft kept while still flagged: the softener, then the flagged phrases out.
   const mapText = opts.mapText ?? ((v: T, edit: (t: string) => string) => (typeof v === 'string' ? edit(v) as unknown as T : v));
-  const backstop = (value: T, phrases: string[]): T => {
+  // `flagged`: every phrase the draft was flagged for; those that are not the
+  // judge's (bleakEnding's closing words) are left to the ending softener,
+  // and the log says so (round 19, KAZQX3: the backstop removed nothing and
+  // said nothing).
+  const backstop = (value: T, phrases: string[], flagged: string[] = phrases): T => {
     const softened = opts.soften(value);
+    for (const p of flagged) {
+      if (p && !phrases.includes(p)) console.log(`[tone-gate] ${what}: flagged "${p}" is an ending flag — left to the ending softener, not removed`);
+    }
     const real = phrases.filter(p => p && !p.startsWith('(the passage'));
-    if (real.length === 0) return softened;
+    if (real.length === 0) {
+      console.log(`[tone-gate] ${what}: no phrase of the judge's to remove${flagged.length > 0 ? '' : ' (the judge named none)'}`);
+      return softened;
+    }
     if (!opts.mapText && typeof softened !== 'string') {
       console.warn(`[tone-gate] ${what}: no mapText for structured output — flagged phrases left to the softener`);
       return softened;
@@ -607,7 +624,7 @@ export async function gateGentleTone<T>(opts: {
     console.error(`[tone-gate] ${what}: second draft failed — keeping the first, softened:`, e);
   }
   if (second === null || second === undefined || !opts.textOf(second)?.trim()) {
-    return { value: backstop(opts.first, a.judged), stillFlagged: true, regenerated: false };
+    return { value: backstop(opts.first, a.judged, a.verdict.phrases), stillFlagged: true, regenerated: false };
   }
 
   const b = await assess(second);
@@ -623,8 +640,8 @@ export async function gateGentleTone<T>(opts: {
   // it was written against the first's list), softened, and its flagged
   // phrases taken out.
   const keepFirst = a.verdict.phrases.length < b.verdict.phrases.length;
-  console.warn(`[tone-gate] ${what}: second draft still flagged (${b.ms}ms) ${b.verdict.phrases.map(p => `"${p}"`).join(', ')} — keeping the ${keepFirst ? 'first' : 'second'} (${Math.min(a.verdict.phrases.length, b.verdict.phrases.length)} vs ${Math.max(a.verdict.phrases.length, b.verdict.phrases.length)} phrases), softened, flagged phrases removed`);
-  return { value: backstop(keepFirst ? opts.first : second, keepFirst ? a.judged : b.judged), stillFlagged: true, regenerated: true };
+  console.warn(`[tone-gate] ${what}: second draft still flagged (${b.ms}ms) ${b.verdict.phrases.map(p => `"${p}"`).join(', ')} — keeping the ${keepFirst ? 'first' : 'second'} (${Math.min(a.verdict.phrases.length, b.verdict.phrases.length)} vs ${Math.max(a.verdict.phrases.length, b.verdict.phrases.length)} phrases), softened; the judge's phrases go`);
+  return { value: backstop(keepFirst ? opts.first : second, keepFirst ? a.judged : b.judged, keepFirst ? a.verdict.phrases : b.verdict.phrases), stillFlagged: true, regenerated: true };
 }
 
 // ─── The child's options and thoughts (round 16) ────────────────────────────

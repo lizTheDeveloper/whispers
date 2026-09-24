@@ -133,6 +133,14 @@ export function planItemMoves(
     looseItems?: string[];
     /** World things lying loose somewhere else. */
     elsewhere?: string[];
+    /**
+     * Things a party member set down in the world a beat or two ago (round
+     * 19, KAZQX3): lying here wherever the record places them — the party
+     * moved on and picked it up, it went with them.
+     */
+    recentDrops?: string[];
+    /** The moves that stood in the last beat or two: one the same again is that event told twice (round 19). */
+    recentMoves?: AppliedMove[];
     /** Things the record has an NPC holding. */
     npcItems?: Array<{ name: string; heldBy: string }>;
     /** The acting character's id, on a ruling; none on a narration beat. */
@@ -151,6 +159,13 @@ export function planItemMoves(
   const worldItems = opts.worldItems ?? [];
   const aliases = opts.aliases ?? [];
   const aliasOf = (name: string) => aliases.find(a => sameItem(a.alias, name))?.name;
+  // Round 19 (KAZQX3): Biz set a cap by Mom's feet in the lobby; the scene
+  // moved to the Umbrella Aisle and Liz pocketed it — "this is another one".
+  // A thing a party member set down a beat or two ago went with the party.
+  const recentDrops = opts.recentDrops ?? [];
+  const carried = (opts.elsewhere ?? []).filter(e => recentDrops.some(d => sameItem(d, e)));
+  const looseItems = [...(opts.looseItems ?? []), ...carried];
+  const elsewhere = (opts.elsewhere ?? []).filter(e => !carried.includes(e));
 
   for (const move of moves) {
     let from = resolveSide(move.from, party);
@@ -173,6 +188,18 @@ export function planItemMoves(
       } else {
         notes.push(`[items] "${move.item}": from and to are the same place (${describe(from)}); nothing moves`);
         if (from.kind === 'world') applied.push({ item: worldItems.find(w => sameItem(w, move.item)) ?? aliasOf(move.item) ?? move.item, from, to });
+        continue;
+      }
+    }
+
+    // Round 19 (KAZQX3): one cap rolled out of Liz's tote, and the next
+    // ruling (Biz's) sent `Bottle cap: Liz → the world` again — ×3 → ×2 → 1.
+    // The same move as the last beat's, from a member who is not acting now,
+    // is the same event told twice unless the prose shows another one.
+    if (from.kind === 'pc' && from.id !== opts.actorId && !freshInstance(opts.prose ?? '', move.item)) {
+      const again = (opts.recentMoves ?? []).find(r => sameItem(r.item, move.item) && sameSide(r.from, from) && sameSide(r.to, to));
+      if (again) {
+        notes.push(`[items] "${move.item}": ${describe(from)} → ${describe(to)} is the same move as the last beat's, and the prose shows no other one — the same event told again, not applied twice`);
         continue;
       }
     }
@@ -213,7 +240,10 @@ export function planItemMoves(
     } else {
       // Canonical name: the world's own spelling when the DM's names a world item, or the item an alias names.
       item = worldItems.find(w => sameItem(w, move.item)) ?? aliasOf(move.item) ?? move.item;
-      if (from.kind === 'world' && (opts.elsewhere ?? []).some(e => sameItem(e, item)) && !(opts.looseItems ?? []).some(l => sameItem(l, item))) {
+      if (from.kind === 'world' && carried.some(c => sameItem(c, item)) && !(opts.looseItems ?? []).some(l => sameItem(l, item))) {
+        notes.push(`[items] "${move.item}" from the world: the record's "${item}" was set down by the party a moment ago — it went with them, so it is that one`);
+      }
+      if (from.kind === 'world' && elsewhere.some(e => sameItem(e, item)) && !looseItems.some(l => sameItem(l, item))) {
         // The record's one lies at another place: this is another one.
         notes.push(`[items] "${move.item}" from the world: the record's "${item}" lies at another place — this is another one, and that one stays where it is`);
         item = move.item;
@@ -221,13 +251,13 @@ export function planItemMoves(
         newUnit = true;
       } else if (from.kind === 'world' && item === move.item && !worldItems.some(w => sameItem(w, item))) {
         const head = itemHead(move.item);
-        const loose = (opts.looseItems ?? []).filter(l => head && itemHead(l) === head);
+        const loose = looseItems.filter(l => head && itemHead(l) === head);
         if (loose.length === 1 && namesOneThing(loose[0]!, move.item)) {
           item = loose[0]!;
           notes.push(`[items] "${move.item}" from the world: the one loose thing by that name is "${item}" — the move is taken as that`);
         }
       }
-      if (from.kind === 'world' && (opts.looseItems ?? []).some(l => sameItem(l, item))) newUnit = true;
+      if (from.kind === 'world' && looseItems.some(l => sameItem(l, item))) newUnit = true;
       if (from.kind === 'npc' && (opts.npcItems ?? []).some(n => sameItem(n.name, item) && n.heldBy.toLowerCase() === from.name.toLowerCase())) newUnit = true;
       if (!fresh && from.kind === 'world' && to.kind === 'pc' && worldItems.some(w => sameItem(w, item))) {
         // One off the floor from a stack a member still holds ("Bottle cap", Biz's "Bottle caps") is one, not the stack.
@@ -257,6 +287,18 @@ export function planItemMoves(
     notes.push(`[items] "${item}": ${describe(from)} → ${describe(to)} (the DM's itemMoves)`);
   }
   return { inventories, applied, rejected, notes };
+}
+
+/**
+ * Does the prose show a fresh one of `item` — "another", "a second", "one
+ * more", "yet another" before its noun, or "again" after it?
+ */
+export function freshInstance(prose: string, item: string): boolean {
+  const head = itemHead(item);
+  if (!prose || !head) return false;
+  const noun = `${head.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:e?s)?`;
+  return new RegExp(`\\b(?:another|a\\s+(?:second|third|fourth|fifth|new)|one\\s+more|the\\s+(?:second|third|other))\\s+(?:[\\w'’-]+\\s+){0,2}?${noun}\\b`, 'i').test(prose)
+    || new RegExp(`\\b${noun}\\b[^.!?]{0,40}\\bagain\\b`, 'i').test(prose);
 }
 
 /** Two sides that are one place: the world and the world, nowhere and nowhere, one member, one NPC. */

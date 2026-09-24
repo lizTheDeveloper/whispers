@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition } from '../src/shared/types.js';
 import type { ToneJudge, ToneListJudge } from '../src/server/tone-gate.js';
+import { gentleAdultCompelLines } from '../src/server/template-lines.js';
 
 type Msg = { role: string; content: string };
 const calls: Array<{ kind: 'llm' | 'prose'; messages: Msg[] }> = [];
@@ -178,8 +179,10 @@ describe('round 16 in play: a gentle table with a ten-year-old', () => {
     const biz = seen.find(m => m.type === 'resolution' && String(m.text).includes('Paper Avalanche'));
     expect(biz.text).not.toMatch(/Wanders off after anything shiny/);
     const liz = seen.find(m => m.type === 'resolution' && String(m.text).includes('slides the form'));
-    expect(liz.text).toMatch(/Worries about Biz too much/);
-    const compelLine = String(liz.text).split('\n\n').find((l: string) => l.includes('Worries about Biz too much'))!;
+    // Round 19 (KAZQX3): a grown-up at a gentle table hears a warm line, not her trouble quoted.
+    expect(liz.text).not.toMatch(/Worries about Biz too much/);
+    const compelLine = String(liz.text).split('\n\n').find((l: string) => gentleAdultCompelLines('Liz').includes(l))!;
+    expect(compelLine).toBeDefined();
     for (const p of memoryPrompts()) expect(p.text).not.toContain(compelLine);
   });
 

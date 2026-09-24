@@ -2,6 +2,7 @@ import { npcPronounInNarration } from './whisper-suggestions.js';
 import { quoteRuns } from './narrative-guards.js';
 import { pluralVerb } from '../shared/pronouns.js';
 import { TITLE } from './sentences.js';
+import { npcKindOf, npcCastLabel } from './npc-kind.js';
 
 /**
  * An NPC's pronouns, fixed once and handed to the DM every turn. Live
@@ -56,9 +57,13 @@ export function pronounsInNarration(name: string, text: string, otherNames: stri
 }
 
 /** The DM's standing instruction: each NPC's pronouns, to be used every time. '' when none are set. */
-export function npcPronounBlock(list: Array<{ name: string; pronouns: string }>): string {
+export function npcPronounBlock(list: Array<{ name: string; pronouns: string; kind?: string | null }>): string {
   if (list.length === 0) return '';
-  return `NPC pronouns — fixed; use exactly these for each NPC every time, in narration and in anyone's speech (never switch an NPC's pronouns mid-game): ${list.map(n => `${n.name}: ${n.pronouns}`).join('; ')}.`;
+  // Round 19 (KAZQX3): Hazel the hedgehog became "the anxious bird" in scene
+  // 2. Her kind is fixed like her pronouns: "Hazel (she/her, hedgehog)".
+  const withKind = (n: { name: string; pronouns: string; kind?: string | null }) => !!n.kind && npcCastLabel(n).includes(',');
+  const kinds = list.some(withKind);
+  return `NPC pronouns — fixed; use exactly these for each NPC every time, in narration and in anyone's speech (never switch an NPC's pronouns mid-game): ${list.map(n => (withKind(n) ? npcCastLabel(n) : `${n.name}: ${n.pronouns}`)).join('; ')}.${kinds ? ' The kind given with an NPC is fixed too: never make them another kind of creature, and never give them another creature\'s body (no beak, feathers or wings on a hedgehog).' : ''}`;
 }
 
 /** Pronouns that are neither he nor she: they/them, xe/xem, … */
@@ -87,7 +92,7 @@ export function partyPronounLine(party: Array<{ name: string; pronouns?: string 
 }
 
 /** "Liz: she/her" etc. for every party member, and the NPC line — the whole cast, for prompts that are not the DM's (memories, reflections). */
-export function castPronounLine(party: Array<{ name: string; pronouns?: string | null }>, npcs: Array<{ name: string; pronouns: string }>): string {
+export function castPronounLine(party: Array<{ name: string; pronouns?: string | null }>, npcs: Array<{ name: string; pronouns: string; kind?: string | null }>): string {
   const parts: string[] = [];
   const partyLine = partyPronounLine(party);
   if (partyLine) parts.push(partyLine);
@@ -451,10 +456,11 @@ export function npcMentioned(text: string, name: string): boolean {
 }
 
 /** A seed's NPCs with their pronouns — stated, else read off the description (as seedWorld stores them). */
-export function seedNpcPronouns(npcs: Array<{ name: string; description?: string | null; pronouns?: string | null }>): Array<{ name: string; pronouns: string }> {
+export function seedNpcPronouns(npcs: Array<{ name: string; description?: string | null; pronouns?: string | null }>): Array<{ name: string; pronouns: string; kind?: string }> {
   return npcs.flatMap(n => {
     const p = n.pronouns?.trim() || pronounsInDescription(n.description);
-    return p ? [{ name: n.name, pronouns: p }] : [];
+    const kind = npcKindOf(n.description);
+    return p ? [{ name: n.name, pronouns: p, ...(kind ? { kind } : {}) }] : [];
   });
 }
 

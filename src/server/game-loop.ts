@@ -16,7 +16,7 @@ import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
 import { getSessionTokenForCharacter } from './room.js';
 import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
-import { LineRotation, invokeLines, compelLines, gentleCompelLines, appendBeat, withoutStockBeats } from './template-lines.js';
+import { LineRotation, invokeLines, compelLines, gentleCompelLines, gentleAdultCompelLines, appendBeat, withoutStockBeats } from './template-lines.js';
 import { gateGentleTone, gateChildOptions, gateChildThought, type ToneJudge, type ToneListJudge, type ToneKind } from './tone-gate.js';
 import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet, partyRolesLine } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
@@ -30,7 +30,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames, withoutCount, itemCount, lessOne,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, withoutGoneThings, companionsNotYou, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames, withoutCount, itemCount, lessOne,
   withoutItemLikeEntities, isSilentThing, optionsWithoutUnheldHolds, narratesGoneItemInHand,
   withoutMechanics, withoutStrayPronounAfterName, fixIndefiniteArticles, withoutTheAfterArticle, optionsInPresent, withoutEchoedAction, actorPicksUp, mergeCount, troubleShown, repairKinWordAsVerb, withoutCharacterReading, type MechanicSheet,
 } from './narrative-guards.js';
@@ -109,6 +109,12 @@ const ENDING_FACTS_RULE = 'Items and places: who holds an item and where somethi
  */
 export const EPILOGUE_RECORD_RULE = 'Do not narrate any action that is not in the record — nobody drops, grabs, loses, gives, freezes or rescues anything unless the record says so. What a character did stays theirs: never credit it to someone else\'s interruption or help. The last rulings are the final word on how things stand; a character still holds what the Characters list says they carry.';
 export const EPILOGUE_TEMPERATURE = 0.5;
+/**
+ * How many turns a thing a party member set down still goes with the party
+ * (round 19, KAZQX3: set down in the lobby on turn 10, picked up in the
+ * Umbrella Aisle on turn 11). Two rounds of a two-character party.
+ */
+const RECENT_DROP_TURNS = 4;
 
 /**
  * Ending prose the whole table reads (the epilogue): no sentence about the
@@ -139,7 +145,7 @@ export function closingWords(text: string): string {
   return (bleak[bleak.length - 1] ?? sentences[sentences.length - 1] ?? text.trim()).slice(0, 200);
 }
 
-export function publicReflection(raw: string, opts: { self?: PronounMember; members: PronounMember[]; familyTable: boolean; addressTerms?: AddressTerm[] }): { spoken?: string; thought?: string } {
+export function publicReflection(raw: string, opts: { self?: PronounMember; members: PronounMember[]; familyTable: boolean; addressTerms?: AddressTerm[]; /** Companions and what they hold: "your key" in the thought is theirs by name (round 19). */ companions?: Array<{ name: string; inventory: string[] }> }): { spoken?: string; thought?: string } {
   const text = raw.trim();
   const spokenMatch = text.match(/SPOKEN:\s*"?([^"\n]+)"?/i);
   const thoughtMatch = text.match(/THOUGHT:\s*(.+)/i);
@@ -157,7 +163,9 @@ export function publicReflection(raw: string, opts: { self?: PronounMember; memb
     if (opts.familyTable && out) out = softenEnding(softenForChildren(out));
     return (spoken ? spokenOrNull(out.trim()) : out.trim()) || undefined;
   };
-  return { spoken: own(spokenMatch?.[1]?.trim(), true), thought: own(thoughtMatch?.[1]?.trim(), false) };
+  // The thought is a first-person monologue: "the key in your pocket" is Biz's (round 19, KAZQX3).
+  const thought = thoughtMatch?.[1]?.trim();
+  return { spoken: own(spokenMatch?.[1]?.trim(), true), thought: own(thought && opts.companions ? companionsNotYou(thought, opts.companions) : thought, false) };
 }
 
 /** A character's condition as it stands now: only consequences they still carry (a recovered one is gone from state). */
@@ -232,6 +240,12 @@ export class GameLoop {
    * up again. Volatile, like itemsLeftParty.
    */
   private itemsDropped: string[] = [];
+  /**
+   * The itemMoves that stood, by turn (round 19, KAZQX3): the last beat's,
+   * so a ruling that re-sends one is not applied twice; and what the party
+   * set down lately, which goes with them when the scene moves on.
+   */
+  private recentItemMoves: Array<{ turn: number; move: AppliedMove }> = [];
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private pendingWhisperCharacterId: string | null = null;
   // Out-of-window whispers wait here for their character's next decision
@@ -829,9 +843,15 @@ export class GameLoop {
     // "Black Plastic Object" is the pen in flight, not a new thing (live WXKC2C).
     if (!out.newItems) return out;
     const held = Array.from(this.characters.values()).flatMap(c => c.state.inventory ?? []);
-    const items = withoutHeldParaphrases(out.newItems, held);
+    const paraphrased = withoutHeldParaphrases(out.newItems, held);
+    if (paraphrased.length !== out.newItems.length) console.log(`[world-bible] Dropped extracted item(s) that describe what the party holds: ${out.newItems.filter(i => !paraphrased.includes(i)).map(i => `"${i.name}"`).join(', ')}`);
+    // Round 19 (KAZQX3): Hazel ate the granola bar, and the extractor filed a
+    // loose "Granola Bar" where the party stood. A thing gone for good is not
+    // lying anywhere (one the story shows an NPC holding is still recorded).
+    const gone = this.goneForGood();
+    const items = paraphrased.filter(i => (typeof (i as { heldBy?: unknown }).heldBy === 'string' && String((i as { heldBy?: unknown }).heldBy).trim()) || withoutGoneThings([i], gone).length > 0);
+    if (items.length !== paraphrased.length) console.log(`[world-bible] Dropped extracted item(s) that are gone — eaten, used up or given away: ${paraphrased.filter(i => !items.includes(i)).map(i => `"${i.name}"`).join(', ')}`);
     if (items.length === out.newItems.length) return out;
-    console.log(`[world-bible] Dropped extracted item(s) that describe what the party holds: ${out.newItems.filter(i => !items.includes(i)).map(i => `"${i.name}"`).join(', ')}`);
     return { ...out, newItems: items };
   }
 
@@ -1074,11 +1094,15 @@ export class GameLoop {
       // was taken for the cap sunk at the Inkwell Market).
       const here = (p: { scene: number | null; locationId: string | null }) => (p.locationId ? p.locationId === locationId : p.scene === null || p.scene === scene);
       const loose = places.filter(p => !p.gone && !p.heldBy && !p.heldByPc);
+      const turn = this.state.currentTurn;
+      this.recentItemMoves = this.recentItemMoves.filter(r => r.turn >= turn - RECENT_DROP_TURNS);
       const plan = planItemMoves(moves, chars.map(c => ({ id: c.id, name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })), {
         worldItems: this.worldBible.getItemNames(this.campaignId),
         aliases: this.worldBible.getItemAliases(this.campaignId),
         looseItems: loose.filter(here).map(p => p.name),
         elsewhere: loose.filter(p => !here(p)).map(p => p.name),
+        recentDrops: this.recentItemMoves.filter(r => r.move.from.kind === 'pc' && r.move.to.kind === 'world').map(r => r.move.item),
+        recentMoves: this.recentItemMoves.filter(r => r.turn >= turn - 1).map(r => r.move),
         npcItems: places.filter(p => !p.gone && p.heldBy).map(p => ({ name: p.name, heldBy: p.heldBy! })),
         actorId,
         prose,
@@ -1093,6 +1117,7 @@ export class GameLoop {
           changed.add(c.id);
         }
       }
+      for (const move of plan.applied) this.recentItemMoves.push({ turn, move });
       const undrop = (item: string) => { this.itemsDropped = this.itemsDropped.filter(d => !sameItem(d, item)); };
       const npcNames = this.allNpcs().map(n => n.name);
       const partyNames = chars.map(c => c.definition.name);
@@ -2585,8 +2610,14 @@ export class GameLoop {
           // never "How many times now? "Wanders off…", again", never their
           // trouble quoted back at them.
           const gentleChild = this.familyTable() && this.isChild(character);
+          // Round 19 (KAZQX3): the grown-up at a gentle table too — never
+          // `Guess who is back? "Worries about Biz too much". Liz pays for it
+          // now and collects later.` (the sheet quoted, the economy said aloud).
+          const gentleAdult = this.familyTable() && !gentleChild;
           const compelLine = gentleChild
             ? this.lines.pick('compel-gentle', gentleCompelLines(compelFirst), this.recentStoryText(), { whenSpent: 'skip' })
+            : gentleAdult
+            ? this.lines.pick('compel-gentle-adult', gentleAdultCompelLines(compelFirst), this.recentStoryText(), { whenSpent: 'skip' })
             : this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText(), { whenSpent: 'skip' });
           if (compelLine) {
             resolution.narration += `\n\n${compelLine}`;
@@ -3035,7 +3066,7 @@ export class GameLoop {
 
       try {
         const reflectionMessages = [
-            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Both lines are shown to everyone at the table: never mention a whisper, "the voice" or any voice you heard. ${cast}${toneRule ? ` ${toneRule}` : ''} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your inner reflection` },
+            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). The THOUGHT is your own inner monologue, in the first person: in it, call each companion by name (or what you call them) — never "you" or "your" ("the key in Biz's pocket", not "the key in your pocket"). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Both lines are shown to everyone at the table: never mention a whisper, "the voice" or any voice you heard. ${cast}${toneRule ? ` ${toneRule}` : ''} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your inner reflection` },
             { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nLooking back: ${trustArc}\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.${where}\n\nWhat happened: ${sceneSummaries}${ending}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. Your memories include plans and hopes, not only things that happened: only the record and the ending say what happened. One line each. ${ENDING_FACTS_RULE}${this.endingItems()}${facts}` },
           ];
         const write = (messages: Array<{ role: string; content: string }>) => callProse({
@@ -3063,7 +3094,8 @@ export class GameLoop {
         // gentle at a family table.
         const members = this.pronounMembers();
         const self = members.find(m => this.namesMatch(m.name, char.definition.name));
-        const reflectOpts = { self, members, familyTable: this.familyTable(), addressTerms: this.addressTermsOf(charId) };
+        const companions = Array.from(this.characters.values()).filter(c => c.id !== charId).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] }));
+        const reflectOpts = { self, members, familyTable: this.familyTable(), addressTerms: this.addressTermsOf(charId), companions };
         const reflected = publicReflection(reflection, reflectOpts);
         const spoken = reflected.spoken ? this.fixNpcPronouns(reflected.spoken, { speech: true }) : reflected.spoken;
         const thought = reflected.thought ? this.fixNpcPronouns(reflected.thought, { speech: true }) : reflected.thought;

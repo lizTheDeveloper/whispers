@@ -181,6 +181,45 @@ export function gentleCompelLines(name: string): string[] {
   ];
 }
 
+/**
+ * The compel line for a GROWN-UP at a gentle table (round 19, live KAZQX3):
+ * `Guess who is back? "Worries about Biz too much". Liz pays for it now and
+ * collects later.` — the trouble read out word for word from the sheet and
+ * the fate-point bookkeeping said aloud, at a table with a ten-year-old
+ * listening. Round 18 gave the child warm lines; these are the grown-up's:
+ * the moment told as the person being themselves, a little something coming
+ * back to them — never the trouble in quotes, a count or the economy. Names
+ * only; no two share a four-word phrase.
+ */
+export function gentleAdultCompelLines(name: string): string[] {
+  return [
+    `That is ${name} all over, and the day will be kind about it later.`,
+    `${name} cannot quite let it go — and somewhere down the road, that care comes back around.`,
+    `It slows ${name} down for a moment; a good turn is waiting further on.`,
+    `A familiar feeling tugs at ${name}, and the story makes room for it.`,
+    `${name} hesitates, as anyone who cares this much would. Luck will remember.`,
+    `Some habits are part of the person. ${name} follows this one, and the tale is gentle with it.`,
+    `For a heartbeat ${name} is pulled the old way; a kindness is saved up for later.`,
+    `The moment costs ${name} a little time, and the world quietly makes a note to repay it.`,
+    `${name} is being ${name}, which is no bad thing. Something good lies ahead.`,
+    `It is not the easy choice, but it is very much ${name}'s — and it will be returned.`,
+    `A small stumble for ${name}, made out of love; better luck is on the way.`,
+    `${name} takes the long way round this time, and the road will even out.`,
+    `There is a reason ${name} is like this, and the story honours it with a little luck.`,
+    `Heart first, as usual for ${name}. The next roll may lean a friendly way.`,
+    `${name} pauses where someone else might not — and that pause is not wasted.`,
+    `Nobody would ask ${name} to be anyone else. A bit of good fortune gathers quietly.`,
+    `The old pull wins for a moment; ${name} will find it made up for soon enough.`,
+    `${name} lets the moment go sideways, and the story tucks away a kindness.`,
+    `Just a wobble, the kind that makes ${name} who they are. Brighter moments are coming.`,
+    `${name} feels it, deep down, and acts on it. The world softens a little in reply.`,
+    `A detour for ${name}'s big heart. The way ahead grows a touch easier.`,
+    `This is how ${name} is made, and today it shows; luck leans closer.`,
+    `${name} gives in to it, just for now, and the day keeps something warm aside.`,
+    `Caring this much has its price for ${name} today — and its quiet reward tomorrow.`,
+  ];
+}
+
 /** The line when a character spends a fate point on their high concept. Names only, no pronouns. No two share a four-word phrase. */
 export function invokeLines(name: string, aspect: string): string[] {
   return [

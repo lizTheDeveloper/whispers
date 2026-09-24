@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Entity, Location, Item, GameEvent, Relationship } from '../shared/types.js';
 import { npcPronounBlock, pronounsInNarration, npcKeyName, namesSameNpc, npcMentioned } from './npc-pronouns.js';
+import { npcKindOf, contradictsKind, npcCastLabel } from './npc-kind.js';
 import { itemKey, itemHead, namesOneThing, softVariants, itemPossessor, withoutCount } from './narrative-guards.js';
 
 export { npcKeyName };
@@ -49,6 +50,11 @@ function mentionsPhrase(text: string, needle: string, caseSensitive = false): bo
 }
 
 const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor', 'the', 'a', 'an', 'of']);
+
+/** `{ kind }` when the metadata has a fixed kind, else {}. */
+function kindOf(meta: Record<string, unknown>): { kind?: string } {
+  return typeof meta.kind === 'string' && meta.kind.trim() ? { kind: meta.kind.trim() } : {};
+}
 
 function metadataOf(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== 'string') return {};
@@ -152,6 +158,9 @@ export class WorldBible {
   }
 
   addEntity(ent: Entity): void {
+    // Round 19 (KAZQX3): the first description fixes the NPC's kind (npc-kind.ts).
+    const kind = (ent.type === 'npc' || ent.type === 'creature') && !(typeof ent.metadata?.kind === 'string' && ent.metadata.kind) ? npcKindOf(ent.description) : null;
+    if (kind) ent = { ...ent, metadata: { ...(ent.metadata ?? {}), kind } };
     this.db.prepare(`INSERT INTO entities (id, campaign_id, type, name, description, disposition, alive, location_id, metadata, motivation, known_to_party) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(ent.id, ent.campaignId, ent.type, ent.name, ent.description, ent.disposition, ent.alive ? 1 : 0, ent.locationId, JSON.stringify(ent.metadata), ent.motivation ?? null, ent.knownToParty ? 1 : 0);
   }
@@ -231,13 +240,20 @@ export class WorldBible {
     return true;
   }
 
-  /** Every living NPC whose pronouns are set, in the order they were added. */
-  getNpcPronouns(campaignId: string): Array<{ name: string; pronouns: string }> {
+  /** Every living NPC whose pronouns are set, in the order they were added, with its fixed kind when it has one. */
+  getNpcPronouns(campaignId: string): Array<{ name: string; pronouns: string; kind?: string }> {
     const rows = this.db.prepare('SELECT name, metadata FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid ASC').all(campaignId) as Array<{ name: string; metadata: string | null }>;
     return rows.flatMap(r => {
-      const p = metadataOf(r.metadata).pronouns;
-      return typeof p === 'string' && p.trim() ? [{ name: r.name, pronouns: p.trim() }] : [];
+      const meta = metadataOf(r.metadata);
+      const p = meta.pronouns;
+      return typeof p === 'string' && p.trim() ? [{ name: r.name, pronouns: p.trim(), ...kindOf(meta) }] : [];
     });
+  }
+
+  /** An NPC's fixed kind ("hedgehog"), or null. */
+  getNpcKind(campaignId: string, name: string): string | null {
+    const row = this.db.prepare('SELECT metadata FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) as { metadata: string | null } | undefined;
+    return kindOf(metadataOf(row?.metadata)).kind ?? null;
   }
 
   /**
@@ -247,13 +263,14 @@ export class WorldBible {
    * Barnaby (it/its) "he" in speech and memories: their prompts had no line
    * for him at all.
    */
-  getNpcPronounsForParty(campaignId: string, locationId?: string | null, text = ''): Array<{ name: string; pronouns: string }> {
+  getNpcPronounsForParty(campaignId: string, locationId?: string | null, text = ''): Array<{ name: string; pronouns: string; kind?: string }> {
     const rows = this.db.prepare('SELECT name, metadata, known_to_party, location_id FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid ASC').all(campaignId) as Array<{ name: string; metadata: string | null; known_to_party: number; location_id: string | null }>;
     return rows.flatMap(r => {
-      const p = metadataOf(r.metadata).pronouns;
+      const meta = metadataOf(r.metadata);
+      const p = meta.pronouns;
       if (typeof p !== 'string' || !p.trim()) return [];
       const relevant = r.known_to_party === 1 || (!!locationId && r.location_id === locationId) || npcMentioned(text, r.name);
-      return relevant ? [{ name: r.name, pronouns: p.trim() }] : [];
+      return relevant ? [{ name: r.name, pronouns: p.trim(), ...kindOf(meta) }] : [];
     });
   }
 
@@ -481,7 +498,7 @@ export class WorldBible {
     // The pronouns the story uses for the people the party has met, and for
     // anyone in the scene with them (met or not): fixed, never switched.
     const pronouns = this.getNpcPronounsForParty(campaignId, locationId);
-    if (pronouns.length > 0) parts.push(`How the story refers to them (fixed — use exactly these): ${pronouns.map(n => `${n.name} ${n.pronouns}`).join('; ')}`);
+    if (pronouns.length > 0) parts.push(`How the story refers to them and what each one is (fixed — use exactly these): ${pronouns.map(n => (n.kind ? npcCastLabel(n) : `${n.name} ${n.pronouns}`)).join('; ')}`);
 
     const locs = (this.db.prepare('SELECT name, visited FROM locations WHERE campaign_id = ? AND known_to_party = 1 ORDER BY visited ASC LIMIT 8').all(campaignId) as any[])
       .filter((l: any) => l.name !== currentName);
@@ -850,6 +867,27 @@ export class WorldBible {
     return reverses[type] ?? `have a ${type} relationship with`;
   }
 
+  /**
+   * A new description for an NPC already in the record. Its kind stays what
+   * the first description (the seed, or the host's redraft) made it: a
+   * description that makes it another kind is not stored (round 19, KAZQX3:
+   * Hazel the hedgehog rewritten "Feathered creature that flinched"). A
+   * reseed (the host's redraft) sets the kind anew.
+   */
+  private updateNpcDescription(campaignId: string, npc: { id: string; name: string }, description: string, seeding: boolean): void {
+    const row = this.db.prepare('SELECT type, metadata FROM entities WHERE id = ?').get(npc.id) as { type: string; metadata: string | null } | undefined;
+    const meta = metadataOf(row?.metadata);
+    const isNpc = row?.type === 'npc' || row?.type === 'creature';
+    const kind = kindOf(meta).kind;
+    if (isNpc && !seeding && kind && contradictsKind(kind, description)) {
+      console.log(`[world-bible] ${npc.name} is a ${kind}: the new description "${description.slice(0, 80)}" makes them something else — kept the one on record`);
+      return;
+    }
+    this.db.prepare('UPDATE entities SET description = ? WHERE id = ?').run(description, npc.id);
+    const found = isNpc ? npcKindOf(description) : null;
+    if (found && (seeding || !kind)) this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ ...meta, kind: found }), npc.id);
+  }
+
   /** An NPC shown holding a thing holds it, unless a party member does or it is gone. */
   private holdIfFree(itemId: string, npc: { id: string; name: string } | null, isPc: Database.Statement): void {
     if (!npc) return;
@@ -889,7 +927,7 @@ export class WorldBible {
         if (same) console.log(`[world-bible] "${ent.name}" is ${same.name} — not filed as a new NPC`);
         const existing = exact ?? same;
         if (existing) {
-          if (ent.description) this.db.prepare('UPDATE entities SET description = ? WHERE id = ?').run(ent.description, existing.id);
+          if (ent.description) this.updateNpcDescription(campaignId, existing, ent.description, !!opts?.seeding);
           if (ent.disposition) this.db.prepare('UPDATE entities SET disposition = ? WHERE id = ?').run(ent.disposition, existing.id);
           if (ent.motivation) this.db.prepare('UPDATE entities SET motivation = ? WHERE id = ?').run(ent.motivation, existing.id);
           if (ent.pronouns?.trim()) this.setNpcPronouns(campaignId, existing.name, ent.pronouns.trim());
