@@ -218,7 +218,9 @@ describe('the opening: arrival and introductions before anyone acts', () => {
     // …and the DM's play prompt states the real party with those ties.
     const narrate = bodies.find(b => b.includes('Pacing:'));
     expect(narrate).toBeTruthy();
-    expect(narrate).toMatch(/Liz is Biz's mother \(Biz calls her \\"Mom\\"\)/);
+    expect(narrate).toMatch(/Liz is Biz's mother\./);
+    // The address term is scoped to Biz — it is not Liz's name for everyone.
+    expect(narrate).toMatch(/Biz calls Liz \\"Mom\\"; everyone else, NPCs included, calls her \\"Liz\\"/);
   }, 60_000);
 });
 

@@ -42,11 +42,19 @@ export function composePresetSections(preset: string): { head: string; critical:
   return { head, critical, narrationHint };
 }
 
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
 /** The slice of a character sheet the DM needs to know who is actually playing. */
 export interface PartyMember {
   name: string;
   highConcept: string;
   age?: number | string;
+  /** As the player stated it; unset means unspecified, never "guess". */
+  pronouns?: string;
+  /** Only the opening reads it — where they come from shapes how they arrive. */
+  backstory?: string;
   relationships?: CharacterRelationship[];
 }
 
@@ -60,17 +68,145 @@ export function pronounForRelation(relation: string): 'her' | 'him' | 'them' {
   return 'them';
 }
 
+type Gender = 'f' | 'm' | 'n';
+
+/** "she/her" -> f, "he/him" -> m, "they/them" -> n; anything else is not something to build grammar on. */
+function genderFromPronouns(pronouns: string | undefined): Gender | null {
+  const first = pronouns?.trim().toLowerCase().split(/[\/,\s]+/)[0];
+  if (first === 'she' || first === 'her') return 'f';
+  if (first === 'he' || first === 'him') return 'm';
+  if (first === 'they' || first === 'them') return 'n';
+  return null;
+}
+
+function sameFirstName(a: string, b: string): boolean {
+  const x = a.trim().split(/\s+/)[0]?.toLowerCase();
+  const y = b.trim().split(/\s+/)[0]?.toLowerCase();
+  return !!x && x === y;
+}
+
+/**
+ * What a character's gender is, as far as anything a player actually wrote
+ * says: their own pronouns, else a gendered word a companion's sheet uses
+ * for them ("mother" on Biz's sheet says Liz is a woman). Nothing else — not
+ * a name, not an age, and never an inverse the code worked out.
+ */
+function statedGender(member: PartyMember, party: PartyMember[]): Gender | null {
+  const own = genderFromPronouns(member.pronouns);
+  if (own) return own;
+  if (member.pronouns?.trim()) return null;
+  for (const other of party) {
+    if (other === member) continue;
+    for (const r of other.relationships ?? []) {
+      if (!sameFirstName(r.to, member.name)) continue;
+      if (FEMININE_RELATIONS.test(r.relation)) return 'f';
+      if (MASCULINE_RELATIONS.test(r.relation)) return 'm';
+    }
+  }
+  return null;
+}
+
+/** Relation words that name the same tie, in families with a gendered form and a neutral one. */
+const RELATION_FAMILIES: Record<string, { f: string; m: string; n: string; words: string[]; inverse: string }> = {
+  parent: { f: 'mother', m: 'father', n: 'parent', words: ['mother', 'mom', 'mum', 'mama', 'mommy', 'mummy', 'father', 'dad', 'papa', 'daddy', 'parent', 'stepmother', 'stepfather'], inverse: 'child' },
+  child: { f: 'daughter', m: 'son', n: 'child', words: ['son', 'daughter', 'child', 'kid', 'boy', 'girl', 'stepson', 'stepdaughter', 'stepchild'], inverse: 'parent' },
+  sibling: { f: 'sister', m: 'brother', n: 'sibling', words: ['sister', 'brother', 'sibling', 'sis', 'bro', 'twin', 'stepsister', 'stepbrother'], inverse: 'sibling' },
+  spouse: { f: 'wife', m: 'husband', n: 'spouse', words: ['wife', 'husband', 'spouse', 'partner'], inverse: 'spouse' },
+  grandparent: { f: 'grandmother', m: 'grandfather', n: 'grandparent', words: ['grandmother', 'grandma', 'granny', 'nana', 'grandfather', 'grandpa', 'granddad', 'grandparent'], inverse: 'grandchild' },
+  grandchild: { f: 'granddaughter', m: 'grandson', n: 'grandchild', words: ['granddaughter', 'grandson', 'grandchild', 'grandkid'], inverse: 'grandparent' },
+  auntuncle: { f: 'aunt', m: 'uncle', n: "parent's sibling", words: ['aunt', 'auntie', 'uncle'], inverse: 'niblings' },
+  niblings: { f: 'niece', m: 'nephew', n: "sibling's child", words: ['niece', 'nephew', 'nibling'], inverse: 'auntuncle' },
+};
+
+function relationFamily(relation: string): string | null {
+  const words = relation.toLowerCase().match(/[a-z']+/g) ?? [];
+  for (const [key, fam] of Object.entries(RELATION_FAMILIES)) {
+    if (words.some(w => fam.words.includes(w))) return key;
+  }
+  return null;
+}
+
+/**
+ * What the sheet's owner is to someone they call `relation`: Biz's "mother"
+ * makes Biz her "child". Gendered ("son", "daughter") only when the owner's
+ * own `pronouns` say so — a relation word says nothing about the other end.
+ */
+export function inverseRelation(relation: string, ownerPronouns?: string): string | null {
+  const key = relationFamily(relation);
+  if (!key) return null;
+  const inv = RELATION_FAMILIES[RELATION_FAMILIES[key]!.inverse]!;
+  const g = genderFromPronouns(ownerPronouns);
+  return g === 'f' ? inv.f : g === 'm' ? inv.m : inv.n;
+}
+
+/** Every word that states `relation` or its inverse — "Biz's mother" and "Liz's kid" state the same tie. */
+function wordsForTie(relation: string): string[] {
+  const key = relationFamily(relation);
+  const own = relation.toLowerCase().match(/[a-z']+/g) ?? [];
+  if (!key) return own;
+  const fam = RELATION_FAMILIES[key]!;
+  return [...new Set([...own, ...fam.words, ...RELATION_FAMILIES[fam.inverse]!.words])];
+}
+
+function hasWord(text: string, word: string): boolean {
+  return new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}s?\\b`, 'i').test(text);
+}
+
+/** True if `prose` already says this tie: the other person's name plus the relation word or its inverse. */
+function tieIsStated(prose: string, r: CharacterRelationship): boolean {
+  const otherFirst = r.to.trim().split(/\s+/)[0] ?? '';
+  if (!otherFirst || !hasWord(prose, otherFirst)) return false;
+  return wordsForTie(r.relation).some(w => hasWord(prose, w));
+}
+
 /**
  * One plain sentence per stated relationship, from the sheet owner's side:
- * "Liz is Biz's mother (Biz calls her "Mom")." Used by the DM's party block
- * and the opening introductions, so both say the same thing.
+ * "Liz is Biz's mother." Address terms are deliberately NOT here — "Mom" is
+ * how Biz talks to Liz, not a fact for narration; describeParty scopes it.
  */
 export function describeRelationships(member: PartyMember): string[] {
-  return (member.relationships ?? []).map(r => {
-    const address = r.address && r.address.trim() && r.address.trim().toLowerCase() !== r.to.trim().toLowerCase()
-      ? ` (${member.name} calls ${pronounForRelation(r.relation)} "${r.address.trim()}")`
-      : '';
-    return `${r.to} is ${member.name}'s ${r.relation}${address}.`;
+  return (member.relationships ?? []).map(r => `${r.to} is ${member.name}'s ${r.relation}.`);
+}
+
+/** "Biz is here with their mother, Liz." — the tie as a sentence of narration. */
+function tieClause(member: PartyMember, r: CharacterRelationship, party: PartyMember[]): string {
+  const g = statedGender(member, party);
+  const poss = g === 'f' ? 'her' : g === 'm' ? 'his' : 'their';
+  return `${member.name} is here with ${poss} ${r.relation.trim()}, ${r.to}.`;
+}
+
+/**
+ * A character's opening introduction. The DM's prose when it wrote one —
+ * with a natural sentence added for any stated tie the prose really left
+ * out — otherwise a plain line from the sheet. Never an address term, never
+ * a parenthetical: this is narration, read aloud to the table.
+ */
+export function introduceCharacter(member: PartyMember, dmText: string | undefined, party: PartyMember[]): string {
+  const rels = member.relationships ?? [];
+  const prose = dmText?.trim();
+  if (prose) {
+    const missing = rels.filter(r => !tieIsStated(prose, r));
+    return missing.length > 0 ? `${prose} ${missing.map(r => tieClause(member, r, party)).join(' ')}` : prose;
+  }
+  const age = member.age === undefined || !String(member.age).trim() ? ''
+    : typeof member.age === 'number' || /^\d+$/.test(String(member.age).trim()) ? `, ${String(member.age).trim()} years old` : `, ${String(member.age).trim()}`;
+  const ties = rels.map(r => tieClause(member, r, party));
+  return `${member.name} — ${member.highConcept}${age}.${ties.length > 0 ? ' ' + ties.join(' ') : ''}`;
+}
+
+/**
+ * "Biz calls Liz "Mom"; everyone else, NPCs included, calls her "Liz"." An
+ * address term belongs to one relationship. Stated bare, the DM read it as
+ * Liz's name and had every NPC call her Mom.
+ */
+function describeAddressTerms(member: PartyMember, party: PartyMember[]): string[] {
+  return (member.relationships ?? []).flatMap(r => {
+    const term = r.address?.trim();
+    if (!term || term.toLowerCase() === r.to.trim().toLowerCase() || sameFirstName(term, r.to)) return [];
+    const target = party.find(p => sameFirstName(p.name, r.to));
+    const g = target ? statedGender(target, party) : null;
+    const obj = g === 'f' ? 'her' : g === 'm' ? 'him' : r.to;
+    return [`${member.name} calls ${r.to} "${term}"; everyone else, NPCs included, calls ${obj} "${r.to}".`];
   });
 }
 
@@ -81,17 +217,29 @@ export function describeRelationships(member: PartyMember): string[] {
  */
 export function describeParty(members: PartyMember[]): string {
   if (members.length === 0) return '';
+  let anyUnstated = false;
   const lines = members.map(m => {
     const age = m.age !== undefined && String(m.age).trim() ? `; age ${String(m.age).trim()}` : '';
+    let gender = '';
+    if (m.pronouns?.trim()) {
+      gender = `; pronouns: ${m.pronouns.trim()}`;
+    } else if (!statedGender(m, members)) {
+      anyUnstated = true;
+      gender = `; gender and pronouns not stated — refer to ${m.name} by name or as "they"`;
+    }
     const rels = describeRelationships(m);
-    return `- ${m.name}: ${m.highConcept}${age}.${rels.length > 0 ? ' ' + rels.join(' ') : ''}`;
+    const address = describeAddressTerms(m, members);
+    return `- ${m.name}: ${m.highConcept}${age}${gender}.${[...rels, ...address].map(x => ' ' + x).join('')}`;
   });
   const hasAges = members.some(m => m.age !== undefined && String(m.age).trim());
+  const hasAddress = members.some(m => describeAddressTerms(m, members).length > 0);
   return [
     'THE PARTY — the player characters actually at this table (authoritative). Any other player-character names that came up while setting the game up were placeholders: those people are not in this game and must never appear as party members.',
     ...lines,
     hasAges ? 'Characters act their stated ages — a child thinks, talks and is treated like a child.' : '',
+    anyUnstated ? 'Never guess a gender this block does not state — not from a name, an age, or the other side of a relation (a mother\'s child is not therefore a son). Where it is not stated, use the character\'s name or "they", and gender-neutral words for them: kid, child, parent, sibling — never son, daughter, boy, girl, he or she.' : '',
     'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
+    hasAddress ? 'Address terms are personal to the relationship: a term like "Mom" is what one character calls another, never that person\'s name. Only that character uses it, and only in their own dialogue; NPCs and everyone else use the name. Narration uses names too.' : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -381,12 +529,15 @@ export class DmAgent {
         : '',
       `</opening>`,
       party.length > 0 ? `\n<party>\n${describeParty(party)}\n</party>` : '',
+      party.some(p => p.backstory?.trim())
+        ? `\n<where they come from>\n${party.filter(p => p.backstory?.trim()).map(p => `- ${p.name}: ${clip(p.backstory!.trim(), 400)}`).join('\n')}\n</where they come from>`
+        : '',
       placeList ? `\n<places>\n${placeList}\n</places>` : '',
       `\n<task>`,
       opts.scenarioOpening
         ? `1. narration: "" (the scene is already set).`
-        : `1. narration: 3-5 vivid sentences setting the scene as the party arrives — where they are, what they see, hear and smell, and how disorienting or striking this first moment is. If they have just been dropped into a strange new world, this is the moment they take it in. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`,
-      `2. introductions: one per party member, 1-2 sentences each, describing that character as the others would see them on first glance — look, bearing, manner — and stating what they are to each other exactly as the party block says (e.g. "Liz, Biz's mother, ..."). Never invent a relationship that is not stated. Use the party members' exact names.`,
+        : `1. narration: 3-5 vivid sentences told from the characters' point of view, at the exact moment the premise puts them here. Read the premise and where they come from: if they have just been transported, summoned, isekaied, shipwrecked or otherwise pulled out of their old lives, this scene IS their arrival — the moment they land or wake up here, disoriented, the strangeness of this world hitting people who have never seen it before. If they already belong here, open on them as the situation begins. Show the place as it lands on THEM — not just scenery or a description of the place with nobody in it. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`,
+      `2. introductions: one per party member, 1-2 sentences each, describing that character as the others would see them on first glance — look, bearing, manner — and stating what they are to each other exactly as the party block says (e.g. "Liz, Biz's mother, ..."). Never invent a relationship that is not stated, and never a gender: use only the relation words and pronouns the party block gives, and where it says gender is not stated, use the name or "they" and words like kid or child. Do not narrate what anyone calls anyone — that shows in their own dialogue. Use the party members' exact names.`,
       `3. currentLocationName: copy one exact name from <places> if the party is at one of them, otherwise "".${personalityReminder}`,
       `Respond as JSON: { "narration": "...", "introductions": [{ "name": "exact character name", "text": "..." }], "currentLocationName": "..." }`,
       `</task>`,
@@ -566,6 +717,8 @@ Requirements:
 
 Make places and people specific enough to walk into. Avoid generic fantasy furniture unless the influences call for it.
 
+NO SPOILERS: The host reads every field of this world on a card before play — the premise, the location and NPC descriptions, dispositions and motivations, the plotHooks and the items — and the host may be playing. None of it may reveal or hint at a twist, a culprit, who is responsible for anything, who is behind anything, a hidden motive, or the answer to a mystery. Not even obliquely: no "rumors hint at a deliberate cover-up", no "someone wants the truth buried", no "it was no accident". Motivations say what an NPC openly wants; plotHooks say what is happening on the surface, as open questions. If the conversation asks something the story should answer ("whose mistake brought us here?"), leave it an open question — the answers belong to the DM's private direction, never to this world.
+
 Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
 
     return callLlm({
@@ -604,6 +757,8 @@ Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","te
     const systemPrompt = `You are a TTRPG Dungeon Master ("${opts.preset}" style) introducing a player to a world they are about to make a character for.
 
 Write 120-180 words of second-person present tense. Put them somewhere specific and let them look around. Name real places and real people from the world below. End on something unresolved — a question the world is already asking — without answering it or hinting at who is behind it.
+
+NO SPOILERS: the reader may be the one who has to solve this world's mystery. Never reveal or hint at a twist, a culprit, who is responsible, who is behind anything, a hidden motive, or the answer to any mystery — not even as rumors that hint at a cover-up, a conspiracy or a deliberate act. The open question stays an open question.
 
 Do NOT explain the setting, list factions, or describe mechanics. Do not tell them who their character is; that is the next conversation. No headings, no bullet points, no preamble — just the prose.
 
@@ -677,9 +832,9 @@ ${worldBlock}${tableBlock}${unmetBlock}${ruleContext ? `\nRules reference:\n${ru
 CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no narration outside the JSON.
 
 While the sheet is unfinished: {"reply": "your question", "definition": null}
-Once you believe it is finished: {"reply": "what you understand about them, in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."],"age":null,"relationships":[]}}
+Once you believe it is finished: {"reply": "what you understand about them, in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."],"age":null,"pronouns":null,"relationships":[]}}
 
-"age" is a number or short phrase if you know it, else null. "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a boy whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Fill it from what the player told you — including anything the backstory states, such as "her son Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
+"age" is a number or short phrase if you know it, else null. "pronouns" is how this character is referred to ("she/her", "he/him", "they/them") — fill it only if the player said so or plainly stated a gender ("I'm a girl", "my son"); otherwise null. Never assume a gender from a name, an age, a role or anything else, and do not write one into the backstory or personality either — if it matters to the player they will say, and you may ask. "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a kid whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Use the player's own relation word: "my kid Biz" is "kid", not "son" — never assume a gender. Fill it from what the player told you — including anything the backstory states, such as "her kid Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
 
     const messages = [{ role: 'system', content: systemPrompt }, ...opts.history];
     const last = messages[messages.length - 1];

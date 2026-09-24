@@ -306,6 +306,9 @@ function validateCharacterDefinitionShape(def: unknown): string | null {
     && !isValidShortField(d.age)) {
     return `Age must be a number or at most ${MAX_SHORT_FIELD} characters.`;
   }
+  if (d.pronouns !== undefined && d.pronouns !== null && !isValidShortField(d.pronouns)) {
+    return `Pronouns must be at most ${MAX_SHORT_FIELD} characters.`;
+  }
   if (d.relationships !== undefined && d.relationships !== null) {
     const rels = d.relationships;
     const ok = Array.isArray(rels) && rels.length <= MAX_LIST_ITEMS && rels.every(r =>
