@@ -13,7 +13,8 @@ import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
 import { getSessionTokenForCharacter } from './room.js';
-import { beatText, pacingFromEnv, readingDelayMs, type Pacing } from './pacing.js';
+import { trustHint as trustHintLine } from './trust-hint.js';
+import { pacingFromEnv, ReadingClock } from './pacing.js';
 import { shortenSuggestion, lowerFirst, endSentence } from './whisper-suggestions.js';
 import { PLAIN_PROSE_STYLE } from './agents/style.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
@@ -127,12 +128,10 @@ export class GameLoop {
   private openWhisperPrompt: Extract<ServerMessage, { type: 'whisper-prompt' }> | null = null;
   // The owner-only half of the open prompt (mood, goals, suggestion chips).
   private openWhisperGuidance: Extract<ServerMessage, { type: 'whisper-guidance' }> | null = null;
-  // Reading-time pacing (see pacing.ts). readyAt is when the table has had
-  // time to read everything shown so far; pace() holds the next beat until
-  // then. A pause freezes what is left of the wait in paceHeldMs.
-  private pacing: Pacing = pacingFromEnv();
-  private readyAt = 0;
-  private paceHeldMs = 0;
+  // Reading-time pacing (see pacing.ts). The clock knows when the table has
+  // read every PUBLIC beat shown so far; pace() holds the next beat until
+  // then. A pause freezes what is left of the wait (hold/release).
+  private readingClock = new ReadingClock(pacingFromEnv());
   private paceWake: (() => void) | null = null;
   // Wall-clock close of the open whisper window while its countdown runs;
   // null while none is open or while a pause holds it.
@@ -179,7 +178,7 @@ export class GameLoop {
       } catch (e) {
         console.error('[game-loop] replay-log append failed:', e);
       }
-      this.markBeat(msg);
+      this.readingClock.mark(msg);
       broadcastFn(msg);
     };
   }
@@ -202,21 +201,22 @@ export class GameLoop {
         console.error('[game-loop] replay-log append (private) failed:', e);
       }
     }
-    this.markBeat(msg);
+    // No readingClock.mark here: a private beat must not hold the table.
     this.sendToOwnerFn(characterId, msg);
   }
 
-  /** A beat just went out: the next one waits until it has been read. Bursts add up. */
-  private markBeat(msg: ServerMessage): void {
-    const text = beatText(msg);
-    if (text === null) return;
-    const delay = readingDelayMs(text, this.pacing);
-    if (delay <= 0) return;
-    if (this.pauseReason) {
-      this.paceHeldMs += delay;
-      return;
-    }
-    this.readyAt = Math.max(Date.now(), this.readyAt) + delay;
+  /**
+   * A character's trust in the voice, stress, fate points, wounds and items —
+   * the status line — go to the seat that plays them and no one else. Live, a
+   * room broadcast put Liz's trust and FP on Biz's tab during Liz's turn.
+   */
+  private sendStateUpdate(characterId: string, state: CharacterState): void {
+    this.sendToOwner(characterId, { type: 'character-state-update', characterId, state });
+  }
+
+  /** A live character's current state, for a (re)joining owner's status line. Null when this loop does not run them. */
+  characterState(characterId: string): CharacterState | null {
+    return this.characters.get(characterId)?.state ?? null;
   }
 
   /**
@@ -228,7 +228,7 @@ export class GameLoop {
   private async pace(): Promise<boolean> {
     for (;;) {
       if (!(await this.awaitRunnable())) return false;
-      const wait = this.readyAt - Date.now();
+      const wait = this.readingClock.remainingMs();
       if (wait <= 0) return true;
       await new Promise<void>(resolve => {
         const timer = setTimeout(() => { this.paceWake = null; resolve(); }, wait);
@@ -525,7 +525,7 @@ export class GameLoop {
   }
 
   private persistCharacterState(c: Character): void {
-    this.broadcastFn({ type: 'character-state-update', characterId: c.id, state: c.state });
+    this.sendStateUpdate(c.id, c.state);
     this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
       .run(JSON.stringify(c.state), c.id);
   }
@@ -743,7 +743,7 @@ export class GameLoop {
       this.llmAbort.abort();
       this.clearWhisperTimer();
       // Freeze the reading wait: what is left of it resumes with the table.
-      this.paceHeldMs = Math.max(0, this.readyAt - Date.now());
+      this.readingClock.hold();
       this.paceWake?.();
     }
     this.broadcastFn({ type: 'game-paused', paused: true, reason, by });
@@ -757,8 +757,7 @@ export class GameLoop {
     this.pauseReason = null;
     this.quietTurns = 0;
     this.llmAbort = new AbortController();
-    this.readyAt = Date.now() + this.paceHeldMs;
-    this.paceHeldMs = 0;
+    this.readingClock.release();
     this.broadcastFn({ type: 'game-paused', paused: false, reason: null, by });
     if (this.pendingWhisperResolve) {
       // The window was held; give the table a fresh countdown for it, and
@@ -1079,7 +1078,7 @@ export class GameLoop {
       whisperTrust: character.state.whisperTrust,
     });
 
-    this.broadcastFn({ type: 'character-state-update', characterId, state: character.state });
+    this.sendStateUpdate(characterId, character.state);
     this.state.awaitingWhisper = true;
     const mood = this.buildCharacterMood(character, memories);
     const trustHint = this.buildTrustHint(character);
@@ -1288,11 +1287,14 @@ export class GameLoop {
 
     const diceResult = rollDice(this.getSystemDefaultDice(campaign.system_id));
     this.addTranscript('dice', diceResult.description);
-    this.broadcastFn({ type: 'dice-roll', result: diceResult, context: decision.chosenAction });
 
-    // The action and its dice are already on the table, so a pause here
-    // redoes only the DM's ruling on resume — same action, same roll.
-    const resolution = await this.haltable(() => this.dm.resolve(
+    // The DM starts writing the ruling now, while the table reads the action;
+    // the dice appear once the action has been read, and the ruling once the
+    // dice have had their glance AND it is written — whichever is later, so
+    // the reading time runs under the LLM call instead of on top of it. The
+    // roll is fixed here, so a pause redoes only the ruling on resume — same
+    // action, same roll. On a stop the call is aborted and resolves null.
+    const ruling = this.haltable(() => this.dm.resolve(
         {
           preset: campaign.dm_preset, houseRules: campaign.house_rules,
           dmInstructions: campaign.dm_instructions ?? null, dmCustomPrompt: campaign.dm_custom_prompt ?? null,
@@ -1329,6 +1331,10 @@ export class GameLoop {
         stateChanges: [{ characterId, field: 'stress' as const, action: 'set' as const, value: Math.min(character.state.stress + 1, 3) }],
       };
     });
+    ruling.catch(() => {}); // awaited below; never an unhandled rejection if we bail first
+    if (!(await this.pace())) return;
+    this.broadcastFn({ type: 'dice-roll', result: diceResult, context: decision.chosenAction });
+    const resolution = await ruling;
     if (!resolution) return;
 
     if (resolution.narration === '__FALLBACK__') {
@@ -1601,7 +1607,7 @@ export class GameLoop {
     for (const cid of affectedCharIds) {
       const c = this.characters.get(cid);
       if (c) {
-        this.broadcastFn({ type: 'character-state-update', characterId: cid, state: c.state });
+        this.sendStateUpdate(cid, c.state);
         this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
           .run(JSON.stringify(c.state), cid);
       }
@@ -1748,7 +1754,7 @@ export class GameLoop {
         if (recoverable.length > 0) parts.push(`recovers from: ${recoverable.join(', ')}`);
         console.log(`[game-loop] Scene recovery: ${char.definition.name} — ${parts.join(', ')}`);
         this.broadcastFn({ type: 'narration', text: `[${char.definition.name} takes a moment to recover — ${parts.join(', ')}]`, sceneNumber: this.state.currentScene });
-        this.broadcastFn({ type: 'character-state-update', characterId: charId, state: char.state });
+        this.sendStateUpdate(charId, char.state);
         this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
           .run(JSON.stringify(char.state), charId);
       }
@@ -2223,12 +2229,8 @@ export class GameLoop {
       .map(n => getFirstName(n.name));
   }
 
-  private buildTrustHint(character: { state: CharacterState }): string {
-    const trust = character.state.whisperTrust;
-    if (trust >= 0.75) return 'They trust your voice deeply — your words carry weight.';
-    if (trust >= 0.55) return 'They listen, but weigh your words against their own judgment.';
-    if (trust >= 0.35) return 'They\'re uncertain about you — choose your words carefully.';
-    return 'They barely hear you. Only the most compelling whisper might reach them.';
+  private buildTrustHint(character: Character): string {
+    return trustHintLine(character.state.whisperTrust, getFirstName(character.definition.name), this.ownPronouns(character));
   }
 
   private getCharacterSummaries(): string {

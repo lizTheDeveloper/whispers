@@ -160,6 +160,12 @@ function hostSocket(joinCode: string): WebSocket | null {
   return h && h.ws.readyState === WebSocket.OPEN ? h.ws : null;
 }
 
+/** A character's last saved state, or null for a revoked or unknown character. */
+function storedCharacterState(characterId: string): import('../shared/types.js').CharacterState | null {
+  const row = getDb().prepare('SELECT state FROM characters WHERE id = ? AND revoked_at IS NULL').get(characterId) as { state: string } | undefined;
+  return row ? JSON.parse(row.state) : null;
+}
+
 /**
  * Send to the one seat that plays `characterId` — the campaign_sessions row
  * bound at approval (makeCharacterLive), the same authority whisper routing
@@ -771,6 +777,14 @@ wss.on('connection', (ws) => {
       // replay log).
       if (campaign.phase === 'playing') {
         const openLoop = gameLoops.get(msg.joinCode);
+        // This seat's own status line (trust, stress, FP) — and only its own:
+        // character-state-update is owner-only, and it is not in the replay
+        // log, so a refreshed tab would otherwise show no status until its
+        // character's next turn. The DB session row is the authority on
+        // which character this seat plays (see the whisper handler).
+        const ownId = getSession(db, currentPlayer.sessionToken)?.characterId ?? null;
+        const ownState = ownId ? (openLoop?.characterState(ownId) ?? storedCharacterState(ownId)) : null;
+        if (ownId && ownState) send(ws, { type: 'character-state-update', characterId: ownId, state: ownState });
         const openWindow = openLoop?.openWhisperWindow();
         if (openWindow) {
           send(ws, openWindow);
