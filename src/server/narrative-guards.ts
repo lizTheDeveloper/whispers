@@ -713,7 +713,7 @@ const HANDOFF = new RegExp(String.raw`\b(press(?:es|ed|ing)?|plac(?:e|es|ed|ing)
 /**
  * Words a story uses for the same kind of thing: the DM's "glowing
  * envelope" is the item "The Letter of Truth", its "paper" the item "Form
- * 9-B". Kept to a handful of paper things, where the live drift was.
+ * 9-B". Kept to a handful of things, where the live drift was.
  */
 const ITEM_KIN: Record<string, string[]> = {
   letter: ['envelope', 'note', 'missive'],
@@ -723,6 +723,8 @@ const ITEM_KIN: Record<string, string[]> = {
   document: ['paper', 'form'],
   paper: ['form', 'document'],
   scroll: ['parchment'],
+  // Live (Z9JKG2): "Liz hurls the granola bar… Marni catches the snack".
+  bar: ['snack'],
 };
 
 /** The noun an item's name is: "Orange Key" → key, "The Letter of Truth" → letter, "Form 9-B: Return to Source (Crumpled)" → form. */
@@ -758,7 +760,7 @@ const unquotedSentences = (text: string) => quoteRuns(text).filter(r => !r.quote
  * does not recoil; instead, he … [is] pressing the brass key into her palm"
  * was read as a refusal and the key was dropped.
  */
-export function narratesItemTransfer(narration: string, item: string, actor: string): boolean {
+export function narratesItemTransfer(narration: string, item: string, actor: string, opts: { acting?: boolean } = {}): boolean {
   if (!narration || !item) return false;
   const itemWords = [...new Set([...(item.toLowerCase().match(/[a-z]+/g)?.filter(w => w.length >= 3 && !['the', 'and', 'of'].includes(w)) ?? []), ...itemNouns(item)])];
   if (itemWords.length === 0) return false;
@@ -768,6 +770,7 @@ export function narratesItemTransfer(narration: string, item: string, actor: str
     const lower = sentence.toLowerCase();
     if (!itemWords.some(w => new RegExp(`\\b${w}s?\\b`).test(lower))) continue;
     if (REFUSAL.test(sentence) || NEGATED_TRANSFER.test(sentence)) continue;
+    if (opts.acting && givenToNobodyElse(sentence, itemNouns(item), first)) return true;
     const actorHere = new RegExp(`\\b${name}\\b`, 'i').test(sentence) || /^\s*(?:she|he|they)\b/i.test(sentence);
     if (GIVE_TO(name).test(sentence)) return true;
     const handoff = sentence.match(HANDOFF);
@@ -795,8 +798,30 @@ export function narratesItemTransfer(narration: string, item: string, actor: str
  * ruling a turn later added "The Letter of Truth" to Biz, and it was dropped
  * because that ruling never showed it changing hands — it already had.
  */
-export function narratesItemTransferRecently(current: string, recent: string[], item: string, actor: string): boolean {
-  return [current, ...recent].some(t => narratesItemTransfer(t, item, actor));
+export function narratesItemTransferRecently(current: string, recent: string[], item: string, actor: string, opts: { acting?: boolean } = {}): boolean {
+  return narratesItemTransfer(current, item, actor, opts) || recent.some(t => narratesItemTransfer(t, item, actor));
+}
+
+/** Verbs that pass a thing across to whoever is there: "sliding a blank form across the polished wood". */
+const PASS_ACROSS = String.raw`(?:slid(?:e|es|ing)|push(?:es|ed|ing)|hand(?:s|ed|ing)|pass(?:es|ed|ing)|giv(?:e|es|ing)|gave|toss(?:es|ed|ing))`;
+
+/**
+ * Someone else passes the item across, aimed at nobody else — in the ruling
+ * of the character it was passed to (opts.acting). Live (Z9JKG2): Liz asked
+ * Clerk Marni for the form home, and "Marni chirps, sliding a blank form
+ * across the polished wood"; the ruling's add of "The Provisional Exit Form"
+ * was dropped because the sentence never named Liz. Not when the actor is
+ * the one passing it, and not when it goes to someone named.
+ */
+function givenToNobodyElse(sentence: string, nouns: string[], actorFirst: string): boolean {
+  if (nouns.length === 0) return false;
+  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const m = sentence.match(new RegExp(`\\b${PASS_ACROSS}\\s+(?:over\\s+)?${DET}${ADJS}${N}\\b([^.!?;]{0,60})`, 'i'));
+  if (!m) return false;
+  if (new RegExp(`\\b${esc(actorFirst)}\\s+(?:\\w+ly\\s+)?${PASS_ACROSS}\\b`, 'i').test(sentence)) return false;
+  const to = m[1]!.match(/\b(?:to|toward|towards|into|at)\s+(?:the\s+)?([A-Z][\w'’-]*)/);
+  if (to && !['Her', 'Him', 'Them', 'Their', 'His'].includes(to[1]!) && to[1]!.replace(/['’]s$/, '').toLowerCase() !== actorFirst.toLowerCase()) return false;
+  return true;
 }
 
 export interface ItemHolder {
@@ -834,8 +859,53 @@ function showsGain(sentence: string, member: string, nouns: string[]): boolean {
     // "hands the key to Liz", "hands Liz the key"
     new RegExp(`\\b${GIVE_VERB}\\s+${obj}\\s+(?:back\\s+|over\\s+)?to\\s+${M}\\b`, 'i'),
     new RegExp(`\\b${GIVE_VERB}\\s+${M}\\s+${obj}`, 'i'),
+    // Possession the prose states outright. Live (Z9JKG2): "the Fading Form
+    // in Liz’s hand", "the Fading Form in Liz’s grip" after Liz scooped it
+    // up; "Biz clutches the pen" after catching it.
+    new RegExp(`\\b(?:the|a|an)\\s+${ADJS}${N}\\s+(?:in|inside|within)\\s+${M}['’]s\\s+(?:[\\w-]+\\s+){0,2}?${HELD_IN}\\b`, 'i'),
+    new RegExp(`\\b${M}\\s+(?:\\w+ly\\s+)?${HOLDS}\\s+${obj}`, 'i'),
+    new RegExp(`\\b${M}['’]s\\s+(?:[\\w-]+\\s+)?(?:grip|hold|grasp)\\s+(?:on|around)\\s+${obj}`, 'i'),
   ];
   return res.some(re => re.test(sentence));
+}
+
+/** Verbs of holding something already in hand. */
+const HOLDS = String.raw`(?:clutch(?:es)?|clutching|holds|holding|is\s+holding|grips|gripping|clasps|clasping|cradles|cradling)`;
+/** Where a held thing is: a hand, a grip, a bag. */
+const HELD_IN = String.raw`(?:hand|hands|grip|grasp|fist|fingers|palm|palms|arms|pocket|pockets|bag|tote|satchel|pouch|backpack)`;
+
+/** Capitalised words that start a clause but never name who took something. */
+const NOT_A_NAME = new Set(['She', 'He', 'They', 'It', 'The', 'A', 'An', 'But', 'And', 'As', 'When', 'Then', 'With', 'Her', 'His', 'Their', 'Its', 'This', 'That', 'There', 'Here', 'Now', 'Still', 'Just', 'Even', 'Someone', 'Something', 'Nobody', 'No', 'One', 'You', 'I', 'We']);
+/** Verbs by which someone takes a thing into their own keeping (lower case: the taker's name is matched case-sensitively). */
+const NPC_TAKE = String.raw`(?:catches|caught|takes|took|accepts|accepted|pockets|pocketed|snatches|snatched|grabs|grabbed|receives|received|picks\s+up|picked\s+up|scoops\s+up|scooped\s+up|tucks|tucked|stows|stowed)`;
+const caseFree = (w: string) => w.replace(/[a-z]/i, c => `[${c.toLowerCase()}${c.toUpperCase()}]`);
+
+/**
+ * Someone outside the party takes the item a member holds: "Liz hurls the
+ * granola bar across the gap… Marni catches the snack" (live, Z9JKG2),
+ * "Odo takes the bottle cap from Biz". The taker is a capitalised name that
+ * is not a party member; the holder must be named, with the item, in this
+ * sentence or the one before; "catches it" needs that item to be the one
+ * thing named before it.
+ */
+function showsTakenByOther(sentence: string, prev: string, holder: string, nouns: string[], party: string[], mentions: (text: string) => string[], item: string): boolean {
+  const N = `(?:${nouns.map(n => caseFree(esc(n))).join('|')})s?`;
+  const re = new RegExp(`\\b([A-Z][\\w'’-]*)\\s+(?:[a-z]+ly\\s+)?${NPC_TAKE}\\s+(it\\b|(?:[Tt]he|[Aa]n?|[Hh]er|[Hh]is|[Tt]heir|[Ii]ts)\\s+${ADJS}${N}\\b)`, 'g');
+  const holderRe = new RegExp(`\\b${esc(firstName(holder))}\\b`);
+  const nounRe = new RegExp(`\\b(?:${nouns.map(esc).join('|')})s?\\b`, 'i');
+  for (const m of sentence.matchAll(re)) {
+    const taker = m[1]!.replace(/['’]s$/, '');
+    if (NOT_A_NAME.has(taker) || party.some(p => firstName(p).toLowerCase() === taker.toLowerCase())) continue;
+    const before = sentence.slice(0, m.index);
+    const holderWithItem = (t: string) => holderRe.test(t) && (nounRe.test(t) || m[2] !== 'it');
+    if (!holderWithItem(sentence) && !(holderRe.test(prev) && nounRe.test(prev))) continue;
+    if (m[2] === 'it') {
+      const named = mentions(before).length > 0 ? mentions(before) : mentions(prev);
+      if (named.length !== 1 || !sameItem(named[0]!, item)) continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -907,21 +977,28 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
   const holderOf = (item: string) => [...inv].find(([, items]) => items.some(i => sameItem(i, item)))?.[0] ?? null;
   const names = party.map(p => p.name);
 
+  let prev = '';
   for (const sentence of text.split(SENTENCES)) {
     const unquoted = quoteRuns(sentence).filter(r => !r.quoted).map(r => r.text).join(' ');
     const held = [...inv].flatMap(([owner, items]) => items.map(item => ({ owner, item })));
     const all = [...held.map(h => h.item), ...candidates.filter(c => !held.some(h => sameItem(h.item, c)))];
     const pool = all.filter((c, i) => all.findIndex(o => sameItem(o, c)) === i);
     const byNoun = (item: string) => pool.filter(o => itemNouns(o).some(n => itemNouns(item).includes(n)));
+    // "the Fading Form" when the world also has a Recall Form: its whole name picks it out.
+    const namedIn = (t: string, item: string) => { const f = fullItemName(item); return f.includes(' ') && new RegExp(`\\b${esc(f)}\\b`, 'i').test(t); };
+    const unambiguous = (item: string, t: string) => byNoun(item).length === 1 || (namedIn(t, item) && byNoun(item).filter(o => namedIn(t, o)).length === 1);
+    // The items a stretch of prose names (by whole name, or by a noun only one item has).
+    const mentions = (t: string) => pool.filter(o => namedIn(t, o) || itemNouns(o).some(n => new RegExp(`\\b${esc(n)}s?\\b`, 'i').test(t)));
 
     // Gains: named receiver, unquoted narration, no refusal.
     if (!REFUSAL.test(unquoted) && !NEGATED_TRANSFER.test(unquoted)) {
       for (const item of pool) {
         const nouns = itemNouns(item);
-        if (nouns.length === 0 || byNoun(item).length !== 1) continue;
+        if (nouns.length === 0) continue;
+        const clear = unambiguous(item, unquoted);
         for (const member of names) {
           if (inv.get(member)!.some(i => sameItem(i, item))) continue;
-          if (!showsGain(unquoted, member, nouns)) continue;
+          if (!(clear && showsGain(unquoted, member, nouns)) && !caughtIt(unquoted, member, item, mentions)) continue;
           const from = holderOf(item);
           if (from) inv.set(from, inv.get(from)!.filter(i => !sameItem(i, item)));
           inv.get(member)!.push(item);
@@ -938,13 +1015,87 @@ export function narratedItemEvents(text: string, party: ItemHolder[], candidates
       const heldLike = [...inv].flatMap(([o, items]) => items.filter(i => itemNouns(i).some(n => nouns.includes(n))).map(() => o));
       // Two held keys: only a sentence naming the holder can say whose.
       if (heldLike.length > 1 && !new RegExp(`\\b${esc(firstName(owner))}\\b`).test(sentence)) continue;
-      if (showsLoss(sentence, nouns) || showsGivenAway(unquoted, owner, nouns, names)) {
+      if (showsLoss(sentence, nouns) || showsGivenAway(unquoted, owner, nouns, names) || showsTakenByOther(unquoted, prev, owner, nouns, names, mentions, item)) {
         inv.set(owner, inv.get(owner)!.filter(i => i !== item));
         events.push({ kind: 'loss', from: owner, item });
       }
     }
+    prev = unquoted;
   }
   return events;
+}
+
+/** First-person verbs by which a player declares taking something: "Scoop up the Fading Form". */
+const DECLARE_TAKE = String.raw`(?:scoop(?:s)?\s+up|pick(?:s)?\s+up|grab(?:s)?|take|takes|snatch(?:es)?|pocket(?:s)?|catch(?:es)?|collect(?:s)?|retrieve(?:s)?|seize(?:s)?|lift(?:s)?|stash(?:es)?|stow(?:s)?|tuck(?:s)?\s+away)`;
+
+/**
+ * The world items a player's declared action takes into their own keeping:
+ * "Scoop up the Fading Form and tuck it into my tote bag" (live, Z9JKG2).
+ * A claim only — the ruling or later prose has to show the character
+ * holding it (confirmsClaim) before the inventory changes. Something taken
+ * out of their own bag ("Grab a granola bar from my tote") is not a claim.
+ */
+export function declaredTakes(action: string, candidates: string[]): string[] {
+  if (!action) return [];
+  const out: string[] = [];
+  for (const clause of action.split(/[.;!?]|,\s*(?:then|and then)\b|\bthen\b/i)) {
+    const verb = clause.match(new RegExp(`\\b${DECLARE_TAKE}\\b`, 'i'));
+    if (!verb) continue;
+    const after = clause.slice(verb.index! + verb[0].length);
+    if (/\b(?:from|out\s+of)\s+(?:my|our)\b/i.test(after)) continue;
+    const named = candidates.filter(c => {
+      const full = fullItemName(c);
+      if (full.includes(' ') && new RegExp(`\\b${esc(full)}\\b`, 'i').test(after)) return true;
+      const nouns = itemNouns(c);
+      return nouns.length > 0 && candidates.filter(o => itemNouns(o).some(n => nouns.includes(n))).length === 1
+        && new RegExp(`^\\s+(?:up\\s+)?${DET}${ADJS}(?:${nouns.map(esc).join('|')})s?\\b`, 'i').test(after);
+    });
+    for (const c of named) if (!out.some(o => sameItem(o, c))) out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Prose confirming a character holds the item they declared taking: a named
+ * gain (showsGain: "the Fading Form in Liz’s hand"), or — in their OWN
+ * ruling, in a sentence naming no other party member — the same in their own
+ * stated pronoun: "The Fading Form in her grip shudders" (live, Z9JKG2).
+ * With no pronouns on their sheet, only the name counts.
+ */
+export function confirmsClaim(prose: string, member: string, item: string, opts: { ownRuling?: boolean; party?: string[]; pronouns?: string | null } = {}): boolean {
+  const nouns = itemNouns(item);
+  if (!prose || nouns.length === 0) return false;
+  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const others = (opts.party ?? []).filter(p => firstName(p).toLowerCase() !== firstName(member).toLowerCase());
+  const said = (opts.pronouns ?? '').toLowerCase().match(/\b(she|he|they)\b/)?.[1];
+  const possessive = said === 'she' ? 'her' : said === 'he' ? 'his' : said === 'they' ? 'their' : null;
+  for (const sentence of unquotedSentences(prose)) {
+    if (!new RegExp(`\\b${N}\\b`, 'i').test(sentence)) continue;
+    if (REFUSAL.test(sentence) || NEGATED_TRANSFER.test(sentence) || showsLoss(sentence, nouns)) continue;
+    if (showsGain(sentence, member, nouns)) return true;
+    if (!opts.ownRuling || !said || !possessive) continue;
+    if (others.some(o => new RegExp(`\\b${esc(firstName(o))}\\b`, 'i').test(sentence))) continue;
+    if (new RegExp(`\\b(?:the|a|an)\\s+${ADJS}${N}\\s+(?:in|inside|within)\\s+${possessive}\\s+(?:[\\w-]+\\s+){0,2}?${HELD_IN}\\b`, 'i').test(sentence)) return true;
+    if (new RegExp(`\\b${said}\\s+(?:\\w+ly\\s+)?(?:${SELF_TAKE}|${HOLDS})\\s+${DET}${ADJS}${N}\\b`, 'i').test(sentence)) return true;
+  }
+  return false;
+}
+
+/** An item's name without article or label: "The Fading Form" → "Fading Form". */
+function fullItemName(item: string): string {
+  return item.split(/[:(]/)[0]!.trim().replace(/^(?:the|a|an)\s+/i, '');
+}
+
+/**
+ * "Liz hurls the pen …, and Biz snatches it out of the air" (live, Z9JKG2):
+ * the member takes "it", and the one item named before it in the sentence
+ * is `item`. Two things named before it, or none, and nobody gains anything.
+ */
+function caughtIt(sentence: string, member: string, item: string, mentions: (t: string) => string[]): boolean {
+  const m = sentence.match(new RegExp(`\\b${esc(firstName(member))}\\s+(?:\\w+ly\\s+)?${SELF_TAKE}\\s+it\\b`, 'i'));
+  if (!m) return false;
+  const named = mentions(sentence.slice(0, m.index));
+  return named.length === 1 && sameItem(named[0]!, item);
 }
 
 // ─── Repetition of a whole beat ─────────────────────────────────────────────

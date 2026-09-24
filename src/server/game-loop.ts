@@ -27,7 +27,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, sameItem, changedSpan, softenForChildren, repeatsRecentBeat,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, changedSpan, softenForChildren, repeatsRecentBeat,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -123,6 +123,13 @@ export class GameLoop {
   private transcript: TranscriptMessage[] = [];
   private state: RoomState;
   private characters = new Map<string, Character>();
+  /**
+   * World items a player declared taking ("Scoop up the Fading Form…") that
+   * no ruling has shown in their hands yet, with how many more DM beats may
+   * confirm it (confirmsClaim). Volatile: a restart forgets an unconfirmed
+   * claim, never an item already in an inventory.
+   */
+  private itemClaims = new Map<string, Array<{ item: string; beats: number }>>();
   private pendingWhisperResolve: ((text: string | null) => void) | null = null;
   private pendingWhisperCharacterId: string | null = null;
   // Out-of-window whispers wait here for their character's next decision
@@ -686,7 +693,7 @@ export class GameLoop {
    * lost, taken or given away leaves its holder. Returns the characters
    * whose inventory changed.
    */
-  private trackNarratedItems(prose: string): Set<string> {
+  private trackNarratedItems(prose: string, actorId?: string): Set<string> {
     const changed = new Set<string>();
     if (!prose || this.characters.size === 0) return changed;
     try {
@@ -717,6 +724,26 @@ export class GameLoop {
           this.worldBible.updateItemHolder(this.campaignId, e.item, null);
           console.log(`[items] ${e.from} no longer holds "${e.item}": the DM's prose shows it gone`);
         }
+      }
+      // A player's own declared pick-up, once this prose shows it in their hands.
+      const partyNames = chars.map(c => c.definition.name);
+      for (const [cid, claims] of this.itemClaims) {
+        const c = this.characters.get(cid);
+        if (!c) { this.itemClaims.delete(cid); continue; }
+        const left: Array<{ item: string; beats: number }> = [];
+        for (const claim of claims) {
+          const heldBy = chars.find(o => (o.state.inventory ?? []).some(i => sameItem(i, claim.item)));
+          if (heldBy) continue; // someone has it now: the claim is settled
+          if (confirmsClaim(prose, c.definition.name, claim.item, { ownRuling: cid === actorId, party: partyNames, pronouns: this.ownPronouns(c) ?? c.definition.pronouns })) {
+            c.state.inventory = [...(c.state.inventory ?? []), claim.item];
+            changed.add(cid);
+            this.worldBible.updateItemHolder(this.campaignId, claim.item, cid);
+            console.log(`[items] ${c.definition.name} now holds "${claim.item}": they declared taking it and the DM's prose shows it in their hands`);
+            continue;
+          }
+          if (claim.beats > 1) left.push({ item: claim.item, beats: claim.beats - 1 });
+        }
+        if (left.length > 0) this.itemClaims.set(cid, left); else this.itemClaims.delete(cid);
       }
     } catch (err) {
       console.error('[items] narrated item tracking failed, inventories left as they were:', err);
@@ -1064,6 +1091,7 @@ export class GameLoop {
         sceneNumber: this.state.currentScene,
         sceneTurnCount: this.sceneTurnCount,
         characterSummaries: this.getCharacterSummaries(),
+        partyInventories: Array.from(this.characters.values()).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })),
         partySize: this.characters.size || 1,
         sessionTurnCount: this.state.currentTurn,
         locationTurnCount: this.locationTurnCount,
@@ -1756,7 +1784,7 @@ export class GameLoop {
       if (!who) return true;
       // The hand-off may have been narrated a beat earlier: live, the
       // Postman slipped the envelope into Biz's hand in LIZ's ruling.
-      if (narratesItemTransferRecently(resolution.narration, this.recentDmBeats(4), change.value, who.definition.name)) return true;
+      if (narratesItemTransferRecently(resolution.narration, this.recentDmBeats(4), change.value, who.definition.name, { acting: who.id === characterId })) return true;
       console.warn(`[game-loop] dropped an inventory add of "${change.value}" for ${who.definition.name}: neither this ruling nor the last few DM beats show it changing hands`);
       return false;
     });
@@ -1809,7 +1837,18 @@ export class GameLoop {
     // Items the ruling itself moved or destroyed, whatever stateChanges said:
     // "Biz tucks the key into their treasure pocket", "…tearing completely,
     // leaving only a damp, useless smear".
-    for (const cid of this.trackNarratedItems(resolution.narration)) affectedCharIds.add(cid);
+    // What the player declared taking is a claim until prose shows it held
+    // (live: "Scoop up the Fading Form and tuck it into my tote bag", then
+    // "The Fading Form in her grip shudders").
+    if (resolution.outcome !== 'failure') {
+      const holds = (item: string) => Array.from(this.characters.values()).some(c => (c.state.inventory ?? []).some(i => sameItem(i, item)));
+      const claims = declaredTakes(decision.chosenAction, this.worldBible.getItemNames(this.campaignId)).filter(item => !holds(item));
+      if (claims.length > 0) {
+        const kept = (this.itemClaims.get(characterId) ?? []).filter(c => !claims.some(n => sameItem(n, c.item)));
+        this.itemClaims.set(characterId, [...kept, ...claims.map(item => ({ item, beats: 6 }))]);
+      }
+    }
+    for (const cid of this.trackNarratedItems(resolution.narration, characterId)) affectedCharIds.add(cid);
 
     for (const cid of affectedCharIds) {
       const c = this.characters.get(cid);

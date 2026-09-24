@@ -2,10 +2,12 @@ import type Database from 'better-sqlite3';
 import type { PendingCharacterRow } from './room.js';
 import { deletePendingCharacter, setSessionCharacter } from './room.js';
 import { getInterviewBySession, setInterviewStatus } from './character-interview.js';
+import { startingKit } from './starting-kit.js';
 
-const INITIAL_STATE = JSON.stringify({
+/** A new character's state: the kit their sheet says they carry is their starting inventory. */
+const initialState = (definition: PendingCharacterRow['definition']) => JSON.stringify({
   stress: 0, consequences: [], fatePoints: 3,
-  inventory: [], xpMilestones: [], whisperTrust: 0.65,
+  inventory: startingKit(definition), xpMilestones: [], whisperTrust: 0.65,
 });
 
 /**
@@ -24,7 +26,7 @@ const INITIAL_STATE = JSON.stringify({
 export function makeCharacterLive(db: Database.Database, pending: PendingCharacterRow): void {
   db.transaction(() => {
     db.prepare('INSERT OR REPLACE INTO characters (id, campaign_id, player_user_id, definition, state) VALUES (?, ?, ?, ?, ?)')
-      .run(pending.id, pending.campaignId, null, JSON.stringify(pending.definition), INITIAL_STATE);
+      .run(pending.id, pending.campaignId, null, JSON.stringify(pending.definition), initialState(pending.definition));
 
     if (pending.sessionToken) {
       setSessionCharacter(db, pending.sessionToken, pending.id);

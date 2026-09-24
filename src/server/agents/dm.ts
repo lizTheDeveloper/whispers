@@ -506,6 +506,19 @@ Storytelling principles:
   return { systemPrompt: prompt, criticalReminder: criticalSection.trim(), narrationHint };
 }
 
+/**
+ * What each player character is carrying, for every ruling and narration
+ * beat — "nothing" included. Live (Z9JKG2) the DM was only told about
+ * non-empty inventories, so with nothing on record it had Liz pull a bottle
+ * cap she had given away out of her tote, and a pen "eaten by the storm"
+ * turned up again.
+ */
+export function itemsOnHandBlock(party: Array<{ name: string; inventory?: string[] }>): string {
+  if (party.length === 0) return '';
+  const lines = party.map(p => `- ${p.name}: ${p.inventory && p.inventory.length > 0 ? p.inventory.join(', ') : 'nothing'}`);
+  return `\n<items_on_hand>\nWhat each player character is carrying right now (the record the table keeps):\n${lines.join('\n')}\nITEMS ON HAND: a character can only use, show, hand over or drop what is on their line. Something given away, used up, lost or destroyed is gone — never have it turn up again in their hand, bag or pocket. When someone picks something up or is handed it, show it plainly in the prose, naming who now holds it.\n</items_on_hand>`;
+}
+
 export interface ScenePacing {
   sceneNumber: number;
   sceneTurnCount: number;
@@ -517,6 +530,8 @@ export interface ScenePacing {
   knownLocationNames?: string[];
   unvisitedLocationNames?: string[];
   isFinale?: boolean;
+  /** Each player character's inventory, for <items_on_hand>. */
+  partyInventories?: Array<{ name: string; inventory: string[] }>;
   /** The narration-only opening (arrival + introductions) has just been delivered; this is the first real beat of play. */
   afterOpening?: boolean;
   /** An earlier beat the last draft repeated nearly word for word: this one must move on from it. */
@@ -663,6 +678,7 @@ export class DmAgent {
       `Pacing: ${pacingHint}${locationHint}${troubleHint}`,
       `</scene>`,
       charBlock ? `\n<party>\n${charBlock.trim()}\n</party>` : '',
+      pacing?.partyInventories ? itemsOnHandBlock(pacing.partyInventories) : '',
       `\n<world>\n${ctx.worldSummary}\n</world>`,
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
@@ -797,6 +813,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
 
     const userMessage = [
       charBlock ? `<character>\n${charBlock.trim()}\n</character>` : '',
+      characterInfo ? itemsOnHandBlock([{ name: characterInfo.name, inventory: characterInfo.inventory }, ...(characterInfo.partyMembers ?? [])]) : '',
       `\n<action>\n${characterInfo ? characterInfo.name : 'Character'}'s action: "${action}"${diceBlock}\n</action>`,
       ctx.worldSummary ? `\n<world>\n${ctx.worldSummary}\n</world>` : '',
       `\n<context>\n${recentTranscript}\n</context>`,
