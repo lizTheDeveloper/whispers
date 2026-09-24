@@ -140,8 +140,26 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
   // replay restores those too — sessionStats is declared above them for
   // exactly that reason.
   const sessionStats = { scenes: 0, followed: 0, partial: 0, ignored: 0 };
+  // Scenes are only counted by scene-end, which a scene End Game interrupts
+  // never gets — so the recap also counts the scene in progress once a turn
+  // has been taken in it. Scene numbers run in order, so the highest scene
+  // that ended or saw a turn is how many were played, even if a replay
+  // omitted the oldest entries. The epilogue closes the tally: closing
+  // reflections after it are not turns.
+  let liveScene = 0;
+  let turnInLiveScene = false;
+  let lastEndedScene = 0;
+  let epilogueSeen = false;
+  function scenesPlayed(): number {
+    return Math.max(sessionStats.scenes, lastEndedScene, turnInLiveScene ? liveScene : 0);
+  }
 
   function renderNarration(msg: Extract<ServerMessage, { type: 'narration' }>): void {
+    if (msg.isEpilogue) epilogueSeen = true;
+    else if (msg.sceneNumber !== liveScene) {
+      liveScene = msg.sceneNumber;
+      turnInLiveScene = false;
+    }
     const cls = msg.isEpilogue ? 'epilogue'
       : msg.text.startsWith('[Compel:') ? 'compel'
       : msg.text.includes('TAKEN OUT') ? 'taken-out'
@@ -169,6 +187,8 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
 
   function renderSceneEnd(msg: Extract<ServerMessage, { type: 'scene-end' }>): void {
     sessionStats.scenes++;
+    lastEndedScene = Math.max(lastEndedScene, msg.sceneNumber);
+    if (msg.sceneNumber === liveScene) turnInLiveScene = false;
     appendLog(`--- Scene ${msg.sceneNumber} End ---\n${msg.summary}`, 'system');
 
     const stats = msg.whisperStats;
@@ -281,7 +301,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     whisperInput.placeholder = 'Whisper to your character… (saved until their next choice)';
   }
   ws.on('whisper-prompt', (msg) => {
-    if (msg.type !== 'whisper-prompt') return;
+    if (msg.type !== 'whisper-prompt' || gameOver) return;
     // The prompt is a room broadcast so everyone sees WHO is deciding; the
     // server derives every whisper's target from the sender's own seat, so
     // a player must not countdown (or falsely log "[You stayed silent.]")
@@ -341,7 +361,11 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         const btn = document.createElement('button');
         btn.className = 'suggestion-btn';
         btn.textContent = sug;
+        btn.disabled = whisperLocked || gameOver;
         btn.addEventListener('click', () => {
+          // Same lock as the box the chip fills (the button is disabled too;
+          // this is the belt to that brace).
+          if (whisperLocked || gameOver) return;
           whisperInput.value = sug;
           whisperInput.focus();
         });
@@ -376,6 +400,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
   });
 
   function renderActionTaken(msg: Extract<ServerMessage, { type: 'action-taken' }>): void {
+    if (!epilogueSeen) turnInLiveScene = true;
     appendLog(`${msg.characterName}: ${msg.action}`, 'character');
     if (msg.spokenWords) {
       appendLog(`"${msg.spokenWords}"`, 'dialogue');
@@ -408,7 +433,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
   });
 
   ws.on('character-state-update', (msg) => {
-    if (msg.type !== 'character-state-update') return;
+    if (msg.type !== 'character-state-update' || gameOver) return;
     const s = msg.state as { stress: number; consequences: string[]; fatePoints: number; whisperTrust: number; inventory?: string[] };
     const trustPct = Math.round(s.whisperTrust * 100);
     const trustLabel = trustPct >= 70 ? 'trusting' : trustPct >= 40 ? 'uncertain' : 'wary';
@@ -475,16 +500,15 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       showTutorial();
     }
     if (msg.type === 'phase-change' && msg.phase === 'ended') {
-      whisperArea.style.display = 'none';
-      actionArea.innerHTML = '';
       showPaused(null);
+      closeWhispers();
 
       const total = sessionStats.followed + sessionStats.partial + sessionStats.ignored;
       const recapDiv = document.createElement('div');
       recapDiv.className = 'narration-entry session-recap';
       let recapHtml = '<div class="recap-title">Session Complete</div>';
       recapHtml += '<div class="recap-grid">';
-      recapHtml += `<div class="recap-stat"><span class="recap-num">${sessionStats.scenes}</span><span class="recap-label">Scenes</span></div>`;
+      recapHtml += `<div class="recap-stat"><span class="recap-num">${scenesPlayed()}</span><span class="recap-label">Scenes</span></div>`;
       if (total > 0) {
         const influencePct = Math.round(((sessionStats.followed + sessionStats.partial * 0.5) / total) * 100);
         recapHtml += `<div class="recap-stat"><span class="recap-num">${total}</span><span class="recap-label">Whispers</span></div>`;
@@ -533,8 +557,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       pauseBtn.disabled = false;
     }
     whisperLocked = reason !== null && reason !== 'quiet';
-    whisperInput.disabled = whisperLocked;
-    whisperBtn.disabled = whisperLocked || pendingWhispers.length > 0;
+    applyWhisperLock();
     if (whisperLocked && whisperTimer) {
       clearInterval(whisperTimer);
       whisperTimer = null;
@@ -542,8 +565,38 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     }
   }
   ws.on('game-paused', (msg) => {
-    if (msg.type !== 'game-paused') return;
+    if (msg.type !== 'game-paused' || gameOver) return;
     showPaused(msg.paused ? (msg.reason ?? 'host') : null);
+  });
+
+  // The input, the Whisper button and every suggestion chip lock together:
+  // while paused (a chip filling a locked box is a click that goes nowhere)
+  // and for good once the game is over.
+  let gameOver = false;
+  function applyWhisperLock(): void {
+    const locked = whisperLocked || gameOver;
+    whisperInput.disabled = locked;
+    whisperBtn.disabled = locked || pendingWhispers.length > 0;
+    for (const chip of whisperArea.querySelectorAll<HTMLButtonElement>('.suggestion-btn')) chip.disabled = locked;
+  }
+
+  // The table is closing (game-ending, then phase-change 'ended'): the server
+  // has already closed any open window without a turn, so the countdown
+  // stops here — it must never run out into "[You stayed silent.]" under the
+  // epilogue — and the whisper box goes away for everyone.
+  function closeWhispers(): void {
+    gameOver = true;
+    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+    if (whisperAckTimer) { clearTimeout(whisperAckTimer); whisperAckTimer = null; }
+    windowCharId = null;
+    whisperBtn.textContent = 'Whisper';
+    whisperInput.value = '';
+    applyWhisperLock();
+    whisperArea.style.display = 'none';
+    actionArea.innerHTML = '';
+  }
+  ws.on('game-ending', (msg) => {
+    if (msg.type === 'game-ending') closeWhispers();
   });
 
   // Sent whispers waiting on their whisper-ack. A socket delivers messages
@@ -565,7 +618,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     whisperAckTimer = setTimeout(() => {
       whisperAckTimer = null;
       const lost = pendingWhispers.shift() ?? '';
-      whisperBtn.disabled = whisperLocked;
+      whisperBtn.disabled = whisperLocked || gameOver;
       whisperInput.value = lost;
       showSystemNotice('The table did not answer — your whisper may not have been sent.');
     }, 5_000);
@@ -575,7 +628,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     if (msg.type !== 'whisper-ack') return;
     const text = pendingWhispers.shift() ?? '';
     if (whisperAckTimer) { clearTimeout(whisperAckTimer); whisperAckTimer = null; }
-    if (pendingWhispers.length === 0) whisperBtn.disabled = whisperLocked;
+    if (pendingWhispers.length === 0) whisperBtn.disabled = whisperLocked || gameOver;
     if (msg.status === 'rejected') {
       // The words were not heard, so nothing goes into the log and the
       // draft goes back into the box — MUL-73's silent loss, inverted: the
