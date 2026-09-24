@@ -259,6 +259,37 @@ export function pronounsFor(member: PartyMember, party: PartyMember[]): string |
   return g === 'f' ? 'she/her' : g === 'm' ? 'he/him' : g === 'n' ? 'they/them' : null;
 }
 
+const CHILD_RELATIONS = /\b(child|kid|son|daughter|stepchild|stepson|stepdaughter|toddler|baby)\b/i;
+
+/** A stated age under 13: 10, "10", "9 years old", "about 8". Words and ranges are not guessed at. */
+function childAge(age: number | string | undefined): boolean {
+  if (age === undefined || age === null) return false;
+  const n = typeof age === 'number' ? age : parseInt(String(age).match(/\d+/)?.[0] ?? '', 10);
+  return Number.isFinite(n) && n < 13;
+}
+
+/**
+ * Party members who are children, as the sheets say: a stated age under 13,
+ * or a companion's sheet naming them as that companion's child/kid/son/
+ * daughter.
+ */
+export function childrenInParty(party: PartyMember[]): string[] {
+  return party.filter(m => childAge(m.age) || party.some(o => o !== m && (o.relationships ?? []).some(r => sameFirstName(r.to, m.name) && CHILD_RELATIONS.test(r.relation))))
+    .map(m => m.name);
+}
+
+/**
+ * The one tone rule a table with a child gets. Seen live: "'Wanders off' —
+ * the words could be Biz's epitaph." about a ten-year-old. Danger stays;
+ * the morbid framing goes.
+ */
+export function childToneRule(party: PartyMember[]): string {
+  const kids = childrenInParty(party);
+  if (kids.length === 0) return '';
+  const who = kids.length === 1 ? `${kids[0]} is a child` : `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]} are children`;
+  return `FAMILY TABLE: ${who}. Peril and stakes are fine — danger, fear, narrow escapes, real consequences — but never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die.`;
+}
+
 const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
 const NON_NAME_WORDS = new Set(['The', 'They', 'Their', 'A', 'An', 'And', 'But', 'Or', 'I', 'We', 'You', 'He', 'She', 'It', 'This', 'That', 'These', 'Those', 'Keep', 'Make', 'Let', 'Use', 'Run', 'Give', 'When', 'If', 'Both', 'Each', 'All']);
 
@@ -346,6 +377,8 @@ Storytelling principles:
   if (dmInstructions) prompt += `\nDM direction: ${dmInstructions}\n`;
   const partyBlock = describeParty(input.party ?? []);
   if (partyBlock) prompt += `\n${partyBlock}\n`;
+  const toneRule = childToneRule(input.party ?? []);
+  if (toneRule) prompt += `\n${toneRule}\n`;
 
   if (input.campaignMaterials) {
     prompt += `\nCampaign reference materials:\n${input.campaignMaterials}\n`;
@@ -829,7 +862,7 @@ ${people}`;
     // backstory, and from there in the character agent's prompt every turn.
     const tableCharacters = (opts.tableCharacters ?? []).filter(c => c.name.trim());
     const tableBlock = tableCharacters.length > 0
-      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''}`).join('\n')}\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want.\n`
+      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''}`).join('\n')}\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
       : '';
     const worldBlock = opts.seed
       ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\n`
@@ -848,7 +881,7 @@ DIRECT — the plain thing, when you need a specific field. "What do we call the
 
 INDIRECT — imagine the character in a real place from the world below and ask what they WOULD do, notice, or want there. "Picture your character on the tidal stair as the water comes up — what would make them stop?" It is a hypothetical about who they are, not a scene they are in. Never ask for a game term this way. Infer aspects, skills and a trouble from how they answer, and reflect what you inferred back in plain language so they can correct you.
 
-PRONOUNS — early on, as soon as you know their name, ask how the character should be referred to: she/her, he/him, they/them, or something else. One plain, friendly question, asked once. Until the player answers, never call the character he or she — not in your reply and not anywhere in the sheet: use their name, or "they".
+PRONOUNS — early on, as soon as you know their name, ask how the character should be referred to: she/her, he/him, they/them, or something else. One plain, friendly question, asked once. Until the player answers, never call the character he, him, his, she or her — not in your reply (including the very message that asks: "what would catch Liz's attention?" or "their attention", never "her attention") and not anywhere in the sheet: use their name, or "they".
 
 Open indirect. Use direct questions only to close the gaps listed below. Never present a checklist, never ask for more than two things at once, and never use the words "high concept", "aspect" or "stunt" in a question — describe what you mean instead.
 

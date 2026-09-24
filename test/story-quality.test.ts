@@ -313,3 +313,31 @@ describe('player-visible world text keeps the mystery hidden', () => {
     expect(system).toMatch(/rumou?rs? (that )?hint/i);
   });
 });
+
+// Live: "'Wanders off' — the words could be Biz's epitaph." Biz is ten. Peril
+// is fine at a family table; a child's death framed morbidly is not.
+describe('a table with a child keeps peril, not morbidity', () => {
+  const base = { preset: 'chronicler', dmCustomPrompt: null, houseRules: null, dmInstructions: null, campaignMaterials: null, influences: [] };
+
+  it('states the tone rule when a party member is a child, by age or by a relationship', async () => {
+    const { assembleSystemPrompt, childrenInParty } = await import('../src/server/agents/dm.js');
+    const { systemPrompt } = assembleSystemPrompt({ ...base, party: [LIZ, BIZ] });
+    expect(systemPrompt).toMatch(/Biz is a child/);
+    expect(systemPrompt).toMatch(/epitaph/);
+    expect(systemPrompt).toMatch(/peril and stakes are fine/i);
+    // No age on the sheet, but Liz's sheet says Biz is her kid.
+    expect(childrenInParty([LIZ, { ...BIZ, age: undefined }])).toEqual(['Biz']);
+    expect(childrenInParty([{ ...LIZ, relationships: [] }, { ...BIZ, age: '9 years old' }])).toEqual(['Biz']);
+  });
+
+  it('leaves it out when everyone is an adult', async () => {
+    const { assembleSystemPrompt } = await import('../src/server/agents/dm.js');
+    const { systemPrompt } = assembleSystemPrompt({ ...base, party: [{ ...LIZ, relationships: [] }, { name: 'Ana', highConcept: 'Retired Smuggler', age: 61 }] });
+    expect(systemPrompt).not.toMatch(/is a child/);
+  });
+
+  it('the trouble-compel line never calls anything a character\'s epitaph', async () => {
+    const src = (await import('node:fs')).readFileSync(join(__dirname, '..', 'src', 'server', 'game-loop.ts'), 'utf8');
+    expect(src).not.toMatch(/`[^`\n]*epitaph[^`\n]*`/);
+  });
+});

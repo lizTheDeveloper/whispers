@@ -412,6 +412,34 @@ export class WorldBible {
     return parts.join('\n');
   }
 
+  /**
+   * Where things stand at the end, for the epilogue and closing reflections:
+   * each item the party has seen with its latest known holder or place, and
+   * each place the party actually went. Events carry no location, so "what
+   * happened where" is not recorded here — only where the party has been.
+   */
+  getEndingFacts(campaignId: string): { items: string[]; places: string[] } {
+    const items = (this.db.prepare(
+      `SELECT i.name,
+              COALESCE(e.name, json_extract(c.definition, '$.name')) AS holder_name,
+              i.holder_id AS holder_id,
+              l.name AS location_name
+       FROM items i
+       LEFT JOIN entities e ON i.holder_id = e.id
+       LEFT JOIN characters c ON i.holder_id = c.id
+       LEFT JOIN locations l ON i.location_id = l.id
+       WHERE i.campaign_id = ? AND i.known_to_party = 1
+       ORDER BY i.name`
+    ).all(campaignId) as Array<{ name: string; holder_name: string | null; holder_id: string | null; location_name: string | null }>).map(i =>
+      i.holder_name ? `${i.name} — last held by ${i.holder_name}`
+        : i.holder_id ? `${i.name} — held by someone the record does not name`
+        : i.location_name ? `${i.name} — last seen at ${i.location_name}, not carried by the party`
+        : `${i.name} — not carried by anyone in the party`);
+    const places = (this.db.prepare('SELECT name, description FROM locations WHERE campaign_id = ? AND visited = 1 ORDER BY name').all(campaignId) as Array<{ name: string; description: string | null }>)
+      .map(l => l.description ? `${l.name}: ${l.description.slice(0, 140)}` : l.name);
+    return { items, places };
+  }
+
   updateItemHolder(campaignId: string, itemName: string, holderId: string | null): void {
     // Changing hands happens in a narrated resolution — the party has seen it.
     this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1 WHERE campaign_id = ? AND name = ? COLLATE NOCASE')

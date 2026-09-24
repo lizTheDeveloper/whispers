@@ -40,6 +40,9 @@ const canned = {
   resolution: 'The form rustles; the clerk grunts and waves them on.',
   decisions: {} as Record<string, { chosenAction: string; spokenWords: string | null }>,
   epilogue: 'The queue closed behind them, and the Bureau went quiet.',
+  proposals: undefined as string[] | undefined,
+  /** What the pronoun-consistency rewrite returns (undefined → echo 'ok', which is rejected). */
+  pronounRewrite: {} as Record<string, string>,
 };
 
 vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
@@ -54,7 +57,13 @@ vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
     if (all.includes('Pacing:')) {
       return { narration: canned.narration, currentLocationName: 'The Intake Hall', activeNpcs: [], isSceneEnd: false };
     }
+    if (all.includes('You correct how people are referred to in a passage')) {
+      const passage = all.split('Passage:\n')[1] ?? '';
+      const hit = Object.entries(canned.pronounRewrite).find(([from]) => passage.includes(from));
+      return hit ? passage.replace(hit[0], hit[1]) : 'ok';
+    }
     if (all.includes('Propose 2-4 actions')) {
+      if (canned.proposals) return { actions: canned.proposals.map(description => ({ description, reasoning: 'r' })) };
       return { actions: [{ description: 'I take a numbered ticket from the dispenser', reasoning: 'queue' }, { description: 'I ask the clerk where we are', reasoning: 'talk' }] };
     }
     if (all.includes('Choose your action now')) {
@@ -138,7 +147,7 @@ let seq = 0;
  * A fresh table with Liz and Biz, run until `until` says stop (or a timeout).
  * `lizState` lets a test start Liz already taken out.
  */
-async function runLoop(opts: { seed?: WorldSeed; lizState?: typeof STATE; bizState?: typeof STATE; until: (m: ServerMessage, all: ServerMessage[]) => boolean; timeoutMs?: number; endGame?: boolean }) {
+async function runLoop(opts: { seed?: WorldSeed; liz?: CharacterDefinition; biz?: CharacterDefinition; lizState?: typeof STATE; bizState?: typeof STATE; until: (m: ServerMessage, all: ServerMessage[]) => boolean; timeoutMs?: number; endGame?: boolean; setup?: (campaignId: string) => void }) {
   const { createRoom } = await import('../src/server/room.js');
   const { setWorldSeed, markSeedAccepted, seedWorld } = await import('../src/server/world-seed.js');
   const { GameLoop } = await import('../src/server/game-loop.js');
@@ -150,9 +159,10 @@ async function runLoop(opts: { seed?: WorldSeed; lizState?: typeof STATE; bizSta
   const lizId = `liz-g-${seq}`;
   const bizId = `biz-g-${seq}`;
   db.prepare('INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)')
-    .run(lizId, campaignId, JSON.stringify(LIZ), JSON.stringify(opts.lizState ?? STATE));
+    .run(lizId, campaignId, JSON.stringify(opts.liz ?? LIZ), JSON.stringify(opts.lizState ?? STATE));
   db.prepare('INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)')
-    .run(bizId, campaignId, JSON.stringify(BIZ), JSON.stringify(opts.bizState ?? STATE));
+    .run(bizId, campaignId, JSON.stringify(opts.biz ?? BIZ), JSON.stringify(opts.bizState ?? STATE));
+  opts.setup?.(campaignId);
   const state: RoomState = {
     campaignId, joinCode, phase: 'playing', currentScene: 0, currentTurn: 0,
     initiativeOrder: [], activeCharacterId: null,
@@ -540,4 +550,192 @@ describe('a taken-out character stays down until they recover', () => {
     expect(declaredTakenOut('Biz worries the clerk will have Liz taken out of the queue.', ['Liz', 'Biz'])).toEqual([]);
     expect(declaredTakenOut('Biz takes out a bottle cap.', ['Liz', 'Biz'])).toEqual([]);
   });
+});
+
+// ─── 5. Pronoun consistency (checked in code, repaired by a small rewrite) ──
+//
+// Live (Liz = she/her, Biz = they/them, both STATED): a resolution read
+// "…give way under his finger… tingles on his skin…" and the epilogue "left a
+// tingling stain on his palm". Prompts alone were not followed. A cheap
+// pre-filter finds a stated member near a conflicting word; only then is the
+// model asked for a pronoun-only rewrite, which is kept only if it is close
+// to the original.
+
+const LIZ_STATED: CharacterDefinition = { ...LIZ, pronouns: 'she/her' };
+const BIZ_STATED: CharacterDefinition = { ...BIZ, pronouns: 'they/them' };
+const MEMBERS = [{ name: 'Liz', pronouns: 'she/her' }, { name: 'Biz', pronouns: 'they/them' }];
+
+describe('the pronoun pre-filter', () => {
+  it('fires on a conflicting pronoun in the same sentence as the name, or the next when that member is the only one named', async () => {
+    const { findPronounConflicts } = await import('../src/server/pronoun-consistency.js');
+    expect(findPronounConflicts('Biz touches the rune and it tingles on his skin.', MEMBERS).map(c => [c.name, c.word])).toEqual([['Biz', 'his']]);
+    expect(findPronounConflicts('Biz presses the rune. It gives way under his finger.', MEMBERS).map(c => [c.name, c.word])).toEqual([['Biz', 'his']]);
+    expect(findPronounConflicts('Biz grins. The boy at the stall waves.', MEMBERS).map(c => c.word)).toEqual(['boy']);
+  });
+
+  it('stays quiet when the pronouns match, when another named member owns the word, or when nothing is stated', async () => {
+    const { findPronounConflicts } = await import('../src/server/pronoun-consistency.js');
+    expect(findPronounConflicts('Biz touches the rune and it tingles on their skin.', MEMBERS)).toEqual([]);
+    expect(findPronounConflicts('Liz takes Biz by the hand and tucks her map away.', MEMBERS)).toEqual([]);
+    expect(findPronounConflicts('Liz frowns at the form; her pen is dry.', MEMBERS)).toEqual([]);
+    // Not stated → never touched.
+    expect(findPronounConflicts('Biz touches the rune and it tingles on his skin.', [{ name: 'Biz' }, { name: 'Liz', pronouns: 'she/her' }])).toEqual([]);
+    // Two sentences away, or with another member named in between, is not "near".
+    expect(findPronounConflicts('Biz presses the rune. Liz watches. The clerk scratches his chin.', MEMBERS).filter(c => c.name === 'Biz')).toEqual([]);
+  });
+});
+
+describe('the pronoun rewrite', () => {
+  it('uses the rewrite when the check fires', async () => {
+    const { withConsistentPronouns } = await import('../src/server/pronoun-consistency.js');
+    const seen: string[] = [];
+    const out = await withConsistentPronouns('Biz presses the rune. It gives way under his finger and tingles on his skin.', MEMBERS, {
+      llm: async (messages) => { seen.push(messages.map(m => m.content).join('\n')); return 'Biz presses the rune. It gives way under their finger and tingles on their skin.'; },
+    });
+    expect(out).toBe('Biz presses the rune. It gives way under their finger and tingles on their skin.');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatch(/change nothing else/i);
+    expect(seen[0]).toContain('- Biz: they/them');
+    expect(seen[0]).toContain('- Liz: she/her');
+  });
+
+  it('makes no LLM call when nothing conflicts', async () => {
+    const { withConsistentPronouns } = await import('../src/server/pronoun-consistency.js');
+    let calls = 0;
+    const text = 'Biz presses the rune; it tingles on their skin while Liz reads her form.';
+    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => { calls++; return 'x'; } })).toBe(text);
+    expect(await withConsistentPronouns('Biz rubs his palm.', [{ name: 'Biz' }], { llm: async () => { calls++; return 'x'; } })).toBe('Biz rubs his palm.');
+    expect(calls).toBe(0);
+  });
+
+  it('keeps the original when the rewrite changes too much or drops a name', async () => {
+    const { withConsistentPronouns, acceptRewrite } = await import('../src/server/pronoun-consistency.js');
+    const text = 'Biz presses the rune. It gives way under his finger and tingles on his skin.';
+    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'Here is the corrected passage, with every pronoun fixed as requested: Biz presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(text);
+    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => 'The kid presses the rune. It gives way under their finger and tingles on their skin.' })).toBe(text);
+    expect(await withConsistentPronouns(text, MEMBERS, { llm: async () => { throw new Error('proxy down'); } })).toBe(text);
+    expect(acceptRewrite('abc Liz', '', ['Liz'])).toBe(false);
+  });
+});
+
+describe('DM prose in play passes the pronoun check', () => {
+  it('rewrites a resolution and the epilogue that misgender Biz, before the table sees them', async () => {
+    const resolution = 'Biz presses the rune. It gives way under his finger and tingles on his skin, which makes his heart race.';
+    const fixedResolution = 'Biz presses the rune. It gives way under their finger and tingles on their skin, which makes their heart race.';
+    const epilogue = 'In the end Biz kept the rune; it left a tingling stain on his palm.';
+    const fixedEpilogue = 'In the end Biz kept the rune; it left a tingling stain on their palm.';
+    canned.resolution = resolution;
+    canned.epilogue = epilogue;
+    canned.pronounRewrite = { [resolution]: fixedResolution, [epilogue]: fixedEpilogue };
+    try {
+      const { broadcasts, calls } = await runLoop({ liz: LIZ_STATED, biz: BIZ_STATED, until: m => m.type === 'resolution', endGame: true });
+      const resolutions = broadcasts.filter(m => m.type === 'resolution').map(m => (m as Extract<ServerMessage, { type: 'resolution' }>).text);
+      expect(resolutions[0]).toContain(fixedResolution);
+      expect(resolutions.join('\n')).not.toMatch(/\bhis\b/);
+      const ep = broadcasts.find(m => m.type === 'narration' && m.isEpilogue) as Extract<ServerMessage, { type: 'narration' }>;
+      expect(ep.text).toBe(fixedEpilogue);
+      expect(calls.filter(c => c.includes('You correct how people are referred to')).length).toBeGreaterThanOrEqual(2);
+    } finally {
+      canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
+      canned.epilogue = 'The queue closed behind them, and the Bureau went quiet.';
+      canned.pronounRewrite = {};
+    }
+  }, 30_000);
+
+  it('asks for no rewrite when the pronouns already match', async () => {
+    canned.resolution = 'Biz presses the rune. It gives way under their finger.';
+    try {
+      const { calls, broadcasts } = await runLoop({ liz: LIZ_STATED, biz: BIZ_STATED, until: m => m.type === 'resolution' });
+      expect(calls.filter(c => c.includes('You correct how people are referred to'))).toEqual([]);
+      const resolutions = broadcasts.filter(m => m.type === 'resolution').map(m => (m as Extract<ServerMessage, { type: 'resolution' }>).text);
+      expect(resolutions[0]).toContain('Biz presses the rune. It gives way under their finger.');
+    } finally {
+      canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
+    }
+  }, 30_000);
+});
+
+// ─── 6. "Mom Liz" ──────────────────────────────────────────────────────────
+
+describe('"Mom Liz" is never said', () => {
+  it("becomes \"Mom\" in Biz's action options", async () => {
+    canned.proposals = ['I tell Mom Liz to keep Sir Tumblefoot busy while I check the drawer', 'I wait by the door'];
+    try {
+      const { broadcasts } = await runLoop({ until: (_m, all) => all.some(x => x.type === 'action-proposals' && x.characterName === 'Biz') });
+      const biz = broadcasts.find(m => m.type === 'action-proposals' && m.characterName === 'Biz') as Extract<ServerMessage, { type: 'action-proposals' }>;
+      expect(biz.actions[0]).toBe('I tell Mom to keep Sir Tumblefoot busy while I check the drawer');
+    } finally {
+      canned.proposals = undefined;
+    }
+  }, 30_000);
+
+  it('becomes "Liz" in narration', async () => {
+    const { namesInNarration } = await import('../src/server/narrative-guards.js');
+    expect(namesInNarration('Biz is traveling with Mom Liz.', [{ name: 'Liz', address: 'Mom' }])).toBe('Biz is traveling with Liz.');
+  });
+});
+
+describe('the character interview reply', () => {
+  const bizSheet = { name: 'Biz', pronouns: null as string | null, relationships: [{ to: 'Liz', relation: 'mother', address: 'Mom' }] };
+
+  it('calls a companion by name, not "Mom Liz"', async () => {
+    const { guardInterviewReply } = await import('../src/server/pronoun-consistency.js');
+    const out = await guardInterviewReply('So Biz is traveling with Mom Liz. What does Biz carry?', { ...bizSheet, pronouns: 'they/them' }, ['Liz'], { llm: async () => { throw new Error('no call expected'); } });
+    expect(out).toBe('So Biz is traveling with Liz. What does Biz carry?');
+  });
+
+  it('rewrites "her" for the character being made while their pronouns are unknown', async () => {
+    const { guardInterviewReply } = await import('../src/server/pronoun-consistency.js');
+    const prompts: string[] = [];
+    const out = await guardInterviewReply('Great, Liz it is. What would catch her attention first?', { name: 'Liz', pronouns: null, relationships: [] }, [], {
+      llm: async (m) => { prompts.push(m.map(x => x.content).join('\n')); return 'Great, Liz it is. What would catch their attention first?'; },
+    });
+    expect(out).toBe('Great, Liz it is. What would catch their attention first?');
+    expect(prompts[0]).toMatch(/never he, him, his, she or her/);
+  });
+
+  it('leaves the reply alone once pronouns are stated, or when the pronoun belongs to someone else at the table', async () => {
+    const { guardInterviewReply } = await import('../src/server/pronoun-consistency.js');
+    const noCall = { llm: async (): Promise<string> => { throw new Error('no call expected'); } };
+    expect(await guardInterviewReply('What would catch her attention?', { name: 'Liz', pronouns: 'she/her', relationships: [] }, [], noCall)).toBe('What would catch her attention?');
+    expect(await guardInterviewReply('Does Liz let you out of her sight?', bizSheet, ['Liz'], noCall)).toBe('Does Liz let you out of her sight?');
+  });
+});
+
+describe('asking for pronouns is not using them', () => {
+  it('does not fire on a list of pronoun options', async () => {
+    const { interviewGendersCharacter, findPronounConflicts } = await import('../src/server/pronoun-consistency.js');
+    expect(interviewGendersCharacter('How should I refer to Liz — she/her, he/him, they/them, or something else?', [])).toBe(false);
+    expect(findPronounConflicts('Biz wears a badge that says they / them, not he/him.', MEMBERS)).toEqual([]);
+  });
+});
+
+// Live: "In the vaulted atrium of the Stamp Market" (the atrium is in the
+// Department), and Liz closing on "now the Golden Seal is ours" after the
+// seal was handed to the cabinet. The ending is given where things are.
+describe('the ending knows where the items and places are', () => {
+  it('gives the epilogue and the closing reflections item holders and the places visited, and says not to guess', async () => {
+    const { calls } = await runLoop({
+      until: m => m.type === 'whisper-prompt',
+      endGame: true,
+      setup: (campaignId) => {
+        db.prepare("UPDATE items SET known_to_party = 1, holder_id = (SELECT id FROM entities WHERE campaign_id = ? AND name = 'Clerk Oswin Pell') WHERE campaign_id = ? AND name = 'Blank Form 27-B'").run(campaignId, campaignId);
+        db.prepare("UPDATE locations SET visited = 1 WHERE campaign_id = ? AND name = 'Archive Nine'").run(campaignId);
+        // Memories, so the closing reflections are written.
+        for (const who of ['liz', 'biz']) {
+          const id = db.prepare("SELECT id FROM characters WHERE campaign_id = ? AND id LIKE ?").get(campaignId, `${who}-g-%`) as { id: string };
+          db.prepare("INSERT INTO character_memories (id, character_id, campaign_id, scene_number, turn_number, type, content, importance) VALUES (?, ?, ?, 1, 1, 'event', ?, 0.9)").run(`m-${id.id}`, id.id, campaignId, 'We handed the form over.');
+        }
+      },
+    });
+    const epilogue = calls.find(c => c.includes('session epilogues'))!;
+    expect(epilogue).toMatch(/Blank Form 27-B[^\n]*Clerk Oswin Pell/);
+    expect(epilogue).toMatch(/Archive Nine/);
+    expect(epilogue).toMatch(/not sure where something happened or who has an item, do not say/i);
+    expect(epilogue).toMatch(/Liz \([^)]*\):[^\n]*carrying nothing/);
+    const reflection = calls.find(c => c.includes('closing reflection'));
+    expect(reflection).toBeDefined();
+    expect(reflection).toMatch(/Blank Form 27-B[^\n]*Clerk Oswin Pell/);
+    expect(reflection).toMatch(/not sure where something happened or who has an item, do not say/i);
+  }, 30_000);
 });

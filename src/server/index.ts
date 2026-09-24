@@ -25,6 +25,7 @@ import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
+import { guardInterviewReply } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
@@ -1323,6 +1324,7 @@ wss.on('connection', (ws) => {
         const before = checkInterviewReadiness(interviewSheet(interview));
         const fullHistory = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
         const history = windowInterviewHistory(fullHistory);
+        const tableCharacters = listTableCharacters(db, campaign.id, currentPlayer.sessionToken);
         const reply = await dm.interviewForCharacter({
           systemId: campaign.systemId,
           preset: campaign.dmPreset,
@@ -1331,8 +1333,12 @@ wss.on('connection', (ws) => {
           seed: getWorldSeed(db, campaign.id),
           history,
           unmet: before.detail,
-          tableCharacters: listTableCharacters(db, campaign.id, currentPlayer.sessionToken),
+          tableCharacters,
         });
+        // Names, not "Mom Liz"; and no he/she for a character whose
+        // pronouns are not on the sheet yet (as of this reply).
+        const sheetAsOfReply = reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview);
+        reply.reply = await guardInterviewReply(reply.reply, sheetAsOfReply, tableCharacters.map(c => c.name));
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
         // interview was fetched BEFORE the await above — a stale snapshot
