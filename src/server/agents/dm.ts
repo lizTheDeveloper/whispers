@@ -5,6 +5,7 @@ import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, Char
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { PLAIN_PROSE_STYLE } from './style.js';
 import { repetitionNotes } from '../narrative-guards.js';
+import { npcPronounBlock, seedNpcPronouns } from '../npc-pronouns.js';
 import { repairGenderedNouns } from '../pronoun-consistency.js';
 import { influenceKey } from '../world-readiness.js';
 import { wantsNoSpoilers } from '../../shared/spoilers.js';
@@ -380,7 +381,7 @@ export function wantsGentlePeril(texts: Array<string | null | undefined>): boole
 }
 
 /** How a gentle-peril table is run: what tension is made of, and what it never is. */
-const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, silliness, lost things, bureaucratic obstacles, ticking clocks, puzzles and near-misses — real stakes, told the way a good children\'s book tells them. Never describe bodily harm or pain (no bones, skulls, jaws, teeth rattling in heads, sharp pain, wounds, blood or gore), no weapons or weapon sounds (no guns, gunshots, blades), nobody is ever hunted, stalked, preyed on or eaten — not by crowds, doors, monsters or anything else — and nothing tightens around anyone\'s body (no ropes, nooses or chains). Threats are grumpy, silly, bureaucratic or mysterious, never predatory — and never permanent: nobody is threatened with being trapped, lost or archived forever, filed away as a permanent fixture, or left with only one terrifying way out, and storms, rooms and paperwork never eat anyone or anything. Do not repeat the same threat beat after beat.';
+const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, silliness, lost things, bureaucratic obstacles, muddles, puzzles and things that go wrong — real stakes, told the way a good children\'s book tells them. Nothing comes close to hurting anyone: no near-misses to the body (nothing slams down "missing their ear by a whisker", nothing whizzes past a head), and nothing bites, snaps or nips at anyone — not animals, paperwork or furniture ("the paperwork might bite back" is out). No punishment or countdown threats aimed at the child: nobody threatens detention, arrest, confiscation or being kept behind, and no NPC gives anyone a number of minutes before something bad happens ("you have four minutes before the queue resets", "a five-minute detention") — a queue can move and a clock can tick in the background, but it never counts down at the kid. Nothing is "terrifying" or "horrifying": a goose waddles with great determination, not terrifying determination. Never describe bodily harm or pain (no bones, skulls, jaws, teeth rattling in heads, sharp pain, wounds, blood or gore), no weapons or weapon sounds (no guns, gunshots, blades), nobody is ever hunted, stalked, preyed on or eaten — not by crowds, doors, monsters or anything else — and nothing tightens around anyone\'s body (no ropes, nooses or chains). Threats are grumpy, silly, bureaucratic or mysterious, never predatory — and never permanent: nobody is threatened with being trapped, lost or archived forever, filed away as a permanent fixture, or left with only one terrifying way out, and storms, rooms and paperwork never eat anyone or anything. Do not repeat the same threat beat after beat.';
 
 /**
  * How a gentle table's story ends. Live (Z9JKG2, gentle peril, a
@@ -741,6 +742,8 @@ export class DmAgent {
     arrivalExpected?: boolean;
     /** What each character carries (their starting kit): the only props the opening may put on them. */
     inventories?: Array<{ name: string; inventory: string[] }>;
+    /** Every NPC's fixed pronouns (npcPronounBlock): the opening can put anyone on stage. */
+    npcPronouns?: string;
   }): Promise<DmOpening> {
     const { systemPrompt, criticalReminder } = this.buildSystemPrompt(ctx);
     const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
@@ -766,6 +769,8 @@ export class DmAgent {
       // Live (7MJXE5): with no record in the prompt, the opening put a coffee
       // mug in Liz's hand and a juice box in Biz's — neither was theirs.
       opts.inventories ? itemsOnHandBlock(opts.inventories) : '',
+      opts.npcPronouns ? `\n<npc_pronouns>\n${opts.npcPronouns}\n</npc_pronouns>` : '',
+      turnToneBlock(ctx),
       `\n<task>`,
       arrivalExpected
         ? `0. arrival: REQUIRED — 1-2 sentences of the moment of arrival itself, happening to ${names}: the lurch or fall or flash, landing or waking up here, blinking, disoriented, realising a moment ago they were somewhere else entirely. This is about THEM, not the place — it must never be scenery alone. The transport is told HERE and only here; the narration below picks up right after it.`
@@ -1047,11 +1052,20 @@ Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","te
    * briefing — they should want to be somewhere in it before they are asked
    * who they are. Keep the influences in the prose and out of the content.
    */
-  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed }): Promise<string> {
+  async introduceWorld(opts: { preset: string; influences: string[]; seed: WorldSeed; /** The host asked for gentle peril: the register holds from the first sight of the world. */ gentlePeril?: boolean }): Promise<string> {
     // Plot hooks (and NPC motivations) are DM secrets and are deliberately
     // not given to this prompt: whatever it knows, the player may read.
     const places = opts.seed.locations.slice(0, 4).map(l => `${l.name}: ${l.description}`).join('\n');
-    const people = opts.seed.npcs.slice(0, 4).map(n => `${n.name}: ${n.description}`).join('\n');
+    const npcs = opts.seed.npcs.slice(0, 4);
+    const pronouns = seedNpcPronouns(npcs);
+    const people = npcs.map(n => {
+      const p = pronouns.find(x => x.name === n.name)?.pronouns;
+      return `${n.name}${p ? ` (${p})` : ''}: ${n.description}`;
+    }).join('\n');
+    // Live (7MJXE5): Barnaby's seed said it/its and both players' first
+    // sight of the world said "his oversized briefcase… He looks you in the eye".
+    const pronounRule = npcPronounBlock(pronouns);
+    const toneRule = opts.gentlePeril ? `\n\n${childToneRule([], { gentlePeril: true })}` : '';
 
     const systemPrompt = `You are a TTRPG Dungeon Master ("${opts.preset}" style) introducing a player to a world they are about to make a character for.
 
@@ -1067,7 +1081,7 @@ Places:
 ${places}
 
 People:
-${people}`;
+${people}${pronounRule ? `\n\n${pronounRule}` : ''}${toneRule}`;
 
     return callProse({
       messages: [
@@ -1106,7 +1120,7 @@ ${people}`;
       ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). Use the relation word the player used ("kid" stays "kid").\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
       : '';
     const worldBlock = opts.seed
-      ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\n`
+      ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => { const p = seedNpcPronouns([n])[0]?.pronouns; return `${n.name} (${[p, n.disposition ?? 'unknown'].filter(Boolean).join(', ')})`; }).join(', ')}\n${npcPronounBlock(seedNpcPronouns(opts.seed.npcs.slice(0, 5)))}\n`
       : '';
     const unmetBlock = opts.unmet.length > 0
       ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nEvery reply asks about at least one of these — the way a person would, one or two at a time.\n`

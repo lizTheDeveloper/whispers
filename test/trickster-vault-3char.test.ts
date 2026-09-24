@@ -351,7 +351,7 @@ describeIfLive('Trickster + Clockwork Vault: 3-Character Extended Heist', () => 
         if (resolution.type === 'resolution') {
           narrations.push(resolution.text);
           if (resolution.text.includes('stress') || resolution.text.includes('Stress')) stressEvents++;
-          if (/draws on|channels|Something shifts|tide turns/i.test(resolution.text)) invokeCount++;
+          if (/draws on|channels|Something shifts|tide turns|leans on|makes it count|at work|what this moment needed/i.test(resolution.text)) invokeCount++;
           if (/old habits|rears its head|epitaph|glimmer of fate|the wrong moment/i.test(resolution.text)) compelCount++;
         }
 

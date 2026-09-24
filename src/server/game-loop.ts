@@ -16,11 +16,13 @@ import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
 import { getSessionTokenForCharacter } from './room.js';
 import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
+import { LineRotation, invokeLines, compelLines } from './template-lines.js';
+import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
 import { PLAIN_PROSE_STYLE } from './agents/style.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import { transcriptVisibleTo, storyLines } from './transcript-visibility.js';
-import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
+import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState, WorldSeed } from '../shared/types.js';
 import type { PauseReason, ServerMessage } from '../shared/protocol.js';
 import {
   premiseImpliesArrival, hasArrivalBeat, fallbackArrival, narratesTransport,
@@ -64,6 +66,21 @@ const TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'ki
 function getFirstName(fullName: string): string {
   const parts = fullName.split(/\s+/);
   return parts.find(p => !TITLES.has(p.toLowerCase())) ?? parts[0]!;
+}
+
+/**
+ * Did the host ask for gentle or cozy peril? Read off what they said — their
+ * setup messages and the direction written from them, all stored on the
+ * campaign. Throws when the campaign cannot be read.
+ */
+export function campaignWantsGentlePeril(db: Database.Database, campaignId: string): boolean {
+  const row = db.prepare('SELECT setup_chat, dm_instructions, dm_custom_prompt FROM campaigns WHERE id = ?').get(campaignId) as { setup_chat?: string | null; dm_instructions?: string | null; dm_custom_prompt?: string | null } | undefined;
+  let hostLines: string[] = [];
+  try {
+    const chat = row?.setup_chat ? JSON.parse(row.setup_chat) as Array<{ role: string; content: string }> : [];
+    hostLines = Array.isArray(chat) ? chat.filter(m => m?.role === 'user' && typeof m.content === 'string').map(m => m.content) : [];
+  } catch { /* an unreadable chat says nothing */ }
+  return wantsGentlePeril([...hostLines, row?.dm_instructions, row?.dm_custom_prompt]);
 }
 
 /** Grounding for the epilogue and closing reflections, stated once so both say the same thing. */
@@ -208,6 +225,8 @@ export class GameLoop {
   // play, so that narration picks up from the arrival instead of re-setting
   // the stage the table just heard.
   private openingJustDelivered = false;
+  /** The server's stock lines (fate-point beats, outcome corrections), rotated per game so none repeats soon. */
+  private lines = new LineRotation();
   private sceneWhisperStats = new Map<string, { name: string; followed: number; partial: number; ignored: number; trustStart: number; trustEnd: number }>();
   private broadcastFn: (msg: ServerMessage) => void;
 
@@ -529,13 +548,7 @@ export class GameLoop {
   private gentlePeril(): boolean {
     if (this.gentlePerilCache !== null) return this.gentlePerilCache;
     try {
-      const row = this.db.prepare('SELECT setup_chat, dm_instructions, dm_custom_prompt FROM campaigns WHERE id = ?').get(this.campaignId) as { setup_chat?: string | null; dm_instructions?: string | null; dm_custom_prompt?: string | null } | undefined;
-      let hostLines: string[] = [];
-      try {
-        const chat = row?.setup_chat ? JSON.parse(row.setup_chat) as Array<{ role: string; content: string }> : [];
-        hostLines = Array.isArray(chat) ? chat.filter(m => m?.role === 'user' && typeof m.content === 'string').map(m => m.content) : [];
-      } catch { /* an unreadable chat says nothing */ }
-      this.gentlePerilCache = wantsGentlePeril([...hostLines, row?.dm_instructions, row?.dm_custom_prompt]);
+      this.gentlePerilCache = campaignWantsGentlePeril(this.db, this.campaignId);
       if (this.gentlePerilCache) console.log('[game-loop] the host asked for gentle peril — it goes into every turn');
     } catch (e) {
       console.error('[game-loop] could not read the table tone:', e);
@@ -566,6 +579,8 @@ export class GameLoop {
       if (fixed !== text) console.log(`[guard] narration names/phrases repaired: ${changedSpan(text, fixed)}`);
       // "her son Biz" for a they/them Biz: the noun only, never a pronoun.
       fixed = repairGenderedNouns(fixed, this.pronounMembers());
+      // An NPC's fixed pronoun, where nobody else could be meant.
+      fixed = this.fixNpcPronouns(fixed);
       // A table with a child: the few images that read as horror, softened.
       if (this.familyTable()) fixed = softenForChildren(fixed);
       return fixed;
@@ -579,6 +594,50 @@ export class GameLoop {
   private pronounMembers(): PronounMember[] {
     return Array.from(this.characters.values()).map(c => ({ name: c.definition.name, pronouns: c.definition.pronouns ?? null, relationships: c.definition.relationships ?? [] }));
   }
+
+  /** Every NPC, with fixed pronouns where the story has them (null where not). */
+  private allNpcs(): Array<{ name: string; pronouns: string | null }> {
+    try {
+      const fixed = new Map(this.worldBible.getNpcPronouns(this.campaignId).map(n => [n.name, n.pronouns]));
+      return (this.db.prepare("SELECT name FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(this.campaignId) as Array<{ name: string }>)
+        .filter(r => !this.isPartyName(r.name))
+        .map(r => ({ name: r.name, pronouns: fixed.get(r.name) ?? null }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Party and NPC pronouns in one line, for prompts that are not the DM's (memories, reflections). */
+  private castPronouns(): string {
+    const party = Array.from(this.characters.values()).map(c => ({ name: c.definition.name, pronouns: this.ownPronouns(c) ?? null }));
+    return castPronounLine(party, this.worldBible.getNpcPronouns(this.campaignId));
+  }
+
+  /**
+   * An NPC's fixed pronoun put back where no one else could be meant (see
+   * correctNpcPronouns); anything less certain is only logged. `speech`: the
+   * whole text is a character's own words.
+   */
+  private fixNpcPronouns(text: string, opts: { speech?: boolean } = {}): string {
+    if (!text?.trim()) return text;
+    try {
+      const party = Array.from(this.characters.values()).map(c => ({ name: c.definition.name, pronouns: this.ownPronouns(c) ?? null }));
+      const otherNames = [...this.worldBible.getAllLocationNames(this.campaignId), ...this.worldBible.getItemNames(this.campaignId), ...Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id).map(t => t.address))];
+      const { text: out, fixes, flagged } = correctNpcPronouns(text, this.allNpcs(), party, { speech: opts.speech, otherNames });
+      if (fixes.length > 0) console.log(`[pronouns] NPC pronoun fixed: ${fixes.map(f => `${f.name} "${f.from}" → "${f.to}"`).join('; ')}`);
+      if (flagged.length > 0) console.log(`[pronouns] NPC pronoun mismatch, left as written: ${flagged.join('; ')}`);
+      return out;
+    } catch (e) {
+      console.error('[pronouns] NPC pronoun check failed, text left as written:', e);
+      return text;
+    }
+  }
+
+  /** A memory as it is stored: the NPC pronoun fix, and gentle at a family table. */
+  private memoryRepair = (text: string): string => {
+    const fixed = this.fixNpcPronouns(text, { speech: true });
+    return this.familyTable() ? softenForChildren(fixed) : fixed;
+  };
 
   /**
    * DM prose as the table will see it: guardText (names, gendered nouns,
@@ -617,6 +676,11 @@ export class GameLoop {
       : outcome === 'success-with-cost'
       ? `${firstName} succeeds, but not without a price.`
       : outcomeLines(firstName, this.ownPronouns(character)).success;
+  }
+
+  /** The last stretch of story the table has read, for the stock-line rotation (see template-lines.ts). */
+  private recentStoryText(): string {
+    return this.recentDmBeats(16).join('\n');
   }
 
   /** The DM's last few beats (narration and rulings), for the repeated-beat guard. */
@@ -874,6 +938,7 @@ export class GameLoop {
       }, {
         premise, scenarioOpening, places, arrivalExpected,
         inventories: Array.from(this.characters.values()).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })),
+        npcPronouns: npcPronounBlock(this.worldBible.getNpcPronouns(this.campaignId)),
       }), (e) => {
       console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
       return null;
@@ -1387,6 +1452,8 @@ export class GameLoop {
         return { name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble, stress: c.state.stress, lastAction: lastAction || undefined, ...this.companionView(character, c) };
       });
     const ownPronouns = this.ownPronouns(character);
+    // Everyone this character could name: met, in the scene with them, or named in it.
+    const npcPronouns = this.worldBible.getNpcPronounsForParty(this.campaignId, this.state.currentLocationId, sceneNarration);
 
     const proposals = await this.haltable(() => this.characterAgent.proposeActions({
         definition: character.definition,
@@ -1397,6 +1464,7 @@ export class GameLoop {
         worldContext: fullCharContext,
         partyMembers,
         ownPronouns,
+        npcPronouns,
       }), (e) => {
       console.error('[game-loop] action proposal failed:', e);
       return { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }, { description: 'Press forward despite the uncertainty', reasoning: 'Fallback bold option' }] };
@@ -1479,7 +1547,7 @@ export class GameLoop {
     }
 
     const decision = await this.haltable(() => this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: transcriptVisibleTo(this.transcript, characterId), memories, worldContext: fullCharContext, partyMembers, ownPronouns },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: transcriptVisibleTo(this.transcript, characterId), memories, worldContext: fullCharContext, partyMembers, ownPronouns, npcPronouns },
         whisper,
       ), (e) => {
       console.error('[game-loop] action decision failed:', e);
@@ -1602,6 +1670,10 @@ export class GameLoop {
         : (proposals.actions[0]?.description ?? 'Surveys the surroundings, weighing the options carefully');
       if (decision.spokenWords) decision.spokenWords = withoutWhisperMentions(decision.spokenWords) || null;
     }
+    // Their own words keep the NPCs' pronouns (live: "Barnaby didn’t steal it, he’s showing us!").
+    decision.chosenAction = this.fixNpcPronouns(decision.chosenAction, { speech: true });
+    if (decision.spokenWords) decision.spokenWords = this.fixNpcPronouns(decision.spokenWords, { speech: true });
+    decision.innerThought = this.fixNpcPronouns(decision.innerThought, { speech: true });
 
     let actionTranscript = `${character.definition.name}: ${decision.chosenAction}`;
     if (decision.spokenWords) {
@@ -1767,7 +1839,7 @@ export class GameLoop {
           const correctionBeats: Record<string, string[]> = outcomeLines(getFirstName(character.definition.name), this.ownPronouns(character)).correction;
           const beats = correctionBeats[correctOutcome] ?? [];
           if (beats.length > 0) {
-            resolution.narration = resolution.narration.trimEnd().replace(/\.?$/, '. ') + beats[(this.state.currentTurn ?? 0) % beats.length];
+            resolution.narration = resolution.narration.trimEnd().replace(/\.?$/, '. ') + this.lines.pick(`correction-${correctOutcome}`, beats, this.recentStoryText());
           }
         }
       }
@@ -1826,12 +1898,7 @@ export class GameLoop {
         console.log(`[game-loop] Auto-invoke: ${character.definition.name} spends 1 FP (${currentFp} → ${newFp}) on "${bestAspect}" — ${resolution.outcome} → ${upgradedOutcome}`);
         resolution.outcome = upgradedOutcome;
         const invokeFirst = getFirstName(character.definition.name);
-        const invokeBeats = [
-          `${invokeFirst} draws on "${bestAspect}" — and the tide turns.`,
-          `Something shifts — "${bestAspect}" — and ${invokeFirst} finds a way through.`,
-          `${invokeFirst} channels "${bestAspect}," turning a near-miss into a decisive moment.`,
-        ];
-        resolution.narration += ' ' + invokeBeats[(this.state.currentTurn ?? 0) % invokeBeats.length];
+        resolution.narration += ' ' + this.lines.pick('invoke', invokeLines(invokeFirst, bestAspect), this.recentStoryText());
         this.addTranscript('system', `[${character.definition.name} invokes "${bestAspect}" for +2 — outcome upgraded to ${upgradedOutcome}! (${newFp} FP remaining)]`);
       }
     }
@@ -1962,16 +2029,7 @@ export class GameLoop {
         this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
         const compelFirst = getFirstName(character.definition.name);
         const compelTrouble = character.definition.trouble;
-        const compelVariants = [
-          `${compelFirst} feels the pull of old habits — "${compelTrouble}" — and the universe grants a small mercy in return.`,
-          `But "${compelTrouble}" rears its head, complicating everything — though fate offers ${compelFirst} a consolation.`,
-          // Read at family tables too (a ten-year-old heard "the words could
-          // be Biz's epitaph"): trouble stays trouble, never a death.
-          `"${compelTrouble}" — the words could be ${compelFirst}'s motto. But fate is generous to those it tests.`,
-          `"${compelTrouble}" crosses ${compelFirst}'s path once more, and with it comes a glimmer of fate's favor.`,
-          `${compelFirst}'s "${compelTrouble}" makes itself known at precisely the wrong moment — as it always does.`,
-        ];
-        resolution.narration += `\n\n${compelVariants[(this.state.currentTurn ?? 0) % compelVariants.length]}`;
+        resolution.narration += `\n\n${this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText())}`;
         affectedCharIds.add(characterId);
       }
     }
@@ -2044,6 +2102,7 @@ export class GameLoop {
       characterId, this.campaignId, character.definition.name,
       decision.chosenAction, resolution.narration, whisper,
       this.state.currentScene, this.state.currentTurn,
+      { pronounNote: this.castPronouns(), repair: this.memoryRepair },
     ).then(stored => {
       if (stored.length > 0) console.log(`[memory] ${character.definition.name}: stored ${stored.length} memories (${stored.map(m => m.type).join(', ')})`);
     }).catch(e => console.error('[memory] extraction failed:', e));
@@ -2056,6 +2115,7 @@ export class GameLoop {
         this.state.currentScene, this.state.currentTurn,
         // What the actor calls this observer ("Mom" for Liz): "my hand" in Liz's own memory.
         this.addressTermsOf(characterId).filter(t => this.namesMatch(t.name, observer.definition.name)).map(t => t.address),
+        { pronounNote: this.castPronouns(), repair: this.memoryRepair },
       ).catch(e => console.error(`[memory] observer extraction failed for ${observer.definition.name}:`, e));
     }
 
@@ -2390,11 +2450,12 @@ export class GameLoop {
         : trustPct >= 40 ? 'You second-guessed yourself often, and sometimes you were right to.'
         : 'You learned to rely on your own judgment above anything else.';
       const toneRule = this.familyTable() ? childToneRule(this.partyForDm(), { gentlePeril: this.gentlePeril(), ending: true }) : '';
+      const cast = this.castPronouns();
 
       try {
         const reflection = await callProse({
           messages: [
-            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Both lines are shown to everyone at the table: never mention a whisper, "the voice" or any voice you heard.${toneRule ? ` ${toneRule}` : ''} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your inner reflection` },
+            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Both lines are shown to everyone at the table: never mention a whisper, "the voice" or any voice you heard. ${cast}${toneRule ? ` ${toneRule}` : ''} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your inner reflection` },
             { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nLooking back: ${trustArc}\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.${where}\n\nWhat happened: ${sceneSummaries}${ending}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. Your memories include plans and hopes, not only things that happened: only the record and the ending say what happened. One line each. ${ENDING_FACTS_RULE}${facts}` },
           ],
           // Two short lines (~80 tokens), but reasoning comes out of the same
@@ -2407,7 +2468,9 @@ export class GameLoop {
         // whisper (it is broadcast to the table), gentle at a family table.
         const members = this.pronounMembers();
         const self = members.find(m => this.namesMatch(m.name, char.definition.name));
-        const { spoken, thought } = publicReflection(reflection, { self, members, familyTable: this.familyTable() });
+        const reflected = publicReflection(reflection, { self, members, familyTable: this.familyTable() });
+        const spoken = reflected.spoken ? this.fixNpcPronouns(reflected.spoken, { speech: true }) : reflected.spoken;
+        const thought = reflected.thought ? this.fixNpcPronouns(reflected.thought, { speech: true }) : reflected.thought;
 
         if (spoken || thought) {
           this.broadcastFn({
@@ -2909,4 +2972,28 @@ export class GameLoop {
       }
     }
   }
+}
+
+/**
+ * A player's first sight of the world as it is shown: an NPC's seed pronouns
+ * put back where nobody else could be meant, and gentle when the host asked
+ * for gentle peril. Live (7MJXE5): "Barnaby the Bureaucratic Goose waddles
+ * with terrifying determination, his oversized briefcase… He looks you in
+ * the eye" — Barnaby is it/its and the host had asked for gentle peril.
+ */
+export function worldIntroductionAsShown(text: string, seed: WorldSeed, gentlePeril: boolean): string {
+  if (!text?.trim()) return text;
+  let out = text;
+  try {
+    const fixed = new Map(seedNpcPronouns(seed.npcs).map(n => [n.name, n.pronouns]));
+    const npcs = seed.npcs.map(n => ({ name: n.name, pronouns: fixed.get(n.name) ?? null }));
+    const otherNames = [...seed.locations.map(l => l.name), ...seed.items.map(i => i.name)];
+    const res = correctNpcPronouns(out, npcs, [], { otherNames });
+    if (res.fixes.length > 0) console.log(`[world-introduction] NPC pronoun fixed: ${res.fixes.map(f => `${f.name} "${f.from}" → "${f.to}"`).join('; ')}`);
+    if (res.flagged.length > 0) console.log(`[world-introduction] NPC pronoun mismatch, left as written: ${res.flagged.join('; ')}`);
+    out = res.text;
+  } catch (e) {
+    console.error('[world-introduction] NPC pronoun check failed, text left as written:', e);
+  }
+  return gentlePeril ? softenForChildren(out) : out;
 }

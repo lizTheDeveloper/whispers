@@ -25,7 +25,7 @@ import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './worl
 import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
 import { DmAgent, wantsNoSpoilers, nextSetupQuestion } from './agents/dm.js';
-import { GameLoop } from './game-loop.js';
+import { GameLoop, campaignWantsGentlePeril, worldIntroductionAsShown } from './game-loop.js';
 import { guardInterviewReply, neutralSetupNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
@@ -543,11 +543,15 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
       return;
     }
     const dm = new DmAgent(db);
-    const text = await dm.introduceWorld({
+    let gentlePeril = false;
+    try { gentlePeril = campaignWantsGentlePeril(db, campaign.id); } catch (e) { console.error('[world-introduction] could not read the table tone:', e); }
+    const raw = await dm.introduceWorld({
       preset: campaign.dmPreset,
       influences: getInfluences(db, campaign.id),
       seed,
+      gentlePeril,
     });
+    const text = worldIntroductionAsShown(raw, seed, gentlePeril);
     // introduceWorld calls callLlm with no schema, so a proxy hiccup (outage,
     // an all-whitespace body, a response that was nothing but thinking tags)
     // comes back as '' rather than throwing. Appending that would store an
