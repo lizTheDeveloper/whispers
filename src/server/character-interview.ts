@@ -107,9 +107,12 @@ export function appendInterviewTurn(db: Database.Database, id: string, turn: Int
  * ready sheet, and that new sheet must require its own confirmation rather
  * than silently inheriting the old confirmation.
  */
-export function setInterviewDefinition(db: Database.Database, id: string, definition: CharacterDefinition): void {
-  db.prepare("UPDATE character_interviews SET definition = ?, status = 'open', updated_at = datetime('now') WHERE id = ?")
-    .run(JSON.stringify(definition), id);
+export function setInterviewDefinition(db: Database.Database, id: string, definition: CharacterDefinition | null): void {
+  // The running draft follows the finished sheet: it continues from it, and
+  // clearing the sheet clears the draft with it.
+  const json = definition ? JSON.stringify(definition) : null;
+  db.prepare("UPDATE character_interviews SET definition = ?, draft = ?, status = 'open', updated_at = datetime('now') WHERE id = ?")
+    .run(json, json, id);
 }
 
 export function setInterviewDraft(db: Database.Database, id: string, draft: CharacterDefinition): void {
