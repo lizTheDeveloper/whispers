@@ -190,9 +190,8 @@ describe('round 16 in play: a gentle table with a ten-year-old', () => {
       expect(o.actions.join(' ')).not.toMatch(/slams shut|on her hand/);
       expect(o.actions).toHaveLength(2);
     }
-    expect(listed.length).toBe(opts.length);
-    // Liz's options are not gated: she is not the child.
-    expect(listed.every(l => l.some(x => x.includes('citation')))).toBe(true);
+    // One call per list of Biz's. (Round 18: Liz's options are judged too, under the grown-up's rule — see r18-tone-loop.)
+    expect(listed.filter(l => l.some(x => x.includes('citation'))).length).toBe(opts.length);
   });
 
   it('Biz\'s thought loses the flagged sentence; Liz\'s loses the fate point', () => {
