@@ -25,6 +25,7 @@
  *     only child in the party is Biz. "her kid Biz", "Liz's kid", "Biz".
  */
 import { changedSpan, kinAddressTerms, namesInNarration, quoteRuns } from './narrative-guards.js';
+import { SENTENCE_BREAK, splitSentences } from './sentences.js';
 import type { CharacterDefinition } from '../shared/types.js';
 
 export interface PronounMember {
@@ -82,12 +83,7 @@ function mentions(sentence: string, member: PronounMember): boolean {
   return new RegExp(`\\b${esc(firstName(member.name))}\\b`).test(sentence);
 }
 
-const SENTENCE_BREAK = /(?<=[.!?…]["”’']?)\s+|\n+/g;
-
-/** Sentences, split after terminal punctuation (and any closing quote) or a line break. */
-export function splitSentences(text: string): string[] {
-  return text.split(SENTENCE_BREAK).map(s => s.trim()).filter(Boolean);
-}
+export { splitSentences };
 
 interface Piece {
   text: string;
@@ -386,6 +382,108 @@ export function repairGenderedNouns(text: string, members: PronounMember[], opts
   }
   if (out !== text) console.log(`[pronouns] gendered noun repaired: ${changedSpan(text, out)}`);
   return out;
+}
+
+// ─── A they/them child, called "her son", "the boy" or "its" ───────────────
+
+/** Words between a possessive or "the" and the noun: "her little son", "the ten-year-old girl". */
+const CHILD_ADJ = String.raw`(?:(?:little|young|small|tiny|brave|clever|sweet|poor|youngest|eldest|oldest|only|dear|[\w]+-year-old)\s+){0,2}`;
+/** After "the boy": someone the story is introducing, not the child already in the sentence ("the boy behind the counter"). */
+const SOMEONE_NEW_AFTER = /^\s+(?:who|that|whom|behind|at|from|in|near|with|on|by|beside|across|next|over|under|outside|inside|of)\b/i;
+/** What a they/them child's "its" is always the child's own: their body, their gaze, what they hold close. */
+const OWN_THINGS = String.raw`(?:gaze|eyes?|hands?|head|face|fingers?|feet|foot|voice|breath|mind|attention|pockets?|grip|shoulders?|arms?|nose|heart|cheeks?|lips|mouth|chin|knees?|legs?|hair|toes?|thumbs?|palms?|fists?|ears?|sneakers|shoes|sleeves?|smile|frown|brow|forehead|wrists?|neck|stare|focus|bottle\s+caps)`;
+
+function isNeutral(m: PronounMember): boolean {
+  const k = keyOf(m.pronouns);
+  return k === 'they' || k === 'other';
+}
+
+export interface ChildNounOptions {
+  /** NPCs by name: a sentence naming one could mean their son, their boy, their "its". */
+  npcNames?: string[];
+}
+
+/**
+ * Gendered child nouns for a party member whose stated pronouns are
+ * they/them (or another set that is neither he nor she), in DM prose,
+ * where no one else could be meant. Live (WXKC2C), all logged and all left
+ * in: "she looks down at the pen, then at her son", "Liz's steady hand on
+ * Biz's shoulder grounds the boy", "As Biz keeps its gaze locked…".
+ *
+ *  - "her son" / "Liz's son" (daughter, boy, girl): the possessor is a party
+ *    member named in the sentence (for her/his/their, the only one named
+ *    whose pronouns fit), and that member's only child in the party is the
+ *    they/them member. → "her kid".
+ *  - "the boy" / "the girl": the they/them member is named EARLIER in the
+ *    same sentence, and "the boy" is not being introduced ("the boy behind
+ *    the counter", "the boy who…"). → "the kid".
+ *  - "Biz keeps its gaze": the name, one verb, "its", and something only
+ *    they could own (gaze, hands, pocket…), with no thing named before it.
+ *    → "their".
+ *
+ * Never in a sentence that names an NPC or anyone the party does not know,
+ * never inside quoted speech, and never a pronoun other than that "its".
+ */
+export function repairChildNouns(text: string, members: PronounMember[], opts: ChildNounOptions = {}): string {
+  if (!text || members.length === 0) return text;
+  const targets = members.filter(isNeutral);
+  if (targets.length === 0) return text;
+  const kinTest = /\b(?:son|daughter|boy|girl|its)\b/i;
+  if (!kinTest.test(text)) return text;
+  const namesNpc = npcMatcher(members, opts.npcNames ?? []);
+  const { lead, list } = pieces(text);
+  let changed = false;
+  const out = list.map(p => {
+    const sentence = p.text;
+    if (!kinTest.test(sentence) || namesNpc(sentence) || namesSomeoneElse(sentence, members)) return p.text + p.sep;
+    const named = members.filter(m => mentions(sentence, m));
+    const namedTargets = targets.filter(t => named.includes(t));
+    let pos = 0;
+    const fixed = quoteRuns(sentence).map(run => {
+      const start = pos;
+      pos += run.text.length;
+      if (run.quoted) return run.text;
+      let t = run.text;
+      // "her son", "Liz's little boy".
+      t = t.replace(new RegExp(String.raw`\b(her|his|their|([A-Z][\w-]*)['’]s)(\s+${CHILD_ADJ})(son|daughter|boy|girl)\b(?!['’]?\s*[A-Z])`, 'g'), (whole, poss: string, owner: string | undefined, mid: string, noun: string) => {
+        let parent: PronounMember | undefined;
+        if (owner) parent = members.find(m => firstName(m.name) === owner);
+        else {
+          const want: Key = poss === 'her' ? 'she' : poss === 'his' ? 'he' : 'they';
+          const fits = named.filter(m => keyOf(m.pronouns) === want);
+          parent = fits.length === 1 ? fits[0] : undefined;
+        }
+        if (!parent) return whole;
+        const child = onlyChildInParty(parent, members);
+        if (!child || !targets.includes(child)) return whole;
+        return `${poss}${mid}${matchCase(noun, 'kid')}`;
+      });
+      // "grounds the boy, who stops chewing" — Biz named before it.
+      if (namedTargets.length === 1) {
+        const target = namedTargets[0]!;
+        const firstAt = sentence.search(new RegExp(`\\b${esc(firstName(target.name))}\\b`));
+        t = t.replace(new RegExp(String.raw`\b([Tt]he\s+${CHILD_ADJ})(boy|girl)\b`, 'g'), (whole, before: string, noun: string, offset: number, all: string) => {
+          if (firstAt < 0 || firstAt > start + offset) return whole;
+          if (SOMEONE_NEW_AFTER.test(all.slice(offset + whole.length))) return whole;
+          return `${before}${matchCase(noun, 'kid')}`;
+        });
+        // "As Biz keeps its gaze locked" — only their own things, and no thing named before.
+        t = t.replace(new RegExp(String.raw`\b(${esc(firstName(target.name))}\s+(?:[a-z]+ly\s+)?[a-z]+\s+)its(\s+${OWN_THINGS}\b)`, 'g'), (whole, before: string, after: string, offset: number, all: string) => {
+          if (/^\s*it\b/i.test(target.pronouns ?? '')) return whole;
+          const prefix = sentence.slice(0, start + offset);
+          if (/\b(?:the|a|an|this|that|these|those)\s+[\w-]+/i.test(prefix)) return whole;
+          return `${before}their${after}`;
+        });
+      }
+      return t;
+    }).join('');
+    if (fixed !== sentence) changed = true;
+    return fixed + p.sep;
+  }).join('');
+  if (!changed) return text;
+  const result = lead + out;
+  console.log(`[pronouns] child noun repaired: ${changedSpan(text, result)}`);
+  return result;
 }
 
 /** Relation words that name a child without a gender: the word a speaker's sheet may record for them ("kid"). */

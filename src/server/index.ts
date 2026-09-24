@@ -19,7 +19,7 @@ import {
 import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
-  withoutSeedSpoilers, withoutSetupFieldDumps, withoutFalseDraftClaim, setupUnmetForModel, seedWithHostNouns, seedForHost, withHiddenSeedFields,
+  withoutSeedSpoilers, withoutSetupFieldDumps, withoutSetupMechanics, withoutFalseDraftClaim, setupUnmetForModel, seedWithHostNouns, seedForHost, withHiddenSeedFields,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
@@ -31,7 +31,7 @@ import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
   getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewDraft, setInterviewStatus, getInterviewBySession, listTableCharacters,
-  interviewSheet, mergeCharacterDraft, statedAddressTerms, withStatedAddressTerms, withStatedStuntDescriptions,
+  interviewSheet, mergeCharacterDraft, statedAddressTerms, withStatedAddressTerms, withStatedStuntDescriptions, repeatsEarlierReply, interviewFallbackReply,
   type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness, checkInterviewReadiness } from './character-readiness.js';
@@ -1362,7 +1362,7 @@ wss.on('connection', (ws) => {
         const fullHistory = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
         const history = windowInterviewHistory(fullHistory);
         const tableCharacters = listTableCharacters(db, campaign.id, currentPlayer.sessionToken);
-        const reply = await dm.interviewForCharacter({
+        const interviewOpts = {
           systemId: campaign.systemId,
           preset: campaign.dmPreset,
           playerName: currentPlayer.playerName,
@@ -1371,7 +1371,24 @@ wss.on('connection', (ws) => {
           history,
           unmet: before.detail,
           tableCharacters,
-        });
+        };
+        let reply = await dm.interviewForCharacter(interviewOpts);
+        // Live (WXKC2C): Liz's second reply was her first, word for word,
+        // after she had answered it. Asked once more; if that repeats too,
+        // a plain line built from the checklist goes instead (below).
+        let repeated = repeatsEarlierReply(reply.reply, fullHistory);
+        if (repeated) {
+          console.warn('[char-chat] interview reply repeats an earlier one word for word; asking once more');
+          try {
+            const again = await dm.interviewForCharacter({
+              ...interviewOpts,
+              history: [...history, { role: 'assistant', content: reply.reply }, { role: 'user', content: '(That reply repeats one you already gave, word for word. Answer what I said last, and ask about something that is still missing.)' }],
+            });
+            if (!repeatsEarlierReply(again.reply, fullHistory)) { reply = again; repeated = false; }
+          } catch (e) {
+            console.error('[char-chat] retry after a repeated reply failed:', e);
+          }
+        }
         // Names, not "Mom Liz"; and no he/she for a character whose
         // pronouns are not on the sheet yet (as of this reply).
         // An address term the player stated outright ("Please keep 'calls Liz
@@ -1393,7 +1410,9 @@ wss.on('connection', (ws) => {
           return sheetWithNeutralNouns(withStatedStuntDescriptions(withStatedAddressTerms(sheet, terms), playerLines), [...(self.name ? [self] : []), ...tableMembers]);
         };
         const sheetAsOfReply = withStated(reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview));
-        reply.reply = guardInterviewReply(reply.reply, sheetAsOfReply, tableMembers);
+        reply.reply = repeated
+          ? interviewFallbackReply(checkInterviewReadiness(sheetAsOfReply))
+          : guardInterviewReply(reply.reply, sheetAsOfReply, tableMembers);
         appendInterviewTurn(db, interview.id, { role: 'assistant', content: reply.reply });
 
         // interview was fetched BEFORE the await above — a stale snapshot
@@ -1502,6 +1521,8 @@ wss.on('connection', (ws) => {
         const noSpoilers = spoilerFreeHost(campaign, currentPlayer.setupChat);
         const movingOn = `I have the shape of it — the rest you will discover in play. ${nextSetupQuestion(before.detail).replace(/^Noted\.\s*/, '')}`;
         reply.reply = withoutSetupFieldDumps(reply.reply, { noSpoilers, fallback: movingOn });
+        // Live (WXKC2C): "I am setting this to 'done' so the world card can be generated for you to see."
+        reply.reply = withoutSetupMechanics(reply.reply, movingOn);
         if (noSpoilers) {
           reply.reply = withoutSeedSpoilers(reply.reply, getWorldSeed(db, campaign.id), movingOn, [reply.dmCustomPrompt, campaign.dmCustomPrompt]);
         }

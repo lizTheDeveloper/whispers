@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { CharacterDefinition } from '../shared/types.js';
+import type { CharacterDefinition, CharacterReadiness } from '../shared/types.js';
+import { beatOverlap } from './narrative-guards.js';
 
 export type InterviewStatus = 'open' | 'confirmed' | 'live' | 'revoked';
 
@@ -379,4 +380,27 @@ export function listTableCharacters(db: Database.Database, campaignId: string, e
     add(row.definition);
   }
   return out;
+}
+
+/**
+ * An interview reply that says again, word for word, what the interviewer
+ * already said this interview. Live (WXKC2C): Liz's second reply was an exact
+ * copy of her first ("It is wonderful to meet you, Liz. I have noted…"),
+ * after she had answered its questions.
+ */
+export function repeatsEarlierReply(reply: string, history: InterviewTurn[]): boolean {
+  const norm = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const r = norm(reply);
+  if (r.split(' ').length < 6) return false;
+  return history.some(t => t.role === 'assistant' && (norm(t.content) === r || beatOverlap(reply, t.content) >= 0.9));
+}
+
+/**
+ * What the interviewer says instead of repeating itself, when asking again
+ * repeated it too: the sheet is ready, or what is still needed.
+ */
+export function interviewFallbackReply(readiness: CharacterReadiness): string {
+  if (readiness.ready) return 'Got it — I have updated the character sheet. Have a look at it below, and confirm it when it reads right, or tell me what to change.';
+  const next = readiness.detail.slice(0, 2).map(d => d.replace(/[.!?]+$/, '')).join('; ');
+  return `Got it — that is on the sheet. Still to settle: ${next}.`;
 }

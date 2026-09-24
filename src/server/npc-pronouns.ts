@@ -1,6 +1,7 @@
 import { npcPronounInNarration } from './whisper-suggestions.js';
 import { quoteRuns } from './narrative-guards.js';
 import { pluralVerb } from '../shared/pronouns.js';
+import { TITLE } from './sentences.js';
 
 /**
  * An NPC's pronouns, fixed once and handed to the DM every turn. Live
@@ -60,11 +61,36 @@ export function npcPronounBlock(list: Array<{ name: string; pronouns: string }>)
   return `NPC pronouns — fixed; use exactly these for each NPC every time, in narration and in anyone's speech (never switch an NPC's pronouns mid-game): ${list.map(n => `${n.name}: ${n.pronouns}`).join('; ')}.`;
 }
 
+/** Pronouns that are neither he nor she: they/them, xe/xem, … */
+export function neutralPronouns(pronouns: string | null | undefined): boolean {
+  const first = pronouns?.trim().toLowerCase().split(/[\s/,]+/)[0] ?? '';
+  return !!first && !['he', 'him', 'she', 'her'].includes(first);
+}
+
+/**
+ * The gendered words never to use for a party member whose pronouns are
+ * they/them (or another set that is neither he nor she). Live (WXKC2C):
+ * Biz, they/them and ten, was "her son", "the boy" and "its gaze".
+ */
+export function neutralNounRule(name: string, pronouns?: string | null): string {
+  const itsOwn = /^\s*it\b/i.test(pronouns ?? '');
+  return `${name} is never "son", "daughter", "boy" or "girl" (say "kid" or "child")${itsOwn ? '' : ' and never "it" or "its"'}`;
+}
+
+/** "Party pronouns: Liz: she/her; Biz: they/them. Biz is never "son"…" — '' when nobody has stated any. */
+export function partyPronounLine(party: Array<{ name: string; pronouns?: string | null }>): string {
+  const stated = party.filter(p => p.pronouns?.trim());
+  if (stated.length === 0) return '';
+  const neutral = stated.filter(p => neutralPronouns(p.pronouns));
+  const nouns = neutral.length > 0 ? ` ${neutral.map(p => neutralNounRule(p.name.trim().split(/\s+/)[0] ?? p.name, p.pronouns)).join('; ')}.` : '';
+  return `Party pronouns: ${stated.map(p => `${p.name}: ${p.pronouns!.trim()}`).join('; ')}.${nouns}`;
+}
+
 /** "Liz: she/her" etc. for every party member, and the NPC line — the whole cast, for prompts that are not the DM's (memories, reflections). */
 export function castPronounLine(party: Array<{ name: string; pronouns?: string | null }>, npcs: Array<{ name: string; pronouns: string }>): string {
   const parts: string[] = [];
-  const stated = party.filter(p => p.pronouns?.trim());
-  if (stated.length > 0) parts.push(`Party pronouns: ${stated.map(p => `${p.name}: ${p.pronouns!.trim()}`).join('; ')}.`);
+  const partyLine = partyPronounLine(party);
+  if (partyLine) parts.push(partyLine);
   const unstated = party.filter(p => !p.pronouns?.trim());
   if (unstated.length > 0) parts.push(`${unstated.map(p => p.name).join(', ')}: pronouns not stated — use the name or "they".`);
   const npcLine = npcPronounBlock(npcs);
@@ -292,7 +318,8 @@ export function correctNpcPronouns(
     if (!opts.speech) for (const [a, b] of quoted) for (let k = a; k < b; k++) chars[k] = ' ';
     return chars.join('');
   })();
-  const sentenceRe = /[^.!?…\n]+(?:[.!?…]+["”’']?|(?=\n)|$)/gu;
+  // A title's full stop ("Ms. Hark") does not end the sentence.
+  const sentenceRe = new RegExp(String.raw`(?:(?<![\w'’-])${TITLE}\.|[^.!?…\n])+(?:[.!?…]+["”’']?|(?=\n)|$)`, 'gu');
   let sm: RegExpExecArray | null;
   while ((sm = sentenceRe.exec(text))) {
     const sStart = sm.index;
