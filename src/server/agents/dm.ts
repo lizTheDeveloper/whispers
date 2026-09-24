@@ -421,7 +421,7 @@ export function childToneRule(party: PartyMember[], opts: { gentlePeril?: boolea
 }
 
 /** The never-cross lines, at every rating — mature included (round 20). */
-export const SAFETY_FLOOR = 'SAFETY FLOOR, at every rating: never any sexual content involving a child, a minor or a young character, and never sexualise one in any way; nothing sexual is ever explicit — romance fades to black.';
+export const SAFETY_FLOOR = 'SAFETY FLOOR, at every rating — the studio\'s bright lines, not a dial: never any sexual content involving a child, a minor or a young character, and never sexualise one in any way; never violence, injury or a threat of harm aimed at a child or minor, player character or NPC, by anyone — a child character may be in danger\'s way, never its target. And nothing sexual is ever explicit, for anyone: romance fades to black.';
 
 /** How a storybook table is run (round 20): all ages, like Paddington or a Studio Ghibli film. */
 const STORYBOOK_REGISTER = 'STORYBOOK register (all ages, like Paddington or a Studio Ghibli film): real suspense, danger, drama, chases, spooky places, storms, villains with schemes and grumpy, flustered or frightened NPCs are welcome, and failure matters. Never: a threat, harm or erasure aimed at a child; body horror, gore, or lingering on wounds or blood; the world or an NPC separating a child from their grown-up; a grown-up scolding, suspecting or shaming a child; anything sexual. Villains threaten plans, places and grown-ups, never a child\'s body.';

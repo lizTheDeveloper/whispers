@@ -12,6 +12,7 @@ import { callProse, isLlmAbort, runWithLlmSignal } from './agents/llm-client.js'
 import { findPronounConflicts, ownKinNouns, repairChildNouns, repairGenderedNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
+import { floorBackstop, withoutFloorBreaches, minorsInParty, describesChild } from './safety-floor.js';
 import { campaignWantsGentlePeril, hostSetupMessages, tableRating, setStoredContentRating, storedContentRating, type TableRating } from './content-rating.js';
 import { ratingPolicy, ratingChangeLine, parseContentRating, type ContentRating, type RatingPolicy } from '../shared/rating.js';
 import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
@@ -657,7 +658,7 @@ export class GameLoop {
   }
 
   /** The gate's tier for a judge's context: only when it is not the gentle judge (which is the default). */
-  private toneTier(): { tier?: 'storybook' | 'adventure' } {
+  private toneTier(): { tier?: 'storybook' | 'adventure' | 'floor' } {
     const gate = this.policy().gate;
     return gate && gate !== 'gentle' ? { tier: gate } : {};
   }
@@ -690,8 +691,28 @@ export class GameLoop {
   private async toneGated<T>(kind: ToneKind, first: T, textOf: (v: T) => string, regenerate: (feedback: string) => Promise<T | null | undefined>, opts: { soften?: (v: T) => T; extraFlags?: (text: string) => string[]; label?: string; mapText?: (v: T, edit: (text: string) => string) => T } = {}): Promise<T> {
     // Round 20: the rating decides whether this kind is judged, and by which criteria.
     if (!this.policy().gates(kind)) return first;
-    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames(), people: this.partyPeople(), ...this.toneTier() }, judge: GameLoop.toneJudge });
+    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames(), people: this.partyPeople(), minors: this.minorNames(), ...this.toneTier() }, judge: GameLoop.toneJudge });
     return result.value;
+  }
+
+  /**
+   * Everyone the safety floor protects (round 20), by first name: player
+   * characters under 18 or described as kids (minorsInParty — wider than
+   * the gentle default's childrenInParty), and NPCs described as children.
+   * An adult may play a child character; the floor is about what happens TO
+   * them, at every rating.
+   */
+  private minorNames(): string[] {
+    const pcs = minorsInParty(this.partyForDm()).map(n => getFirstName(n));
+    let npcs: string[] = [];
+    try {
+      npcs = (this.db.prepare("SELECT name, description FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(this.campaignId) as Array<{ name: string; description: string | null }>)
+        .filter(r => describesChild(r.description) || describesChild(r.name))
+        .map(r => r.name.replace(/^(?:the|a|an)\s+/i, ''));
+    } catch (e) {
+      console.error('[floor] could not read the NPCs for the safety floor:', e);
+    }
+    return [...new Set([...pcs, ...npcs])];
   }
 
   /** The child player characters, by first name (for the tone judge). */
@@ -771,6 +792,8 @@ export class GameLoop {
       fixed = fixIndefiniteArticles(fixed);
       // "A small, velvety The Dust Bunny" (39PF4D).
       fixed = withoutTheAfterArticle(fixed);
+      // Round 20: the safety floor's deterministic pass, on every piece of DM prose, at every rating.
+      fixed = withoutFloorBreaches(fixed, { minors: this.minorNames() }, 'DM prose').text;
       return fixed;
     } catch (e) {
       console.error('[guard] narration name guard failed, text left as written:', e);
@@ -2000,12 +2023,21 @@ export class GameLoop {
       const options = proposals.actions;
       const gated = await this.haltable(
         () => gateChildOptions(options.map(a => a.description), child
-          ? { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name, ...this.toneTier() }
-          : { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: 'adult', label: character.definition.name, ...this.toneTier() }),
+          ? { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name, minors: this.minorNames(), ...this.toneTier() }
+          : { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: 'adult', label: character.definition.name, minors: this.minorNames(), ...this.toneTier() }),
         (e) => { console.error('[tone-gate] options gate failed — kept as written:', e); return { keep: options.map((_, i) => i), dropped: [] }; },
       );
       if (!gated) return;
       proposals.actions = gated.keep.map(i => options[i]!);
+    }
+    // Round 20: the safety floor, at every rating — an option that crosses it is never offered.
+    {
+      const floorCtx = { minors: this.minorNames() };
+      proposals.actions = proposals.actions.filter(a => {
+        if (floorBackstop(a.description, floorCtx).length === 0) return true;
+        console.warn(`[floor] options (${character.definition.name}): dropped "${a.description.slice(0, 160)}"`);
+        return false;
+      });
     }
 
     if (!(await this.pace({ window: true }))) return;
@@ -2132,6 +2164,16 @@ export class GameLoop {
       decision.chosenAction = sheetPhrasesToNames(decision.chosenAction, others);
     }
 
+    // Round 20: the safety floor, at every rating — a character's action,
+    // words and thought never carry violence or sexual content aimed at a
+    // child. What crosses it goes; an action left empty falls back below.
+    {
+      const floorCtx = { minors: this.minorNames() };
+      const label = character.definition.name;
+      decision.chosenAction = withoutFloorBreaches(decision.chosenAction, floorCtx, `action (${label})`).text;
+      if (decision.spokenWords) decision.spokenWords = withoutFloorBreaches(decision.spokenWords, floorCtx, `speech (${label})`).text || null;
+      decision.innerThought = withoutFloorBreaches(decision.innerThought, floorCtx, `thought (${label})`).text;
+    }
     if (decision.chosenAction.trim().length < 20) {
       console.log(`[game-loop] Degenerate action detected (${decision.chosenAction.trim().length} chars: "${decision.chosenAction.trim()}"), using proposal fallback`);
       decision.chosenAction = proposals.actions[0]?.description ?? 'Surveys the surroundings, weighing the options carefully';
@@ -2230,7 +2272,7 @@ export class GameLoop {
     if (thoughtPolicy.childThought && this.isChild(character)) {
       const thought = decision.innerThought;
       const gated = await this.haltable(
-        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), people: this.thoughtPeople(character), label: character.definition.name, soften: thoughtPolicy.soften, ...this.toneTier() }),
+        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), people: this.thoughtPeople(character), label: character.definition.name, soften: thoughtPolicy.soften, minors: this.minorNames(), ...this.toneTier() }),
         (e) => { console.error('[tone-gate] thought gate failed — kept softened:', e); return thoughtPolicy.soften ? softenForChildren(thought) : thought; },
       );
       if (gated === null) return;

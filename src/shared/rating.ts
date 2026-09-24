@@ -17,17 +17,26 @@
  *  - adventure  teen: real danger, fights and scares; a light gate for gore
  *               and sexual content only. Endings may be open or bleak.
  *  - mature     adults: dark themes, horror and violence as the table
- *               wishes. No gate, no softener.
+ *               wishes. No softener; the judge reads for the safety floor
+ *               alone.
  *
- * The safety floor (never sexual content involving a minor; never explicit
- * sexual content) is in the DM's prompt at every rating, mature included.
+ * The safety floor — the studio's bright lines, not a dial — holds at every
+ * rating, mature included: no sexual content involving a minor or child
+ * character, and no violence, injury or threat aimed at one (PC or NPC);
+ * nothing sexual is ever explicit. It is in the DM's prompt, in every judge
+ * call, and in a deterministic backstop that runs on every gated text and
+ * stands in when the judge cannot answer (server/safety-floor.ts).
  */
 
 export const CONTENT_RATINGS = ['gentle', 'storybook', 'adventure', 'mature'] as const;
 export type ContentRating = typeof CONTENT_RATINGS[number];
 
-/** The tone gate's criteria tier: which judge criteria are active. */
-export type ToneTier = 'gentle' | 'storybook' | 'adventure';
+/**
+ * The tone gate's criteria tier: which judge criteria are active. 'floor' is
+ * the safety floor alone (mature): the studio's bright lines, which every
+ * other tier carries too.
+ */
+export type ToneTier = 'gentle' | 'storybook' | 'adventure' | 'floor';
 
 /** The DM outputs the gate can read (tone-gate.ts's ToneKind). */
 export type RatedKind = 'ruling' | 'narration' | 'opening' | 'world-intro' | 'epilogue' | 'reflection' | 'setup' | 'options' | 'thought';
@@ -72,7 +81,7 @@ export function defaultContentRating(opts: { gentleAsked: boolean; childPresent:
 
 export interface RatingPolicy {
   rating: ContentRating;
-  /** The tone gate's criteria tier, or null: no gate at all. */
+  /** The tone gate's criteria tier ('floor' at mature: the safety floor alone). Never null in practice — the floor runs at every rating. */
   gate: ToneTier | null;
   /** Does the tone gate read this kind of output at this rating? */
   gates: (kind: RatedKind) => boolean;
@@ -104,7 +113,8 @@ const POLICIES: Record<ContentRating, Omit<RatingPolicy, 'gates' | 'rating'> & {
   gentle: { gate: 'gentle', kinds: [...PROSE, 'setup', 'options', 'thought'], soften: true, endings: 'warm-closed', compels: 'gentle', childOptions: true, adultOptions: true, childThought: true, gentleRegister: true },
   storybook: { gate: 'storybook', kinds: [...PROSE, 'options', 'thought'], soften: false, endings: 'warm', compels: 'child-gentle', childOptions: true, adultOptions: false, childThought: true, gentleRegister: false },
   adventure: { gate: 'adventure', kinds: [...PROSE], soften: false, endings: 'open', compels: 'standard', childOptions: false, adultOptions: false, childThought: false, gentleRegister: false },
-  mature: { gate: null, kinds: [], soften: false, endings: 'open', compels: 'standard', childOptions: false, adultOptions: false, childThought: false, gentleRegister: false },
+  // Mature: the safety floor only — one cheap judge call per DM output, never off.
+  mature: { gate: 'floor', kinds: [...PROSE], soften: false, endings: 'open', compels: 'standard', childOptions: false, adultOptions: false, childThought: false, gentleRegister: false },
 };
 
 export function ratingPolicy(rating: ContentRating): RatingPolicy {

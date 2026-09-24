@@ -66,10 +66,11 @@ describe('ratingPolicy', () => {
     expect(p.childThought).toBe(false);
   });
 
-  it('mature: no gate, no softener, open endings, stock lines', () => {
+  it('mature: the safety floor alone on the prose (never off), no softener, open endings, stock lines', () => {
     const p = ratingPolicy('mature');
-    expect(p.gate).toBeNull();
-    for (const k of ['ruling', 'narration', 'opening', 'world-intro', 'epilogue', 'reflection', 'setup', 'options', 'thought'] as const) expect(p.gates(k)).toBe(false);
+    expect(p.gate).toBe('floor');
+    for (const k of ['ruling', 'narration', 'opening', 'world-intro', 'epilogue', 'reflection'] as const) expect(p.gates(k)).toBe(true);
+    for (const k of ['setup', 'options', 'thought'] as const) expect(p.gates(k)).toBe(false);
     expect(p.soften).toBe(false);
     expect(p.endings).toBe('open');
     expect(p.compels).toBe('standard');

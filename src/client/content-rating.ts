@@ -51,8 +51,8 @@ export function resetContentRating(): void {
   last = null;
 }
 
-/** The one line under the host's control when a child PC is at a table rated above gentle. */
-export const CHILD_NOTICE = 'A player character is a child. That is allowed — adults may play one — but this table is rated above Gentle.';
+/** The notice under the host's control when a child PC is at a table rated above gentle (never a block). */
+export const CHILD_NOTICE = 'A player character is a child — that is allowed at any rating. Child characters are protected at every rating: nothing sexual and no violence aimed at them. And at every rating, anything sexual fades to black.';
 
 /** The small badge: "Rated Storybook", with the level's blurb as its title. Hidden until the server says. */
 export function mountRatingBadge(container: HTMLElement, ws: RatingSocket): HTMLElement {

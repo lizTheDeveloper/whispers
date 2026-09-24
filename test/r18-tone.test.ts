@@ -70,7 +70,8 @@ describe('1. the judge\'s criteria name what 39PF4D let through, in other words'
 
   it('the ending criterion keeps its place after the new ones', () => {
     const epi = toneJudgeSystemPrompt('epilogue', BIZ);
-    expect(epi).toMatch(/\n18\. THIS IS AN ENDING/);
+    // Round 20: the two safety-floor criteria (17 → 19) come before it; it stays last.
+    expect(epi).toMatch(/\n20\. THIS IS AN ENDING/);
   });
 
   it('no prompt quotes a live 39PF4D line (they are the bench\'s held-out cases)', () => {

@@ -123,6 +123,8 @@ describe('the host\'s rating control', () => {
     select()!.dispatchEvent(new Event('change'));
     expect(notice().classList.contains('hidden')).toBe(false);
     expect(notice().textContent).toBe(CHILD_NOTICE);
+    expect(CHILD_NOTICE).toContain('Child characters are protected at every rating');
+    expect(CHILD_NOTICE).toContain('fades to black');
     expect(ws.sent.at(-1)).toEqual({ type: 'set-content-rating', rating: 'adventure' });
     ws.emit({ type: 'content-rating', rating: 'adventure', explicit: true, childPresent: true, line: 'The host set the rating to Adventure.' });
     expect(notice().classList.contains('hidden')).toBe(false);

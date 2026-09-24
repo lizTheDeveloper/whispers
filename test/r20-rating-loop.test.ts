@@ -1,6 +1,6 @@
 // Round 20 in play: the content rating is the one switch every tone path
 // reads. With the LLM and both judges mocked:
-//  - mature: no judge call at all, no softener, the MATURE register in
+//  - mature: the safety floor alone is judged, no softener, the MATURE register in
 //    every DM prompt, and a bleak ending goes out as written;
 //  - adventure: the light judge (tier 'adventure') reads the prose, and the
 //    ending is not forced warm — no warm-close instruction, no ending
@@ -160,9 +160,10 @@ describe('round 20 in play: mature', () => {
   let p: Played;
   beforeAll(async () => { p = await play({ rating: 'mature' }); }, 40_000);
 
-  it('the tone gate is skipped: no judge, no list judge', () => {
+  it('the tone gate is skipped — only the safety floor is judged; no list judge', () => {
     expect(p.seen.filter(m => m.type === 'resolution').length).toBeGreaterThanOrEqual(2);
-    expect(p.judged).toEqual([]);
+    expect(p.judged.length).toBeGreaterThan(0);
+    expect(p.judged.every(j => j.ctx?.tier === 'floor')).toBe(true);
     expect(p.listed).toEqual([]);
   });
 

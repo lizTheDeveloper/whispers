@@ -14,12 +14,14 @@ const GORE = 'is graphic gore';
 const SEXUAL = 'is sexual:';
 
 describe('the judge by tier', () => {
-  it('gentle (the default) holds every gentle criterion, 1–17, and the ending as 18', () => {
+  it('gentle (the default) holds every gentle criterion, 1–17, the two safety-floor criteria, and the ending as 20', () => {
     const p = toneJudgeSystemPrompt('epilogue', { children: ['Biz'] });
     expect(p).toContain('TONE JUDGE for a family tabletop game');
     for (const c of [SHADOWS, CHASED, SEPARATE, BODY_HORROR, SHAME]) expect(p).toContain(c);
     expect(p).toContain('17. has anyone judge');
-    expect(p).toContain('18. THIS IS AN ENDING. It must close warm and resolved enough');
+    expect(p).toContain('18. SAFETY FLOOR — is sexual content involving a minor');
+    expect(p).toContain('19. SAFETY FLOOR — is violence, injury or a threat of harm aimed at a minor');
+    expect(p).toContain('20. THIS IS AN ENDING. It must close warm and resolved enough');
     expect(p).not.toContain(GORE);
     expect(toneJudgeSystemPrompt('narration', { tier: 'gentle' })).toBe(toneJudgeSystemPrompt('narration', {}));
   });
