@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Entity, Location, Item, GameEvent, Relationship } from '../shared/types.js';
+import { npcPronounBlock, pronounsInNarration } from './npc-pronouns.js';
 
 export interface WorldBibleDiff {
   newLocations: Array<{ name: string; description: string | null; terrain: string | null }>;
-  newEntities: Array<{ name: string; type: string; description: string | null; disposition: string | null; motivation?: string | null }>;
+  newEntities: Array<{ name: string; type: string; description: string | null; disposition: string | null; motivation?: string | null; pronouns?: string | null }>;
   newItems: Array<{ name: string; description: string | null; properties?: Record<string, unknown>; holderId?: string; locationId?: string }>;
   newEvents: Array<{ sceneNumber: number; description: string; participants: string[]; outcome: string | null }>;
   newRelationships: Array<{ entityAName: string; entityBName: string; type: string; description: string | null }>;
@@ -22,6 +23,25 @@ function mentionsPhrase(text: string, needle: string, caseSensitive = false): bo
 }
 
 const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor', 'the', 'a', 'an', 'of']);
+
+/** Role words that come before a name and are not what narration calls them by: "Clerk Marni" is "Marni". */
+const ROLE_WORDS = new Set([...NAME_TITLES, 'clerk', 'officer', 'agent', 'mister', 'mr', 'mrs', 'ms', 'miss', 'madam', 'madame', 'dr', 'auntie', 'aunt', 'uncle', 'old', 'young', 'little', 'great', 'granny', 'grandpa', 'grandma']);
+
+/** The word narration calls an NPC by: "Marni" for "Clerk Marni", "Odo" for "Odo the Owl", "Postman’s" for "The Postman’s Shadow". */
+export function npcKeyName(name: string): string {
+  const words = name.trim().split(/\s+/);
+  return words.find(w => !ROLE_WORDS.has(w.toLowerCase().replace(/[^\p{L}]/gu, ''))) ?? words[0] ?? name;
+}
+
+function metadataOf(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'string') return {};
+  try {
+    const m = JSON.parse(raw);
+    return m && typeof m === 'object' && !Array.isArray(m) ? m as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Whether narration names this thing. Full name, or the name without a
@@ -181,6 +201,51 @@ export class WorldBible {
     return rows.map(r => ({ id: r.id, campaignId: r.campaign_id, type: r.type, name: r.name, description: r.description, disposition: r.disposition, alive: !!r.alive, locationId: r.location_id, metadata: JSON.parse(r.metadata ?? '{}') }));
   }
 
+  /**
+   * Fix an NPC's pronouns — only when none are set yet. Once an NPC has
+   * pronouns they stay (see npc-pronouns.ts). True when this call set them.
+   */
+  setNpcPronouns(campaignId: string, name: string, pronouns: string): boolean {
+    const row = this.db.prepare('SELECT id, metadata FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name) as { id: string; metadata: string | null } | undefined;
+    if (!row || !pronouns.trim()) return false;
+    const meta = metadataOf(row.metadata);
+    if (typeof meta.pronouns === 'string' && meta.pronouns.trim()) return false;
+    this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ ...meta, pronouns: pronouns.trim() }), row.id);
+    return true;
+  }
+
+  /** Every living NPC whose pronouns are set, in the order they were added. */
+  getNpcPronouns(campaignId: string): Array<{ name: string; pronouns: string }> {
+    const rows = this.db.prepare('SELECT name, metadata FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid ASC').all(campaignId) as Array<{ name: string; metadata: string | null }>;
+    return rows.flatMap(r => {
+      const p = metadataOf(r.metadata).pronouns;
+      return typeof p === 'string' && p.trim() ? [{ name: r.name, pronouns: p.trim() }] : [];
+    });
+  }
+
+  /**
+   * NPCs this narration shows for the first time with pronouns: those are
+   * theirs from now on. Only NPCs with none set yet; a sentence naming a
+   * party member or another NPC is not evidence (pronounsInNarration).
+   */
+  learnNpcPronouns(campaignId: string, text: string, partyNames: string[]): Array<{ name: string; pronouns: string }> {
+    if (!text?.trim()) return [];
+    const rows = this.db.prepare("SELECT name, metadata FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(campaignId) as Array<{ name: string; metadata: string | null }>;
+    const keys = rows.map(r => npcKeyName(r.name));
+    const learned: Array<{ name: string; pronouns: string }> = [];
+    rows.forEach((r, i) => {
+      const p = metadataOf(r.metadata).pronouns;
+      if (typeof p === 'string' && p.trim()) return;
+      const key = keys[i]!;
+      if (!mentionsPhrase(text, key, true) && !isMentioned(text, r.name, true)) return;
+      const others = [...partyNames, ...keys.filter((k, j) => j !== i && k !== key)];
+      const found = pronounsInNarration(key, text, others);
+      if (found && this.setNpcPronouns(campaignId, r.name, found)) learned.push({ name: r.name, pronouns: found });
+    });
+    if (learned.length > 0) console.log(`[world-bible] NPC pronouns fixed from narration: ${learned.map(l => `${l.name} ${l.pronouns}`).join(', ')}`);
+    return learned;
+  }
+
   getSummary(campaignId: string, locationId?: string): string {
     const parts: string[] = [];
     if (locationId) {
@@ -212,6 +277,8 @@ export class WorldBible {
         return label;
       }).join('; '));
     }
+    const pronounBlock = npcPronounBlock(this.getNpcPronouns(campaignId));
+    if (pronounBlock) parts.push(pronounBlock);
 
     const rels = this.db.prepare(`SELECT r.type, r.description,
         COALESCE(e1.name, json_extract(c1.definition, '$.name')) as a_name,
@@ -285,6 +352,8 @@ export class WorldBible {
         return label;
       }).join('; '));
     }
+    const pronounBlock = npcPronounBlock(this.getNpcPronouns(campaignId));
+    if (pronounBlock) parts.push(pronounBlock);
     if (locationId) {
       const otherNpcs = this.db.prepare('SELECT name, disposition FROM entities WHERE campaign_id = ? AND alive = 1 AND (location_id IS NULL OR location_id != ?) LIMIT 5').all(campaignId, locationId) as any[];
       if (otherNpcs.length > 0) {
@@ -369,6 +438,10 @@ export class WorldBible {
     if (elsewhere.length > 0) {
       parts.push(`People you know of${locationId ? ' (not here)' : ''}: ` + elsewhere.map((n: any) => n.disposition ? `${n.name} (${n.disposition})` : n.name).join(', '));
     }
+    // The pronouns the story uses for the people the party has met.
+    const known = new Set((this.db.prepare('SELECT name FROM entities WHERE campaign_id = ? AND alive = 1 AND known_to_party = 1').all(campaignId) as Array<{ name: string }>).map(r => r.name));
+    const pronouns = this.getNpcPronouns(campaignId).filter(n => known.has(n.name));
+    if (pronouns.length > 0) parts.push(`How the story refers to them: ${pronouns.map(n => `${n.name} ${n.pronouns}`).join('; ')}`);
 
     const locs = (this.db.prepare('SELECT name, visited FROM locations WHERE campaign_id = ? AND known_to_party = 1 ORDER BY visited ASC LIMIT 8').all(campaignId) as any[])
       .filter((l: any) => l.name !== currentName);
@@ -606,9 +679,10 @@ export class WorldBible {
           if (ent.description) this.db.prepare('UPDATE entities SET description = ? WHERE id = ?').run(ent.description, existing.id);
           if (ent.disposition) this.db.prepare('UPDATE entities SET disposition = ? WHERE id = ?').run(ent.disposition, existing.id);
           if (ent.motivation) this.db.prepare('UPDATE entities SET motivation = ? WHERE id = ?').run(ent.motivation, existing.id);
+          if (ent.pronouns?.trim()) this.setNpcPronouns(campaignId, ent.name, ent.pronouns.trim());
           if (markKnown) this.db.prepare('UPDATE entities SET known_to_party = 1 WHERE id = ?').run(existing.id);
         } else {
-          this.addEntity({ id: genId(), campaignId, type: ent.type as Entity['type'], name: ent.name, description: ent.description, disposition: ent.disposition, alive: true, locationId: null, metadata: {}, motivation: ent.motivation ?? null, knownToParty: markKnown });
+          this.addEntity({ id: genId(), campaignId, type: ent.type as Entity['type'], name: ent.name, description: ent.description, disposition: ent.disposition, alive: true, locationId: null, metadata: ent.pronouns?.trim() ? { pronouns: ent.pronouns.trim() } : {}, motivation: ent.motivation ?? null, knownToParty: markKnown });
         }
       }
       for (const item of diff.newItems) {

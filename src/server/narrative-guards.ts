@@ -624,7 +624,7 @@ export function whisperInboxMessage(name: string, pronouns: string | null | unde
  * verb — "I whisper to Mom" is the character whispering — and not "a whisper
  * of wind".
  */
-const WHISPER_REFERENCE = /(?<!\bin\s)\b(?:the|that|this|its|a|my|your)\s+(?:[\w-]+\s+){0,3}?whisper(?:s|['’]s)?\b(?!\s+of\b)|\bwhispered\s+(?:advice|suggestion|warning|urging|instructions?|voice)\b|\b(?:the|that|this|inner)\s+voice(?:['’]s)?\b(?!\s+(?:from|of|behind|on|at|through|calls?|called|echo))|\bthe\s+suggestion\b|\bvoice\s+in\s+(?:my|your|their|his|her)\s+head\b/i;
+const WHISPER_REFERENCE = /(?<!\bin\s)\b(?:the|that|this|its|a|my|your)\s+(?:[\w-]+\s+){0,3}?whisper(?:s|['’]s)?\b(?!\s+of\b)|\bwhispered\s+(?:advice|suggestion|warning|urging|instructions?|voice)\b|\b(?:the|that|this|those|these|inner)\s+voices?(?:['’]s?)?(?![\w'’])(?!\s+(?:from|of|behind|on|at|through|calls?|called|echo))|\ba\s+voice\s+(?:that|who|which|told|tells|telling|said|says|urged|urges|whispered|inside|within|in\s+my)\b|\bthe\s+suggestion\b|\bvoices?\s+in\s+(?:my|your|their|his|her)\s+head\b/i;
 
 /**
  * A character's PUBLIC action or words with every clause that mentions the
@@ -637,9 +637,16 @@ export function withoutWhisperMentions(text: string): string {
   if (!text || !WHISPER_REFERENCE.test(text)) return text;
   const end = text.trim().match(/[.!?…]+["”’']?$/)?.[0] ?? '';
   const body = end ? text.trim().slice(0, -end.length) : text.trim();
-  // Clauses, split after commas, semicolons and dashes (the separator stays with the clause before it).
-  const clauses = body.split(/(?<=[,;—–])\s*/);
+  // Clauses, split after commas, semicolons and dashes (the separator stays
+  // with the clause before it), and before "and I" / "but she" / "because
+  // they" — a closing reflection ran one long sentence with no commas.
+  const clauses = body.split(/(?<=[,;—–])\s*|\s+(?=(?:and|but|so|because|while|though|although)\s+(?:I|we|he|she|they)\b)/);
   const kept = clauses.filter(c => !WHISPER_REFERENCE.test(c));
+  if (kept.length > 0 && kept[0] !== clauses[0]) {
+    // "…, and I stayed close" left first: it starts the sentence now.
+    const lead = kept[0]!.replace(/^(?:and|but|so|because|while|though|although)\s+/i, '');
+    kept[0] = lead.charAt(0).toUpperCase() + lead.slice(1);
+  }
   let out = kept.join(' ').replace(/\s+/g, ' ').trim().replace(/[,;—–]\s*$/, '').trim();
   if (!out) return '';
   out = out + (end && !/[.!?…]$/.test(out) ? end : '');
@@ -1126,6 +1133,83 @@ export function repeatsRecentBeat(text: string, recent: string[], threshold = 0.
   return recent.find(r => r && beatOverlap(text, r) >= threshold) ?? null;
 }
 
+/**
+ * Sentences, with a quotation kept whole: a split inside open quotes is
+ * joined back ("'The file is open. The key is sticky,' it says." is one).
+ */
+function storyUnits(text: string): string[] {
+  const pieces = text.split(/(?<=[.!?…]["”’']?)\s+/);
+  const units: string[] = [];
+  let open = '';
+  const unbalanced = (s: string) => {
+    const curly = (s.match(/“/g) ?? []).length !== (s.match(/”/g) ?? []).length;
+    const straight = (s.match(/"/g) ?? []).length % 2 === 1;
+    // Single quotes double as apostrophes: count only those at a word edge.
+    const singles = (s.match(/(?<![\w])'|'(?![\w])|(?<![\w])‘|’(?![\w])/g) ?? []).length % 2 === 1;
+    return curly || straight || singles;
+  };
+  for (const p of pieces) {
+    open = open ? `${open} ${p}` : p;
+    if (!unbalanced(open)) { units.push(open); open = ''; }
+  }
+  if (open) units.push(open);
+  return units;
+}
+
+/** The longest run of consecutive words `a` shares with `b`. */
+function longestSharedRun(a: string[], b: string[]): number {
+  let best = 0;
+  let prev = new Array<number>(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = new Array<number>(b.length + 1).fill(0);
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        cur[j] = prev[j - 1]! + 1;
+        if (cur[j]! > best) best = cur[j]!;
+      }
+    }
+    prev = cur;
+  }
+  return best;
+}
+
+/**
+ * `text` without the sentences the DM already said in `recent` — near word
+ * for word (most of the sentence covered by three-word runs from earlier
+ * beats), or carrying a long stretch of one (eight words or more in a row).
+ * Live (Z9JKG2): the scene-2 opening's "'The file for the Unsent is open,
+ * but the key is sticky with yesterday's mail'" and its "mist tastes of wet
+ * ink and old glue, curling around… ankles" came back in the very next
+ * ruling, and an NPC's line came back from another speaker. The whole-beat
+ * check (repeatsRecentBeat) only sees a beat repeated entire. Short
+ * sentences are never judged. '' when every sentence repeats — the caller
+ * then treats the beat as repeated whole.
+ */
+export function withoutRepeatedSentences(text: string, recent: string[], opts: { coverage?: number; run?: number } = {}): string {
+  if (!text?.trim()) return text;
+  const earlier = recent.filter(Boolean).join('\n');
+  if (!earlier.trim()) return text;
+  const coverage = opts.coverage ?? 0.6;
+  const runLen = opts.run ?? 8;
+  const earlierWords = beatWords(earlier);
+  const paragraphs = text.split(/(\n+)/);
+  let dropped = 0;
+  const out = paragraphs.map(p => {
+    if (/^\n+$/.test(p) || !p.trim()) return p;
+    const kept = storyUnits(p.trim()).filter(u => {
+      const words = beatWords(u);
+      if (words.length < 6) return true;
+      const repeated = beatOverlap(u, earlier) >= coverage || longestSharedRun(words, earlierWords) >= runLen;
+      if (repeated) dropped++;
+      return !repeated;
+    });
+    return kept.join(' ');
+  }).join('').replace(/\n{3,}/g, '\n\n').trim();
+  if (dropped === 0) return text;
+  console.log(`[guard] dropped ${dropped} sentence(s) the DM already said`);
+  return out;
+}
+
 // ─── A table with a child ───────────────────────────────────────────────────
 
 /**
@@ -1177,7 +1261,24 @@ const CHILD_SOFTENERS: Array<[RegExp, string | ((...args: string[]) => string)]>
   // "a tangle of rope tightening around their ankles" → "…tugging at their shoelaces"
   [/\b(tangles? of rope|ropes?|cords?|chains?|vines?|tentacles?)\s+(tighten|tightens|tightening|tightened|coil|coils|coiling|coiled|squeeze|squeezes|squeezing|squeezed)\s+around\s+(her|his|their|my|your|its)\s+(?:ankles?|neck|throat|wrists?|chest|legs?)\b/gi,
     (_m: string, thing: string, verb: string, pos: string) => `${thing} ${TUG[verb.toLowerCase()] ?? 'tugging at'} ${pos} shoelaces`],
+  // Round 11 (Z9JKG2), repeated turn after turn: "before that storm eats the
+  // whole room" → "…rolls over the whole room". Weather and dark things
+  // only — "Biz ate the whole cake" is left alone.
+  [/\b(storms?|mist|fog|darkness|dark|void|flood|wind|gale|tide|blizzard|snow|static|shadows?)\s+(eat|eats|eating|ate|eaten|devour|devours|devouring|devoured|swallow|swallows|swallowing|swallowed|gobble|gobbles|gobbling|gobbled)\b(?:\s+up)?/gi,
+    (_m: string, thing: string, verb: string) => `${thing} ${ROLL[verb.toLowerCase()] ?? 'rolls'} over`],
+  // "a cold realization that the only way out is a tube the size of a shoebox"
+  [/\bcold (realization|certainty)\b/gi, 'sudden $1'],
+  [/\b(?:a )?cold (?:dread|fear|horror)\b/gi, 'a flutter of nerves'],
+  [/\bthe only way out\b/gi, 'the quickest way out'],
+  // "I'm filing you as a permanent fixture of this room!"
+  [/\bfiling (you|them|her|him|us|me) (?:as|under) (?:a |an )?permanent (?:fixtures?|residents?|records?|exhibits?|parts?)(?: of [^.!?,;"”'’]*)?/gi,
+    (_m: string, who: string) => `filing ${who} under 'Lost and Found' for the afternoon`],
+  [/\bpermanent fixtures?\b/gi, 'temporary exhibit'],
+  // "…or the Recall Form will be lost forever!"
+  [/\b(lost|trapped|stuck|archived|filed|sealed in|frozen) forever\b/gi, '$1 for a good long while'],
 ];
+
+const ROLL: Record<string, string> = { eat: 'roll', eats: 'rolls', eating: 'rolling', ate: 'rolled', eaten: 'rolled', devour: 'roll', devours: 'rolls', devouring: 'rolling', devoured: 'rolled', swallow: 'roll', swallows: 'rolls', swallowing: 'rolling', swallowed: 'rolled', gobble: 'roll', gobbles: 'rolls', gobbling: 'rolling', gobbled: 'rolled' };
 
 export function softenForChildren(text: string): string {
   if (!text) return text;
@@ -1193,6 +1294,39 @@ export function softenForChildren(text: string): string {
   }
   if (out !== text) console.log(`[guard] family table: softened ${changedSpan(text, out)}`);
   return out;
+}
+
+/**
+ * The last images of a gentle table's ending, where being stuck is no
+ * longer a stake but the final word. Live (Z9JKG2, gentle peril, a
+ * ten-year-old): the epilogue opened "Liz and Biz stood frozen as the storm
+ * sealed the exit" and Liz's reflection ended "with the exit sealed by the
+ * storm, holding nothing but my fear…". For endings only (epilogue,
+ * closing reflections), and only at a family table; in play a sealed door
+ * is ordinary adventure.
+ */
+const ENDING_SOFTENERS: Array<[RegExp, string]> = [
+  [/\b(stood|stand|stands|standing|was|were|is|are|remained|remain|remains|sat|sit|sits)\s+frozen\b/gi, '$1 still'],
+  [/\b(storms?|fog|mist|wind|snow|flood|darkness|dark|shadows?)\s+(?:sealed|blocked|swallowed|closed(?:\s+off)?)\s+(the|every|their|our|its)\s+(exits?|doors?|way\s+out|way\s+home|path\s+home|path)\b/gi, '$1 hid $2 $3 for now'],
+  [/\b(?:sealed|blocked|swallowed)\s+by\s+(the\s+)?(storms?|fog|mist|wind|snow|flood|darkness|shadows?)\b/gi, 'hidden by $1$2 for now'],
+  // "…, holding nothing but my fear that it was my fault." — the clause goes.
+  [/,?\s*\b(?:holding|clutching|carrying|left\s+with|with)\s+nothing\s+but\s+(?:my|our|her|his|their)\s+(?:fear|dread|terror|despair|panic)\b[^,.;!?]*/gi, ''],
+];
+
+export function softenEnding(text: string): string {
+  if (!text) return text;
+  let out = text;
+  for (const [re, to] of ENDING_SOFTENERS) out = out.replace(re, to);
+  out = out.replace(/\s+([.,;!?])/g, '$1');
+  if (out !== text) console.log(`[guard] gentle ending: softened ${changedSpan(text, out)}`);
+  return out;
+}
+
+/** An ending that lands on fear, entrapment or loss — at a gentle table, asked for again. */
+const BLEAK = /\b(?:fear|afraid|terrified|terror|dread|despair|hopeless(?:ly|ness)?|trapped|sealed|frozen|doomed|all alone|lost forever|forever lost|gone forever|never came back|no way out|cannot escape|can['’]t escape|abandoned|nothing but)\b/i;
+
+export function bleakEnding(text: string): boolean {
+  return !!text && BLEAK.test(text);
 }
 
 // ─── Repetition ─────────────────────────────────────────────────────────────

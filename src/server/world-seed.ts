@@ -5,6 +5,7 @@ import { safeDataFile } from './data-paths.js';
 import { WorldSeedSchema } from './agents/schemas.js';
 import type { WorldSeed } from '../shared/types.js';
 import { neutralSetupNouns } from './pronoun-consistency.js';
+import { pronounsInDescription } from './npc-pronouns.js';
 
 /**
  * Write a seed into the world bible.
@@ -48,6 +49,9 @@ export function seedWorld(db: Database.Database, campaignId: string, seed: World
       // Its own column, so the DM's summary can show it and the party's
       // view (getPlayerKnowledge) never does.
       motivation: n.motivation ?? null,
+      // Stated, else read off the description ("…magnify their eyes…"):
+      // the DM is handed these every turn and they never drift.
+      pronouns: n.pronouns?.trim() || pronounsInDescription(n.description),
     })),
     newItems: seed.items.map(i => ({ name: i.name, description: i.description, properties: {} })),
     newEvents: newHooks.map(hook => ({ sceneNumber: 0, description: hook, participants: [], outcome: null })),
@@ -185,6 +189,54 @@ export function withoutSetupFieldDumps(reply: string, opts: { noSpoilers?: boole
   const out = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   if (dropped > 0) console.log(`[dm-chat] dropped ${dropped} draft-field block(s) from a setup reply`);
   return out || opts.fallback || 'I have the shape of it — the rest you will discover in play. What tone do you want at the table?';
+}
+
+/** "I've drafted a starting world…", "Please review the world card I've drafted." */
+const DRAFT_CLAIM = /\b(?:I|we)(?:['’]ve|\s+have|['’]ll\s+have|\s+just)?\s+(?:\w+\s+){0,2}?(?:drafted|built|created|prepared|put\s+together|sketched(?:\s+out)?|written\s+up|made)\b[^.!?]*\b(?:world|card|draft|seed)\b|\b(?:review|check|look\s+over|see|accept)\b[^.!?]*\b(?:world\s+card|the\s+card|the\s+draft|(?:the|this|that)\s+(?:starting\s+)?world\s+(?:I|we)(?:['’]ve|\s+have)?\s+(?:drafted|built|made))\b|\b(?:world\s+card|draft)\s+(?:is|should\s+be)\s+(?:ready|up|below|above|waiting)\b/i;
+/** A sentence that only makes sense after one: "If it looks good, just let me know!" */
+const DRAFT_FOLLOW_UP = /^\s*(?:if\s+(?:it|that|this|everything)\s+looks\s+(?:good|right)|let\s+me\s+know\s+if\s+(?:it|you)\s+(?:looks|want\s+(?:to\s+)?change))/i;
+
+/**
+ * A setup reply without a claim to have drafted a world that is not on its
+ * way. Live (Z9JKG2): "I've drafted a starting world… Please review the
+ * world card I've drafted." — no world-seed-draft was sent (the reply had
+ * not set done with a summary, so no draft could run) and the readiness
+ * panel still listed the seed as missing; the host answered "I don't see a
+ * world card yet". The draft is made by the server after the reply, from a
+ * finished setup; the model cannot make it by saying so. When `draftComing`
+ * is false the claim and its follow-up come out and `fallback` (the next
+ * thing setup needs) is asked instead.
+ */
+export function withoutFalseDraftClaim(reply: string, opts: { draftComing: boolean; fallback: string }): string {
+  if (!reply || opts.draftComing || !DRAFT_CLAIM.test(reply)) return reply;
+  let dropped = 0;
+  const out = reply.split(/(\n+)/).map(p => {
+    if (/^\n+$/.test(p)) return p;
+    const kept: string[] = [];
+    for (const sentence of p.split(/(?<=[.!?…]["”’']?)\s+/)) {
+      if (DRAFT_CLAIM.test(sentence) || (dropped > 0 && DRAFT_FOLLOW_UP.test(sentence))) { dropped++; continue; }
+      kept.push(sentence);
+    }
+    return kept.join(' ');
+  }).join('').replace(/\n{3,}/g, '\n\n').trim();
+  console.log(`[dm-chat] dropped ${dropped} sentence(s) claiming a world draft that is not coming`);
+  const question = opts.fallback.replace(/^Noted\.\s*/, '');
+  return out ? `${out} ${question}` : question;
+}
+
+/**
+ * The readiness list as the setup model is told it. Before a world exists,
+ * "Review and accept the starting world" read to it as "tell the host to
+ * review the card" (live, it did — twice — with no card). The seed line
+ * says how the card gets made and that the model never claims it.
+ */
+export function setupUnmetForModel(readiness: { unmet: string[]; detail: string[] }): string[] {
+  const noSeed = readiness.unmet.includes('seed');
+  return readiness.unmet.flatMap((u, i) => {
+    if (u === 'seedAccepted' && noSeed) return [];
+    if (u === 'seed') return ['The world card has not been drafted yet. It is drafted for the host automatically, after your reply, once at least three influences are recorded and you set "done": true with dmInstructions. Never say or imply that a world or a world card is drafted or ready to review.'];
+    return [readiness.detail[i] ?? u];
+  });
 }
 
 /** Sentences of the DM's private direction that carry a secret: its labelled secret blocks, and any sentence about motives, secrets or who is behind what. */

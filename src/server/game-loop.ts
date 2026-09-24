@@ -27,7 +27,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, changedSpan, softenForChildren, repeatsRecentBeat,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, changedSpan, softenForChildren, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -75,6 +75,42 @@ const ENDING_FACTS_RULE = 'Items and places: who holds an item and where somethi
  */
 export const EPILOGUE_RECORD_RULE = 'Do not narrate any action that is not in the record — nobody drops, grabs, loses, gives, freezes or rescues anything unless the record says so. What a character did stays theirs: never credit it to someone else\'s interruption or help. The last rulings are the final word on how things stand; a character still holds what the Characters list says they carry.';
 export const EPILOGUE_TEMPERATURE = 0.5;
+
+/**
+ * Ending prose the whole table reads (the epilogue): no sentence about the
+ * whisper or a voice — each belongs to one player — and, at a gentle table,
+ * the last images softened (softenEnding).
+ */
+export function publicEnding(text: string, gentle: boolean): string {
+  if (!text) return text;
+  const kept = text.split(/(?<=[.!?…]["”’']?)\s+/).filter(s => withoutWhisperMentions(s) === s);
+  let out = kept.length > 0 ? kept.join(' ') : text;
+  if (out !== text) console.log(`[guard] whisper mention removed from the ending: ${changedSpan(text, out)}`);
+  if (gentle) out = softenEnding(softenForChildren(out));
+  return out;
+}
+
+/**
+ * A closing reflection as the table sees it. It is broadcast to everyone
+ * (the "[Final reflection]" action line), so it is public: live (Z9JKG2)
+ * Biz's said "I do not know if the voice that told me to stay next to Mom
+ * was right to trust." The clause about the voice goes (the same filter as
+ * a public action); the character's kin word is theirs (ownKinNouns); a
+ * gentle table's reflection is softened, ending included.
+ */
+export function publicReflection(raw: string, opts: { self?: PronounMember; members: PronounMember[]; familyTable: boolean }): { spoken?: string; thought?: string } {
+  const text = raw.trim();
+  const spokenMatch = text.match(/SPOKEN:\s*"?([^"\n]+)"?/i);
+  const thoughtMatch = text.match(/THOUGHT:\s*(.+)/i);
+  const own = (t: string | undefined): string | undefined => {
+    if (!t) return t;
+    let out = opts.self ? ownKinNouns(t, opts.self, opts.members) : t;
+    out = withoutWhisperMentions(out);
+    if (opts.familyTable && out) out = softenEnding(softenForChildren(out));
+    return out.trim() || undefined;
+  };
+  return { spoken: own(spokenMatch?.[1]?.trim()), thought: own(thoughtMatch?.[1]?.trim()) };
+}
 
 /** A character's condition as it stands now: only consequences they still carry (a recovered one is gone from state). */
 export function currentCondition(state: Pick<CharacterState, 'consequences'>): string {
@@ -1126,6 +1162,12 @@ export class GameLoop {
     // asked for once more, told what it repeated; if that repeats too, the
     // beat is dropped and the round goes on without it.
     const recentBeats = this.recentDmBeats();
+    // A sentence already said (an NPC's line, a described image) comes out
+    // of an otherwise new beat; a beat that is all repeats is handled whole below.
+    {
+      const fresh = withoutRepeatedSentences(narration.narration, recentBeats);
+      if (fresh) narration.narration = fresh;
+    }
     if (repeatsRecentBeat(narration.narration, recentBeats)) {
       console.warn(`[game-loop] narration repeats an earlier DM beat; asking once more: "${narration.narration.slice(0, 80)}"`);
       const repeated = repeatsRecentBeat(narration.narration, recentBeats)!;
@@ -1137,7 +1179,7 @@ export class GameLoop {
       const checkedAgain = again ? await this.checkedProse(again.narration) : undefined;
       if (checkedAgain === null) return;
       if (again && checkedAgain && !repeatsRecentBeat(checkedAgain, recentBeats)) {
-        narration.narration = checkedAgain;
+        narration.narration = withoutRepeatedSentences(checkedAgain, recentBeats) || checkedAgain;
         narration.isSceneEnd = again.isSceneEnd;
         narration.activeNpcs = again.activeNpcs;
         if (again.currentLocationName) narration.currentLocationName = again.currentLocationName;
@@ -1949,8 +1991,13 @@ export class GameLoop {
     const checkedResolution = await this.checkedProse(resolution.narration, character.definition.name);
     if (checkedResolution === null) return;
     resolution.narration = checkedResolution;
-    // A ruling that repeats an earlier beat (see runScene) is not read twice:
-    // its mechanics stand, told in one plain line.
+    // A sentence the DM already said is not said again (live: the scene
+    // opening's NPC line and its mist, word for word in the next ruling).
+    // A ruling that repeats an earlier beat whole (see runScene) is not read
+    // twice: its mechanics stand, told in one plain line.
+    const freshRuling = withoutRepeatedSentences(resolution.narration, this.recentDmBeats());
+    if (freshRuling) resolution.narration = freshRuling;
+    else if (resolution.narration.trim()) resolution.narration = this.plainOutcome(character, resolution.outcome);
     if (repeatsRecentBeat(resolution.narration, this.recentDmBeats())) {
       console.warn(`[game-loop] ruling repeats an earlier DM beat; replaced with a plain outcome line: "${resolution.narration.slice(0, 80)}"`);
       resolution.narration = this.plainOutcome(character, resolution.outcome);
@@ -1984,6 +2031,8 @@ export class GameLoop {
         observerId, this.campaignId, observer.definition.name,
         character.definition.name, decision.chosenAction, resolution.narration,
         this.state.currentScene, this.state.currentTurn,
+        // What the actor calls this observer ("Mom" for Liz): "my hand" in Liz's own memory.
+        this.addressTermsOf(characterId).filter(t => this.namesMatch(t.name, observer.definition.name)).map(t => t.address),
       ).catch(e => console.error(`[memory] observer extraction failed for ${observer.definition.name}:`, e));
     }
 
@@ -2163,13 +2212,13 @@ export class GameLoop {
     const currentScene = inProgress ? this.currentSceneStory(8000) : '';
 
     const charLines = Array.from(this.characters.values()).map(c => {
-      const memories = this.memoryStore.recall(c.id, 3);
+      // The epilogue is read by the whole table: no whisper memories and no
+      // trust in "the voice" go into it (live, a reflection said "the voice
+      // that told me to stay next to Mom" aloud).
+      const memories = this.memoryStore.recall(c.id, 6).filter(m => m.type !== 'whisper').slice(0, 3);
       const memText = memories.map(m => m.content).join('. ');
-      const trustArc = c.state.whisperTrust >= 0.7 ? 'deeply trusts the guiding voice'
-        : c.state.whisperTrust >= 0.4 ? 'remains uncertain about the whispers'
-        : `has grown wary of the voice in ${referTo(getFirstName(c.definition.name), this.ownPronouns(c)).possessive} mind`;
       const carrying = c.state.inventory?.length ? `carrying ${c.state.inventory.join(', ')}` : 'carrying nothing';
-      return `${c.definition.name} (${c.definition.highConcept}): ${currentCondition(c.state)}, ${carrying}, stress ${c.state.stress}/3, ${c.state.fatePoints} FP, ${trustArc}. Key memories: ${memText || 'none'}`;
+      return `${c.definition.name} (${c.definition.highConcept}): ${currentCondition(c.state)}, ${carrying}, stress ${c.state.stress}/3, ${c.state.fatePoints} FP. Key memories: ${memText || 'none'}`;
     }).join('\n');
 
     const relationships = this.worldBible.getRelationships(this.campaignId);
@@ -2190,7 +2239,7 @@ export class GameLoop {
     ].filter(Boolean).join('\n\n');
 
     const facts = this.endingFacts();
-    const toneRule = childToneRule(this.partyForDm(), { gentlePeril: this.gentlePeril() });
+    const toneRule = childToneRule(this.partyForDm(), { gentlePeril: this.gentlePeril(), ending: true });
 
     const presetVoices: Record<string, string> = {
       professor: 'You are an academic storyteller. End with a teaching moment — what did the characters (and the players) learn? Reference a specific rule or mechanic that shaped the story. Warm, slightly pedantic, like a favorite teacher closing a lesson.',
@@ -2200,12 +2249,14 @@ export class GameLoop {
     const voiceHint = presetVoices[campaign?.dm_preset] ?? 'Write in the DM\'s voice — warm, reflective, slightly bittersweet.';
 
     let epilogueText = '';
+    const gentle = this.familyTable();
     try {
-      const epilogue = await callProse({
-        messages: [
-          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Credit every deed to whoever did it in the record — what an NPC did, opened or revealed is never a party member's doing. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them. ${EPILOGUE_RECORD_RULE} ${ENDING_FACTS_RULE}${toneRule ? ` ${toneRule}` : ''}` },
-          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.` },
-        ],
+      const baseMessages = [
+          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Credit every deed to whoever did it in the record — what an NPC did, opened or revealed is never a party member's doing. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. Never mention the whispers, "the voice" or any voice the characters heard — each is private to one player. ${EPILOGUE_RECORD_RULE} ${ENDING_FACTS_RULE}${toneRule ? ` ${toneRule}` : ''}` },
+          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}${facts}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.${gentle ? ' This is a gentle table: end somewhere safe and hopeful.' : ''}` },
+        ];
+      const write = (messages: Array<{ role: string; content: string }>) => callProse({
+        messages,
         // Seen live at 248 characters, stopped mid-sentence ("...and the
         // distant toll of the great clock"): the reasoning model spent most
         // of 512 tokens thinking over the session record before writing.
@@ -2217,7 +2268,24 @@ export class GameLoop {
         // (0.7), where qwen added a dropped ruler and a rescue nobody made.
         temperature: EPILOGUE_TEMPERATURE,
       });
-      const text = (await this.consistentProse(epilogue.trim())).trim();
+      // Public text: no whisper or voice, and at a gentle table an ending
+      // that lands safe (see publicEnding).
+      const epilogue = await write(baseMessages);
+      let text = publicEnding((await this.consistentProse(epilogue.trim())).trim(), gentle);
+      // Live (Z9JKG2, gentle peril, a ten-year-old): "Liz and Biz stood
+      // frozen as the storm sealed the exit". A gentle ending that still
+      // lands on fear or entrapment is asked for once more.
+      if (gentle && bleakEnding(text)) {
+        console.warn(`[game-loop] gentle table, bleak epilogue; asking once more: "${text.slice(0, 80)}"`);
+        try {
+          const again = await write([...baseMessages, { role: 'assistant', content: epilogue }, { role: 'user', content: 'That ending leaves the party afraid, trapped or stuck. This is a gentle table with a child: write it again from the same record, ending somewhere safe and hopeful — the party together, a problem left open for next time, nobody trapped, frozen or afraid.' }]);
+          const retry = publicEnding((await this.consistentProse(again.trim())).trim(), gentle);
+          if (retry && retry.length > 20 && !bleakEnding(retry)) text = retry;
+        } catch (e) {
+          if (isLlmAbort(e)) throw e;
+          console.error('[game-loop] gentle epilogue retry failed; keeping the softened one:', e);
+        }
+      }
       if (text && text.length > 20) {
         epilogueText = text;
         this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
@@ -2291,15 +2359,20 @@ export class GameLoop {
       if (memories.length === 0) continue;
       const memText = memories.map(m => `- ${m.content}`).join('\n');
       const trustPct = Math.round(char.state.whisperTrust * 100);
-      const trustArc = trustPct >= 70 ? 'You trusted the voice. It guided you well — or perhaps you simply chose to believe it did.'
-        : trustPct >= 40 ? 'The voice was there, always. You never fully trusted it, never fully ignored it. An uneasy partnership.'
-        : 'You learned to distrust the whisper. Whatever it wanted, it wasn\'t always what you needed.';
+      // Both lines are broadcast to the table, so the whisper is never named
+      // to the model here (live, Biz's reflection said "the voice that told
+      // me to stay next to Mom" aloud): only how the character feels about
+      // their own choices.
+      const trustArc = trustPct >= 70 ? 'You trusted your instincts, and they mostly served you well.'
+        : trustPct >= 40 ? 'You second-guessed yourself often, and sometimes you were right to.'
+        : 'You learned to rely on your own judgment above anything else.';
+      const toneRule = this.familyTable() ? childToneRule(this.partyForDm(), { gentlePeril: this.gentlePeril(), ending: true }) : '';
 
       try {
         const reflection = await callProse({
           messages: [
-            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
-            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.${where}\n\nWhat happened: ${sceneSummaries}${ending}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. Your memories include plans and hopes, not only things that happened: only the record and the ending say what happened. One line each. ${ENDING_FACTS_RULE}${facts}` },
+            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Both lines are shown to everyone at the table: never mention a whisper, "the voice" or any voice you heard.${toneRule ? ` ${toneRule}` : ''} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your inner reflection` },
+            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nLooking back: ${trustArc}\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.${where}\n\nWhat happened: ${sceneSummaries}${ending}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. Your memories include plans and hopes, not only things that happened: only the record and the ending say what happened. One line each. ${ENDING_FACTS_RULE}${facts}` },
           ],
           // Two short lines (~80 tokens), but reasoning comes out of the same
           // budget: 200 was enough to come back empty or cut off.
@@ -2307,19 +2380,11 @@ export class GameLoop {
           temperature: 0.7,
         });
 
-        const text = reflection.trim();
-        const spokenMatch = text.match(/SPOKEN:\s*"?([^"]+)"?/i);
-        const thoughtMatch = text.match(/THOUGHT:\s*(.+)/i);
-        // The character's own words: their word for their kid, and gentle peril at a family table.
+        // The character's own words: their word for their kid, never the
+        // whisper (it is broadcast to the table), gentle at a family table.
         const members = this.pronounMembers();
         const self = members.find(m => this.namesMatch(m.name, char.definition.name));
-        const ownWords = (t: string | undefined) => {
-          if (!t) return t;
-          const kin = self ? ownKinNouns(t, self, members) : t;
-          return this.familyTable() ? softenForChildren(kin) : kin;
-        };
-        const spoken = ownWords(spokenMatch?.[1]?.trim());
-        const thought = ownWords(thoughtMatch?.[1]?.trim());
+        const { spoken, thought } = publicReflection(reflection, { self, members, familyTable: this.familyTable() });
 
         if (spoken || thought) {
           this.broadcastFn({
@@ -2810,5 +2875,15 @@ export class GameLoop {
     // character's own line may call a companion "Mom".
     const guarded = role === 'dm' ? this.guardText(content) : content;
     this.transcript.push({ role, content: guarded, characterId, timestamp: new Date().toISOString() });
+    // An NPC's pronouns are fixed by the first DM beat that shows them, and
+    // the DM is handed them every turn after (getSummary). Live, Marni went
+    // from "their spectacles" to "her saucer eyes".
+    if (role === 'dm') {
+      try {
+        this.worldBible.learnNpcPronouns(this.campaignId, guarded, Array.from(this.characters.values()).map(c => c.definition.name));
+      } catch (e) {
+        console.error('[world-bible] NPC pronoun check failed:', e);
+      }
+    }
   }
 }
