@@ -71,7 +71,11 @@ export type ServerMessage =
   | { type: 'narration'; text: string; sceneNumber: number; locationName?: string; isEpilogue?: boolean }
   | { type: 'scene-image'; imageUrl: string; locationName: string }
   | { type: 'action-proposals'; characterId: string; characterName: string; actions: string[]; actionReasons?: string[]; whisperTrust: number }
-  | { type: 'whisper-prompt'; characterId: string; characterName: string; mood?: string; trustHint?: string; suggestions?: string[]; goals?: string[]; carryingQueued?: number }
+  // windowMs: the window's full length; remainingMs: what is left of it as
+  // of sending (less than windowMs when replayed to a tab that rejoins
+  // mid-window). The client counts down from remainingMs. Both absent when
+  // carryingQueued is set — there is no window then.
+  | { type: 'whisper-prompt'; characterId: string; characterName: string; mood?: string; trustHint?: string; suggestions?: string[]; goals?: string[]; carryingQueued?: number; windowMs?: number; remainingMs?: number }
   | { type: 'whisper-ack'; status: 'delivered' | 'queued' | 'rejected'; characterId: string | null; characterName: string | null; message: string }
   | { type: 'whisper-dropped'; characterId: string; count: number }
   | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought: string; whisperInfluence: 'followed' | 'partially-followed' | 'ignored' | 'none' }

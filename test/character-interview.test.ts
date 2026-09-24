@@ -93,6 +93,34 @@ describe('interview persistence', () => {
   });
 });
 
+describe('the interview draft', () => {
+  it('keeps a stated field when a later turn leaves it empty, and takes a new value when one is given', () => {
+    const first = mod.mergeCharacterDraft(null, { name: 'Liz', highConcept: 'Courier', stunts: ['Shortcut'] } as any);
+    const second = mod.mergeCharacterDraft(first, { name: '', highConcept: '', trouble: 'Cannot say no', stunts: [], skills: {} } as any);
+    expect(second).toMatchObject({ name: 'Liz', highConcept: 'Courier', trouble: 'Cannot say no', stunts: ['Shortcut'] });
+    const third = mod.mergeCharacterDraft(second, { name: 'Liz Harper', aspects: ['Knows every stair', 'Owes the harbourmaster'], skills: { Athletics: 3 } } as any);
+    expect(third).toMatchObject({ name: 'Liz Harper', trouble: 'Cannot say no', aspects: ['Knows every stair', 'Owes the harbourmaster'], skills: { Athletics: 3 } });
+  });
+
+  it('persists the draft separately from the finished definition', () => {
+    const campaignId = newCampaign();
+    const rec = mod.getOrCreateInterview(db, campaignId, 'draft-token');
+    mod.setInterviewDraft(db, rec.id, mod.mergeCharacterDraft(null, { name: 'Liz' } as any));
+    const again = mod.getInterviewBySession(db, campaignId, 'draft-token')!;
+    expect(again.draft?.name).toBe('Liz');
+    expect(again.definition).toBeNull();
+  });
+
+  it('a partial reply with nulls, "+2" ratings and a lone string still parses field by field', async () => {
+    const { CharInterviewReplySchema } = await import('../src/server/agents/schemas.js');
+    const out = CharInterviewReplySchema.parse({
+      reply: 'Tell me more.',
+      definition: { name: 'Liz', highConcept: null, trouble: undefined, aspects: 'Knows every stair', skills: { Athletics: '+2', Will: 'lots' }, stunts: null, personality: 3 },
+    });
+    expect(out.definition).toMatchObject({ name: 'Liz', highConcept: '', trouble: '', aspects: ['Knows every stair'], skills: { Athletics: 2 }, stunts: [], personality: '' });
+  });
+});
+
 describe('the interview end-to-end, over the wire', () => {
   let harness: Harness;
   let port: number;
@@ -264,6 +292,99 @@ describe('the interview end-to-end, over the wire', () => {
     await expect(pq.waitFor('character-preview', 300)).rejects.toThrow();
 
     await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
+
+  // Live: the world introduction stopped mid-sentence ("...Jolly de Sombra
+  // twirls a feathered hat that blushes"). A cut-off introduction is retried
+  // at a larger budget, and what the player sees ends on a finished sentence.
+  it('never shows a player a world introduction cut off mid-sentence', async () => {
+    const hostWs = await connectWs(port);
+    const hostQ = new MessageQueue(hostWs);
+    sendMsg(hostWs, { type: 'create', name: 'Truncated Intro', dmPreset: 'TRUNCATED_INTRO_TRIGGER', scenarioId: null, systemId: 'fate-core', houseRules: null });
+    const joined = await hostQ.waitFor('room-joined', 10_000) as any;
+    await hostQ.waitFor('dm-chat-reply', 10_000);
+    await finishWorldSetup(hostWs, hostQ);
+
+    const before = harness.receivedBodies.length;
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Wendy' });
+    const intro = await pq.waitFor('world-introduction', 15_000) as any;
+    expect(intro.text).not.toMatch(/blushes$/);
+    expect(intro.text.trim()).toMatch(/[.!?"”]$/);
+
+    const introBudgets = harness.receivedBodies.slice(before)
+      .filter(b => b.includes('introducing a player to a world'))
+      .map(b => JSON.parse(b).max_tokens as number);
+    expect(introBudgets.length).toBe(2);
+    expect(introBudgets[1]).toBeGreaterThan(introBudgets[0]!);
+
+    await closeWs(playerWs);
+    await closeWs(hostWs);
+  }, 60_000);
+
+  // Live report: building a character by "Talk to DM" never registered
+  // anything. The player said "My name is Liz..." plus a concept, a trouble
+  // and a stunt, and the checklist still read "They still need a name...",
+  // while the DM kept asking about them. A stated field must land in the
+  // draft sheet the moment the model reports it, and stay there on the turns
+  // after — including a turn where the model only asks a question.
+  it('registers the fields a player states in chat, and keeps them off the checklist on later turns', async () => {
+    const { hostWs, joined } = await openTable();
+
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Liz' });
+    const roomJoined = await pq.waitFor('room-joined', 10_000) as any;
+    await pq.waitFor('world-introduction', 10_000);
+
+    // The model is told to report the sheet as it stands on EVERY reply, not
+    // only once it thinks the sheet is finished.
+    const before = harness.receivedBodies.length;
+    sendMsg(playerWs, { type: 'char-chat', text: 'PARTIAL_SHEET_TRIGGER My name is Liz. I am a tidewater courier who knows every back stair. My trouble: I cannot refuse a desperate request. Stunt: Shortcut, +2 to Athletics when racing through town.' });
+    await pq.waitFor('char-chat-reply', 15_000);
+    const r1 = await pq.waitFor('character-readiness', 10_000) as any;
+    for (const stated of ['name', 'highConcept', 'trouble', 'stunts']) expect(r1.readiness.unmet).not.toContain(stated);
+    expect(r1.readiness.unmet).toEqual(expect.arrayContaining(['aspects', 'skills']));
+    const interviewPrompt = harness.receivedBodies.slice(before).find(b => b.includes('character creation API'))!;
+    expect(interviewPrompt).toMatch(/every reply/i);
+
+    const stored = mod.getInterviewBySession(db, roomJoined.campaignId, roomJoined.sessionToken)!;
+    expect(stored.draft).toMatchObject({
+      name: 'Liz',
+      highConcept: 'Tidewater courier who knows every back stair',
+      trouble: 'Cannot refuse a desperate request',
+      stunts: ['Shortcut: +2 to Athletics when racing through the town'],
+    });
+    // Not finished, so not a sheet to confirm or submit.
+    expect(stored.definition).toBeNull();
+
+    // Next turn the model only asks a question (definition: null). The draft
+    // must survive it, and the DM must not be told to ask for the name again.
+    const before2 = harness.receivedBodies.length;
+    sendMsg(playerWs, { type: 'char-chat', text: 'NULL_DEFINITION_TRIGGER I am standing by the harbour wall.' });
+    const reply2 = await pq.waitFor('char-chat-reply', 15_000) as any;
+    expect(reply2.definition).toBeNull();
+    const r2 = await pq.waitFor('character-readiness', 10_000) as any;
+    for (const stated of ['name', 'highConcept', 'trouble', 'stunts']) expect(r2.readiness.unmet).not.toContain(stated);
+    expect(r2.readiness.detail.join(' ')).not.toMatch(/still need a name/i);
+    const prompt2 = harness.receivedBodies.slice(before2).find(b => b.includes('character creation API'))!;
+    expect(prompt2).not.toContain('They still need a name.');
+    expect(prompt2).not.toContain('A high concept.');
+    expect(mod.getInterviewBySession(db, roomJoined.campaignId, roomJoined.sessionToken)!.draft?.name).toBe('Liz');
+
+    // A refresh brings the checklist back as it stands, not blank.
+    await closeWs(playerWs);
+    const rejoinWs = await connectWs(port);
+    const rq = new MessageQueue(rejoinWs);
+    sendMsg(rejoinWs, { type: 'rejoin', joinCode: joined.joinCode, sessionToken: roomJoined.sessionToken });
+    await rq.waitFor('interview-replay', 10_000);
+    const r3 = await rq.waitFor('character-readiness', 10_000) as any;
+    expect(r3.readiness.unmet).not.toContain('name');
+    expect(r3.readiness.unmet).toEqual(expect.arrayContaining(['aspects', 'skills']));
+
+    await closeWs(rejoinWs);
     await closeWs(hostWs);
   }, 60_000);
 

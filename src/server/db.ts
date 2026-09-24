@@ -268,6 +268,7 @@ export function migrate(db: Database.Database): void {
       session_token TEXT NOT NULL,
       transcript TEXT NOT NULL DEFAULT '[]',
       definition TEXT,
+      draft TEXT,
       status TEXT NOT NULL DEFAULT 'open',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -327,6 +328,14 @@ export function migrate(db: Database.Database): void {
   }
   if (!colNames.has('paused_reason')) {
     db.exec('ALTER TABLE campaigns ADD COLUMN paused_reason TEXT');
+  }
+
+  // The interview's sheet-so-far: every field the player has stated, kept
+  // across turns. `definition` stays the finished sheet only, since it is what
+  // confirm and submit act on.
+  const interviewCols = db.pragma('table_info(character_interviews)') as Array<{ name: string }>;
+  if (!interviewCols.some(c => c.name === 'draft')) {
+    db.exec('ALTER TABLE character_interviews ADD COLUMN draft TEXT');
   }
 
   const cpCols = db.pragma('table_info(checkpoints)') as Array<{ name: string }>;

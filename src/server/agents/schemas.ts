@@ -132,17 +132,35 @@ export const CharacterRelationshipSchema = z.object({
   address: z.string().nullish().transform(v => (v && v.trim() ? v.trim() : undefined)),
 });
 
+// The interview reports a draft sheet on every turn, so most fields are
+// unknown most of the time — and a model writes "unknown" as null, a number
+// as "+2", a list as one string. Each field degrades to empty on its own; one
+// odd field must never sink the reply and drop every field the player DID
+// state (the live "Talk to DM registers nothing" bug).
+const draftText = z.unknown().transform(v => (typeof v === 'string' ? v : ''));
+const draftList = z.unknown().transform(v =>
+  (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []).filter((x): x is string => typeof x === 'string' && x.trim().length > 0));
+const draftSkills = z.unknown().transform(v => {
+  const out: Record<string, number> = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const [name, raw] of Object.entries(v as Record<string, unknown>)) {
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim().replace(/^\+/, '')) : NaN;
+    if (name.trim() && Number.isFinite(n)) out[name] = n;
+  }
+  return out;
+});
+
 export const CharInterviewReplySchema = z.object({
   reply: z.string().min(1),
   definition: z.object({
-    name: z.string().default(''),
-    highConcept: z.string().default(''),
-    trouble: z.string().default(''),
-    aspects: z.array(z.string()).default([]),
-    personality: z.string().default(''),
-    backstory: z.string().default(''),
-    skills: z.record(z.number()).default({}),
-    stunts: z.array(z.string()).default([]),
+    name: draftText,
+    highConcept: draftText,
+    trouble: draftText,
+    aspects: draftList,
+    personality: draftText,
+    backstory: draftText,
+    skills: draftSkills,
+    stunts: draftList,
     // Optional extras: a malformed age or relationship entry is dropped, never
     // allowed to sink an otherwise-good sheet (and a retry) over a nicety.
     age: z.union([z.number(), z.string()]).nullish().catch(undefined)

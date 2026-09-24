@@ -20,8 +20,9 @@ import type { TranscriptMessage, WorldSeed } from '../src/shared/types.js';
 // Every DM prompt that reaches a player goes through callLlm. Capturing its
 // messages is how the prompt-content tests below see exactly what was sent.
 const llmCalls: Array<Array<{ role: string; content: string }>> = [];
-vi.mock('../src/server/agents/llm-client.js', () => ({
-  callLlm: vi.fn(async (opts: { messages: Array<{ role: string; content: string }> }) => {
+vi.mock('../src/server/agents/llm-client.js', () => {
+  // callProse is the prose-call wrapper around the same request; one fake serves both.
+  const fake = vi.fn(async (opts: { messages: Array<{ role: string; content: string }> }) => {
     llmCalls.push(opts.messages);
     const system = opts.messages[0]?.content ?? '';
     if (system.includes('helping set up a new game')) {
@@ -31,8 +32,9 @@ vi.mock('../src/server/agents/llm-client.js', () => ({
       return { reply: 'Who are they?', definition: null };
     }
     return 'The lamp is lit.';
-  }),
-}));
+  });
+  return { callLlm: fake, callProse: fake };
+});
 
 let dataDir: string;
 let db: Database.Database;

@@ -8,7 +8,7 @@ import { WorldBible } from './world-bible.js';
 import { getInfluences, setCampaignPaused, setCampaignPhase } from './room.js';
 import { loadStockScenario, getWorldSeed, seedWorld } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
-import { callLlm, runWithLlmSignal } from './agents/llm-client.js';
+import { callProse, runWithLlmSignal } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { recordReplayBroadcast } from './replay-log.js';
@@ -31,6 +31,12 @@ export const QUIET_TURNS_BEFORE_PAUSE = 6;
 // How long a character waits for a whisper before deciding alone. Read once
 // at import (like index.ts's ROOM_TEARDOWN_GRACE_MS) so tests can shrink it.
 const WHISPER_WINDOW_MS = parseInt(process.env.WHISPER_WINDOW_MS ?? '30000', 10);
+// The first window of a session opens right after the arrival, the
+// introductions and the first scene's narration land at once — a wall of
+// text. Seen live: a player reading it (or on another tab) first saw the
+// window at 3s left and lost the turn. It gets a second window's worth of
+// reading time on top.
+const FIRST_WHISPER_WINDOW_MS = parseInt(process.env.FIRST_WHISPER_WINDOW_MS ?? String(WHISPER_WINDOW_MS * 2), 10);
 
 const BASE_COMPACTION_THRESHOLD = 35;
 const BASE_COMPACTION_KEEP_RECENT = 12;
@@ -76,7 +82,11 @@ export class GameLoop {
   private llmAbort = new AbortController();
   private quietTurns = 0;
   private pendingWhisperTimer: ReturnType<typeof setTimeout> | null = null;
-  private openWhisperPrompt: ServerMessage | null = null;
+  private openWhisperPrompt: Extract<ServerMessage, { type: 'whisper-prompt' }> | null = null;
+  // Wall-clock close of the open whisper window while its countdown runs;
+  // null while none is open or while a pause holds it.
+  private whisperDeadline: number | null = null;
+  private firstWhisperWindow = true;
   private sceneTurnCount = 0;
   private locationTurnCount = 0;
   private lastLocationName = '';
@@ -647,7 +657,10 @@ export class GameLoop {
       // The window was held; give the table a fresh countdown for it, and
       // re-send its prompt so every client restarts theirs.
       this.armWhisperTimer(WHISPER_WINDOW_MS);
-      if (this.openWhisperPrompt) this.broadcastFn(this.openWhisperPrompt);
+      if (this.openWhisperPrompt) {
+        this.openWhisperPrompt = { ...this.openWhisperPrompt, windowMs: WHISPER_WINDOW_MS, remainingMs: WHISPER_WINDOW_MS };
+        this.broadcastFn(this.openWhisperPrompt);
+      }
     }
     const gate = this.resumeGate;
     this.resumeGate = null;
@@ -969,15 +982,24 @@ export class GameLoop {
     // is skipped when saved words are already in hand.
     const carrying = this.whisperQueue.get(characterId);
     if (carrying) this.whisperQueue.delete(characterId);
-    const whisperPrompt: ServerMessage = { type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions, goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length };
+    const carryingSaved = !!carrying && carrying.length > 0;
+    // The window's length travels with the prompt so the client counts down
+    // from what the server will actually wait, not a number of its own.
+    const windowMs = carryingSaved ? 0 : (this.firstWhisperWindow ? FIRST_WHISPER_WINDOW_MS : WHISPER_WINDOW_MS);
+    const whisperPrompt: Extract<ServerMessage, { type: 'whisper-prompt' }> = {
+      type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions,
+      goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length,
+      ...(carryingSaved ? {} : { windowMs, remainingMs: windowMs }),
+    };
     this.broadcastFn(whisperPrompt);
 
     let whisper: string | null;
-    if (carrying && carrying.length > 0) {
-      whisper = carrying.join('\n');
+    if (carryingSaved) {
+      whisper = carrying!.join('\n');
     } else {
+      this.firstWhisperWindow = false;
       this.openWhisperPrompt = whisperPrompt;
-      whisper = await this.waitForWhisper(characterId, WHISPER_WINDOW_MS);
+      whisper = await this.waitForWhisper(characterId, windowMs);
       this.openWhisperPrompt = null;
     }
     // A whisper that landed in a window the pause was holding is kept: the
@@ -1663,12 +1685,18 @@ export class GameLoop {
     const voiceHint = presetVoices[campaign?.dm_preset] ?? 'Write in the DM\'s voice — warm, reflective, slightly bittersweet.';
 
     try {
-      const epilogue = await callLlm({
+      const epilogue = await callProse({
         messages: [
           { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them.` },
           { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.` },
         ],
-        maxTokens: 512,
+        // Seen live at 248 characters, stopped mid-sentence ("...and the
+        // distant toll of the great clock"): the reasoning model spent most
+        // of 512 tokens thinking over the session record before writing.
+        // 3-5 sentences is ~250 tokens; 3072 leaves ~2.5k for reasoning over
+        // a record that can run to several thousand tokens, and callProse
+        // retries a cut-off reply at double that, then trims to a sentence.
+        maxTokens: 3072,
       });
       const text = epilogue.trim();
       if (text && text.length > 20) {
@@ -1706,12 +1734,14 @@ export class GameLoop {
         : 'You learned to distrust the whisper. Whatever it wanted, it wasn\'t always what you needed.';
 
       try {
-        const reflection = await callLlm({
+        const reflection = await callProse({
           messages: [
             { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
             { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nWhat happened: ${sceneSummaries}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. One line each.` },
           ],
-          maxTokens: 200,
+          // Two short lines (~80 tokens), but reasoning comes out of the same
+          // budget: 200 was enough to come back empty or cut off.
+          maxTokens: 1536,
           temperature: 0.7,
         });
 
@@ -1824,13 +1854,26 @@ export class GameLoop {
     });
   }
 
+  /**
+   * The open whisper window as a (re)joining tab should see it: the prompt,
+   * with the time actually left on the server's countdown. Null when no
+   * window is counting down (none open, or a pause is holding it — resume
+   * re-broadcasts the prompt with a fresh countdown).
+   */
+  openWhisperWindow(): Extract<ServerMessage, { type: 'whisper-prompt' }> | null {
+    if (!this.openWhisperPrompt || this.whisperDeadline === null) return null;
+    return { ...this.openWhisperPrompt, remainingMs: Math.max(0, this.whisperDeadline - Date.now()) };
+  }
+
   /** (Re)start the countdown on the open whisper window; it closes with no whisper when it runs out. */
   private armWhisperTimer(timeoutMs: number): void {
     const resolve = this.pendingWhisperResolve;
     if (!resolve) return;
     this.clearWhisperTimer();
+    this.whisperDeadline = Date.now() + timeoutMs;
     this.pendingWhisperTimer = setTimeout(() => {
       this.pendingWhisperTimer = null;
+      this.whisperDeadline = null;
       if (this.pendingWhisperResolve === resolve) {
         this.pendingWhisperResolve = null;
         this.pendingWhisperCharacterId = null;
@@ -1840,6 +1883,7 @@ export class GameLoop {
   }
 
   private clearWhisperTimer(): void {
+    this.whisperDeadline = null;
     if (this.pendingWhisperTimer) {
       clearTimeout(this.pendingWhisperTimer);
       this.pendingWhisperTimer = null;

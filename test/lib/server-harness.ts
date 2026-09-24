@@ -123,6 +123,27 @@ export const LLM_STUB_REPLIES = {
       stunts: [],
     },
   },
+  // What a model answering "My name is Liz..." reports mid-interview: the
+  // fields the player stated outright, nulls for what nobody has said yet
+  // (a model's natural way to write "unknown"), and nothing that makes the
+  // sheet finished — no aspects, no skills. Selected by
+  // PARTIAL_SHEET_TRIGGER in the player's text.
+  charInterviewPartial: {
+    reply: 'Liz, then — a courier who never learned to say no. When the tide bell rings, where are you standing?',
+    definition: {
+      name: 'Liz',
+      highConcept: 'Tidewater courier who knows every back stair',
+      trouble: 'Cannot refuse a desperate request',
+      aspects: [],
+      personality: null,
+      backstory: null,
+      skills: {},
+      stunts: ['Shortcut: +2 to Athletics when racing through the town'],
+      age: null,
+      pronouns: null,
+      relationships: [],
+    },
+  },
   worldIntroduction:
     'The lamp has been lit every night for thirty years. Tonight the relief keeper did not arrive, and the chapel below has no bell to ring.',
   // Two short, plain-prose replies for the negotiation agents (negotiation.ts
@@ -255,7 +276,13 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // deterministically exercise sendWorldIntroduction's
           // empty-introduction guard (src/server/index.ts) — real LLM
           // outages/hiccups return '' or whitespace-only text the same way.
-          text = body.includes('EMPTY_INTRO_TRIGGER') ? '   \n\t  ' : LLM_STUB_REPLIES.worldIntroduction;
+          // TRUNCATED_INTRO_TRIGGER as the dmPreset answers like a reasoning
+          // model starved of tokens: cut off mid-sentence at any budget up to
+          // 3072, the finished introduction above that.
+          const truncatedIntro = body.includes('TRUNCATED_INTRO_TRIGGER') && JSON.parse(body).max_tokens <= 3072;
+          text = body.includes('EMPTY_INTRO_TRIGGER') ? '   \n\t  '
+            : truncatedIntro ? `${LLM_STUB_REPLIES.worldIntroduction} Jolly de Sombra twirls a feathered hat that blushes`
+            : LLM_STUB_REPLIES.worldIntroduction;
         } else if (body.includes('character creation API')) {
           // A special marker in the player's own text picks the thin-sheet
           // fixture regardless of turn count, so a test can trigger it
@@ -271,6 +298,8 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
             // one — a marker on a LATER turn reuses the same null-definition
             // reply turn one gives, e.g. a plain clarifying question.
             text = JSON.stringify(LLM_STUB_REPLIES.charInterviewOpen);
+          } else if (body.includes('PARTIAL_SHEET_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.charInterviewPartial);
           } else {
             // The interview turns "done" once the player has answered twice, so a
             // test can drive it deterministically instead of guessing turn counts.

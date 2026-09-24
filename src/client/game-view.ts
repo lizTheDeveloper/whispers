@@ -295,6 +295,8 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
   const hasOwnCharacter = typeof myCharacterId === 'string' && myCharacterId.length > 0;
   let whisperTimer: ReturnType<typeof setInterval> | null = null;
   let windowCharId: string | null = null;
+  // Only for a server that predates windowMs/remainingMs on whisper-prompt.
+  const DEFAULT_WHISPER_WINDOW_MS = 30_000;
   function setWhisperQueueMode(): void {
     windowCharId = null;
     whisperBtn.textContent = 'Whisper';
@@ -373,12 +375,24 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       }
       whisperArea.insertBefore(sugDiv, whisperInput);
     }
-    let remaining = 30;
+    // Count down to the server's own deadline: the time left it sent
+    // (shorter than the window for a tab that rejoined mid-window), measured
+    // against this clock from the moment it arrived. Recomputed from the
+    // clock on every tick rather than decremented, so a throttled
+    // background tab still shows the truth when it comes back into view.
+    const remainingMs = msg.remainingMs ?? msg.windowMs ?? DEFAULT_WHISPER_WINDOW_MS;
+    const deadline = Date.now() + remainingMs;
+    const secondsLeft = () => Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     windowCharId = msg.characterId;
-    whisperBtn.textContent = `Whisper (${remaining}s)`;
-    if (whisperTimer) clearInterval(whisperTimer);
+    if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
+    if (whisperLocked) {
+      // A paused table holds the window; resume re-sends the prompt.
+      whisperBtn.textContent = 'Whisper';
+      return;
+    }
+    whisperBtn.textContent = `Whisper (${secondsLeft()}s)`;
     whisperTimer = setInterval(() => {
-      remaining--;
+      const remaining = secondsLeft();
       if (remaining <= 0) {
         if (whisperTimer) { clearInterval(whisperTimer); whisperTimer = null; }
         appendLog('[You stayed silent.]', 'system');
@@ -396,7 +410,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         return;
       }
       whisperBtn.textContent = `Whisper (${remaining}s)`;
-    }, 1000);
+    }, 250);
   });
 
   function renderActionTaken(msg: Extract<ServerMessage, { type: 'action-taken' }>): void {

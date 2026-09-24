@@ -24,8 +24,9 @@ import type { WorldSeed } from '../src/shared/types.js';
 import type { PartyMember } from '../src/server/agents/dm.js';
 
 const llmCalls: Array<Array<{ role: string; content: string }>> = [];
-vi.mock('../src/server/agents/llm-client.js', () => ({
-  callLlm: vi.fn(async (opts: { messages: Array<{ role: string; content: string }> }) => {
+vi.mock('../src/server/agents/llm-client.js', () => {
+  // callProse is the prose-call wrapper around the same request; one fake serves both.
+  const fake = vi.fn(async (opts: { messages: Array<{ role: string; content: string }> }) => {
     llmCalls.push(opts.messages);
     const all = opts.messages.map(m => m.content).join('\n');
     if (all.includes('OPENING OF THE ADVENTURE')) return { narration: '', introductions: [], currentLocationName: '' };
@@ -34,8 +35,9 @@ vi.mock('../src/server/agents/llm-client.js', () => ({
     }
     if (all.includes('character creation API')) return { reply: 'Who are they?', definition: null };
     return 'The lamp is lit.';
-  }),
-}));
+  });
+  return { callLlm: fake, callProse: fake };
+});
 
 let dataDir: string;
 let db: Database.Database;

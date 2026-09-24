@@ -82,10 +82,16 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 
 type CallLlmResult<S> = S extends z.ZodTypeAny ? z.output<S> : string;
 
-function tryRepairJson(text: string): string | null {
+/**
+ * `truncated` is true when the object only parsed after closing structures
+ * the model never closed — the reply ran out, it did not end. An open string
+ * value is cut back to its last complete sentence before it is closed, so a
+ * cut-off `narration` or `reply` never ends mid-word.
+ */
+function tryRepairJson(text: string): { json: string; truncated: boolean } | null {
   let candidate = text.match(/\{[\s\S]*\}/)?.[0];
   if (candidate) {
-    try { JSON.parse(candidate); return candidate; } catch {}
+    try { JSON.parse(candidate); return { json: candidate, truncated: false }; } catch {}
   }
 
   const firstBrace = text.indexOf('{');
@@ -101,22 +107,95 @@ function tryRepairJson(text: string): string | null {
   // Count open braces/brackets and close them
   let braces = 0, brackets = 0;
   let inString = false, escape = false;
-  for (const ch of fragment) {
+  let stringStart = -1;
+  for (let i = 0; i < fragment.length; i++) {
+    const ch = fragment[i]!;
     if (escape) { escape = false; continue; }
     if (ch === '\\') { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
+    if (ch === '"') { inString = !inString; if (inString) stringStart = i; continue; }
     if (inString) continue;
     if (ch === '{') braces++;
     if (ch === '}') braces--;
     if (ch === '[') brackets++;
     if (ch === ']') brackets--;
   }
-  // Close any unterminated string
-  if (inString) fragment += '"';
+  // Close any unterminated string — at its last complete sentence when it
+  // has one (a short value like a name has none and is kept as it is).
+  if (inString) {
+    const body = fragment.slice(stringStart + 1).replace(/\\$/, '');
+    const cut = lastSentenceEnd(body);
+    fragment = fragment.slice(0, stringStart + 1) + (cut > 0 ? body.slice(0, cut) : body) + '"';
+  }
   while (brackets > 0) { fragment += ']'; brackets--; }
   while (braces > 0) { fragment += '}'; braces--; }
 
-  try { JSON.parse(fragment); return fragment; } catch { return null; }
+  try { JSON.parse(fragment); return { json: fragment, truncated: true }; } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Truncation. The proxy forwards to a reasoning model (gpt-oss-120b on Groq),
+// whose hidden reasoning tokens count against max_tokens: too small a budget
+// and the visible reply stops mid-sentence (or comes back empty) with no
+// error anywhere. The proxy (/api/llm/think) currently returns only { text } —
+// no finish_reason, no usage — so a finish reason is honoured when present
+// (a future proxy, or a raw OpenAI-shaped body) and otherwise prose is judged
+// by how it ends.
+// ---------------------------------------------------------------------------
+
+const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens', 'max_output_tokens']);
+/** Ceiling for a budget raised after a truncated reply. */
+const MAX_RETRY_TOKENS = 8192;
+
+export function growTokenBudget(maxTokens: number): number {
+  return Math.min(MAX_RETRY_TOKENS, Math.max(maxTokens * 2, maxTokens + 1024));
+}
+
+function extractFinishReason(data: any): string | null {
+  const reason = data?.finish_reason ?? data?.stop_reason ?? data?.choices?.[0]?.finish_reason ?? null;
+  return typeof reason === 'string' ? reason : null;
+}
+
+// A sentence ends in . ! ? or …, optionally followed by closing quotes,
+// brackets or markdown emphasis.
+const SENTENCE_END = /[.!?…]["'”’»)\]*_]*/g;
+const CLOSING_QUOTE_END = /["”’»]\s*$/;
+
+/** Index just past the last complete sentence in `text`, or 0 if it has none. */
+function lastSentenceEnd(text: string): number {
+  let end = 0;
+  for (const m of text.matchAll(SENTENCE_END)) {
+    const after = m.index! + m[0].length;
+    // Only a real boundary: end of text, or whitespace next ("3.5" is not one).
+    if (after === text.length || /\s/.test(text[after]!)) end = after;
+  }
+  return end;
+}
+
+/** Prose that ends the way finished prose ends: terminal punctuation or a closing quote. */
+export function endsCleanly(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return lastSentenceEnd(t) === t.length || CLOSING_QUOTE_END.test(t);
+}
+
+/**
+ * Cut prose back to its last complete sentence. A quotation the cut leaves
+ * open is closed, so `She says, "Run. Now` becomes `She says, "Run."`.
+ * Returns '' when there is no complete sentence at all.
+ */
+export function trimToLastSentence(text: string): string {
+  const t = text.trim();
+  const end = lastSentenceEnd(t);
+  if (end === 0) return '';
+  let out = t.slice(0, end).trim();
+  if ((out.match(/"/g) ?? []).length % 2 === 1) out += '"';
+  if ((out.match(/“/g) ?? []).length > (out.match(/”/g) ?? []).length) out += '”';
+  return out;
+}
+
+/** A reply that is only an action marker ("*thinks quietly*" — the proxy's stand-in for an empty reply). */
+function isMarkerOnly(text: string): boolean {
+  return /^\*[^*]+\*$/.test(text.trim());
 }
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -134,6 +213,124 @@ async function fetchWithRetry(url: string, init: RequestInit & { signal: AbortSi
   throw new Error('unreachable');
 }
 
+/**
+ * Everything callLlm does to a raw reply before judging it: thinking tags,
+ * roleplay markers and code fences come off. Never rejects — an empty result
+ * is for the caller to handle.
+ */
+function cleanReplyText(raw: string): string {
+  let text = raw;
+  // Strip Qwen3 thinking tags (closed or unclosed at end of output)
+  text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
+  if (text.startsWith('<think>')) return '';
+
+  // Strip roleplay markers that may wrap the response — leading and
+  // trailing checked independently (not gated on one another), and NOT
+  // gated on `schema`: a schema-less prose reply (world introduction,
+  // negotiation dialogue, epilogue, character reflections, summarizeScene's
+  // plain-text fallback) is exactly as susceptible to a stray
+  // "*thinks quietly*" as a JSON one, and unlike JSON parsing it has no
+  // downstream validation to catch it — a leftover marker there is not a
+  // parse failure, it's just wrong text that gets stored and shown
+  // forever (see sendWorldIntroduction: the intro turn is generated once
+  // and never regenerated). This is post-processing only — never reject
+  // the response, only clean it; an empty/unusable result after cleaning
+  // is already handled separately by each caller.
+  //
+  // A single-asterisk pair like *nods* is a roleplay action marker; a
+  // double-asterisk pair like **bold** is markdown emphasis that players
+  // read. Both leading and trailing text can legitimately end in
+  // **bold**, and the naive "strip *...* at the edge" version of this
+  // (text.replace(/^\*[^*]*\*\s*/, '') / the trailing mirror) cannot
+  // tell them apart: run against "He nodded. **Finally.**" it matches
+  // just the closing "**" as an empty-content *[^*]** pair, leaving an
+  // unbalanced "**Finally." behind. The (?<!\*)/(?!\*) guards on both
+  // delimiters make a star that is adjacent to another star ineligible
+  // as either the opening or closing delimiter of a marker, so a run of
+  // two consecutive stars can never be mistaken for a single-star pair
+  // — a real double-star bold run is left untouched, while a genuine
+  // single-star action marker (with non-star content in between) is
+  // still stripped.
+  const LEADING_ACTION_MARKER = /^\*(?!\*)([^*]+)\*(?!\*)\s*/;
+  const TRAILING_ACTION_MARKER = /\s*(?<!\*)\*(?!\*)([^*]+)\*(?!\*)$/;
+  // Preserved so a response that is ENTIRELY marker-wrapped text (e.g.
+  // "*just this*", with nothing left once the wrapper comes off) can
+  // fall back to its unstripped self below, instead of the stripping
+  // step manufacturing an empty response out of a real answer.
+  const beforeMarkerStrip = text;
+  if (LEADING_ACTION_MARKER.test(text)) {
+    text = text.replace(LEADING_ACTION_MARKER, '').trim();
+  }
+  if (TRAILING_ACTION_MARKER.test(text)) {
+    text = text.replace(TRAILING_ACTION_MARKER, '').trim();
+  }
+  // Strip markdown code fences — same reasoning, not gated on `schema`.
+  text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+  // Stripping cosmetic roleplay/fence markers must never manufacture an
+  // empty response out of real model output — a reply that is nothing
+  // BUT marker-wrapped text (e.g. "*acknowledges quietly*") strips to
+  // nothing here. That is still an answer with cosmetic wrapping, which
+  // is strictly better than throwing and failing the action outright, so
+  // fall back to the unstripped text rather than treating this as empty.
+  if (!text && beforeMarkerStrip) {
+    text = beforeMarkerStrip;
+  }
+
+  return text;
+}
+
+interface Completion {
+  text: string;
+  /** The provider's finish reason when the proxy passes one through, else null. */
+  finishReason: string | null;
+}
+
+/** True when the provider said it stopped for length. */
+function hitTokenLimit(c: Completion): boolean {
+  return c.finishReason !== null && TRUNCATION_FINISH_REASONS.has(c.finishReason.toLowerCase());
+}
+
+/**
+ * One POST to the proxy (with fetchWithRetry's transport retries) and the
+ * cleaned reply. A cancelled call rejects with LlmAbortError.
+ */
+async function requestCompletion(opts: {
+  messages: Array<{ role: string; content: string }>;
+  temperature: number;
+  maxTokens: number;
+  timeout: number;
+  signal: AbortSignal | null;
+}): Promise<Completion> {
+  const { signal } = opts;
+  if (signal?.aborted) throw new LlmAbortError();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeout);
+  const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+  try {
+    const response = await fetchWithRetry(`${LLM_PROXY_URL}/api/llm/think`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Game': 'whispers',
+      },
+      body: JSON.stringify({ messages: opts.messages, temperature: opts.temperature, max_tokens: opts.maxTokens }),
+      signal: requestSignal,
+    });
+
+    if (!response.ok) throw new Error(`LLM proxy returned ${response.status}`);
+
+    const data = await response.json();
+    const raw: string = (data?.text?.trim() ?? data?.choices?.[0]?.message?.content?.trim() ?? '') as string;
+    return { text: cleanReplyText(raw), finishReason: extractFinishReason(data) };
+  } catch (e) {
+    if (signal?.aborted) throw new LlmAbortError();
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function callLlm<S extends z.ZodType | undefined = undefined>(
   opts: CallLlmOpts<S>
 ): Promise<CallLlmResult<S>> {
@@ -141,15 +338,18 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
   const signal = opts.signal ?? ambientSignal.getStore()?.() ?? null;
   const maxAttempts = schema ? 4 : 1;
   let lastBadResponse = '';
+  // A reply that ran out of tokens gets ONE more try at a larger budget —
+  // the same prompt, not the "that was not valid JSON" correction, because
+  // nothing was wrong with it except where it stopped.
+  let budget = maxTokens;
+  let budgetRaised = false;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // Every attempt, not just the first: the schema retries below `continue`
     // straight past the catch, and an abort landing between attempts must
     // still stop the next one from being sent.
     if (signal?.aborted) throw new LlmAbortError();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+    const canRetry = attempt < maxAttempts - 1;
 
     try {
       let promptMessages: Array<{ role: string; content: string }>;
@@ -174,118 +374,99 @@ export async function callLlm<S extends z.ZodType | undefined = undefined>(
 
       const retryTemp = attempt > 0 ? Math.max(0.2, (temperature ?? 0.7) - attempt * 0.15) : (temperature ?? 0.7);
 
-      const response = await fetchWithRetry(`${LLM_PROXY_URL}/api/llm/think`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Game': 'whispers',
-        },
-        body: JSON.stringify({ messages: promptMessages, temperature: retryTemp, max_tokens: maxTokens }),
-        signal: requestSignal,
-      });
-
-      if (!response.ok) throw new Error(`LLM proxy returned ${response.status}`);
-
-      const data = await response.json();
-      let text: string = (data?.text?.trim() ?? data?.choices?.[0]?.message?.content?.trim() ?? '') as string;
-
-      // Strip Qwen3 thinking tags (closed or unclosed at end of output)
-      text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
-      if (text.startsWith('<think>')) text = '';
-
-      if (schema && !text) {
-        lastBadResponse = '(empty response after stripping thinking tags)';
-        if (attempt < maxAttempts - 1) continue;
-        throw new Error('LLM returned empty response after stripping thinking tags');
-      }
-
-      // Strip roleplay markers that may wrap the response — leading and
-      // trailing checked independently (not gated on one another), and NOT
-      // gated on `schema`: a schema-less prose reply (world introduction,
-      // negotiation dialogue, epilogue, character reflections, summarizeScene's
-      // plain-text fallback) is exactly as susceptible to a stray
-      // "*thinks quietly*" as a JSON one, and unlike JSON parsing it has no
-      // downstream validation to catch it — a leftover marker there is not a
-      // parse failure, it's just wrong text that gets stored and shown
-      // forever (see sendWorldIntroduction: the intro turn is generated once
-      // and never regenerated). This is post-processing only — never reject
-      // the response, only clean it; an empty/unusable result after cleaning
-      // is already handled separately by each caller.
-      //
-      // A single-asterisk pair like *nods* is a roleplay action marker; a
-      // double-asterisk pair like **bold** is markdown emphasis that players
-      // read. Both leading and trailing text can legitimately end in
-      // **bold**, and the naive "strip *...* at the edge" version of this
-      // (text.replace(/^\*[^*]*\*\s*/, '') / the trailing mirror) cannot
-      // tell them apart: run against "He nodded. **Finally.**" it matches
-      // just the closing "**" as an empty-content *[^*]** pair, leaving an
-      // unbalanced "**Finally." behind. The (?<!\*)/(?!\*) guards on both
-      // delimiters make a star that is adjacent to another star ineligible
-      // as either the opening or closing delimiter of a marker, so a run of
-      // two consecutive stars can never be mistaken for a single-star pair
-      // — a real double-star bold run is left untouched, while a genuine
-      // single-star action marker (with non-star content in between) is
-      // still stripped.
-      const LEADING_ACTION_MARKER = /^\*(?!\*)([^*]+)\*(?!\*)\s*/;
-      const TRAILING_ACTION_MARKER = /\s*(?<!\*)\*(?!\*)([^*]+)\*(?!\*)$/;
-      // Preserved so a response that is ENTIRELY marker-wrapped text (e.g.
-      // "*just this*", with nothing left once the wrapper comes off) can
-      // fall back to its unstripped self below, instead of the stripping
-      // step manufacturing an empty response out of a real answer.
-      const beforeMarkerStrip = text;
-      if (LEADING_ACTION_MARKER.test(text)) {
-        text = text.replace(LEADING_ACTION_MARKER, '').trim();
-      }
-      if (TRAILING_ACTION_MARKER.test(text)) {
-        text = text.replace(TRAILING_ACTION_MARKER, '').trim();
-      }
-      // Strip markdown code fences — same reasoning, not gated on `schema`.
-      text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
-
-      // Stripping cosmetic roleplay/fence markers must never manufacture an
-      // empty response out of real model output — a reply that is nothing
-      // BUT marker-wrapped text (e.g. "*acknowledges quietly*") strips to
-      // nothing here. That is still an answer with cosmetic wrapping, which
-      // is strictly better than throwing and failing the action outright, so
-      // fall back to the unstripped text rather than treating this as empty.
-      if (!text && beforeMarkerStrip) {
-        text = beforeMarkerStrip;
-      }
-
-      if (schema && !text) {
-        lastBadResponse = '(empty response after stripping roleplay/fence markers)';
-        if (attempt < maxAttempts - 1) continue;
-        throw new Error('LLM returned empty response after stripping markers');
-      }
+      const completion = await requestCompletion({ messages: promptMessages, temperature: retryTemp, maxTokens: budget, timeout, signal });
+      const text = completion.text;
+      const cutOff = hitTokenLimit(completion);
+      if (cutOff) console.warn(`[llm-client] reply stopped at max_tokens=${budget} (finish_reason=${completion.finishReason})`);
 
       if (!schema) return text as CallLlmResult<S>;
+
+      if (!text) {
+        if (cutOff && !budgetRaised && canRetry) {
+          budgetRaised = true;
+          budget = growTokenBudget(budget);
+          lastBadResponse = '';
+          continue;
+        }
+        lastBadResponse = '(empty response after stripping thinking tags and markers)';
+        if (canRetry) continue;
+        throw new Error('LLM returned empty response after stripping thinking tags and markers');
+      }
 
       const repaired = tryRepairJson(text);
       if (!repaired) {
         lastBadResponse = text;
-        if (attempt < maxAttempts - 1) continue;
+        if (canRetry) continue;
         throw new Error(`LLM returned non-JSON: ${text.slice(0, 200)}`);
       }
 
-      const parsed = JSON.parse(repaired);
+      if ((cutOff || repaired.truncated) && !budgetRaised && canRetry) {
+        console.warn(`[llm-client] JSON reply was cut off at max_tokens=${budget}; retrying with ${growTokenBudget(budget)}`);
+        budgetRaised = true;
+        budget = growTokenBudget(budget);
+        lastBadResponse = '';
+        continue;
+      }
+
+      const parsed = JSON.parse(repaired.json);
       try {
         const validated = schema.parse(parsed);
         return validated as CallLlmResult<S>;
       } catch (zodErr: any) {
         const zodIssues = zodErr.issues?.map((i: any) => `${i.path.join('.')}: ${i.message}`).join('; ') ?? '';
         console.error('[llm-client] JSON parsed but Zod rejected:', zodIssues || JSON.stringify(parsed).slice(0, 300));
-        lastBadResponse = `${repaired}\n\nValidation errors: ${zodIssues}`;
-        if (attempt >= maxAttempts - 1) throw zodErr;
+        lastBadResponse = `${repaired.json}\n\nValidation errors: ${zodIssues}`;
+        if (!canRetry) throw zodErr;
         continue;
       }
     } catch (e) {
       // Checked first: a cancelled call must not burn its remaining retries.
-      if (signal?.aborted) throw new LlmAbortError();
-      if (attempt >= maxAttempts - 1) throw e;
+      if (signal?.aborted || isLlmAbort(e)) throw new LlmAbortError();
+      if (!canRetry) throw e;
       if (!lastBadResponse) lastBadResponse = String(e);
-    } finally {
-      clearTimeout(timer);
     }
   }
   throw new Error('LLM call failed after retries');
+}
+
+/**
+ * Player-facing prose (the world introduction, the epilogue, closing
+ * reflections, a plain-text scene summary): never shown cut off mid-sentence.
+ *
+ * A reply the provider stopped for length, or one that does not end the way
+ * finished prose ends (terminal punctuation or a closing quote), or an empty
+ * or marker-only one (reasoning ate the whole budget), is retried once with a
+ * larger budget. If that is still cut off, the longer of the two is trimmed
+ * back to its last complete sentence — possibly to '' when there is none,
+ * which every caller already treats as "no text".
+ */
+export async function callProse(opts: Omit<CallLlmOpts<undefined>, 'schema'> & { retryMaxTokens?: number }): Promise<string> {
+  const signal = opts.signal ?? ambientSignal.getStore()?.() ?? null;
+  const base = {
+    messages: opts.messages,
+    temperature: opts.temperature ?? 0.7,
+    timeout: opts.timeout ?? DEFAULT_TIMEOUT,
+    signal,
+  };
+  const firstBudget = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+  const looksCutOff = (c: Completion) => hitTokenLimit(c) || isMarkerOnly(c.text) || !endsCleanly(c.text);
+
+  const first = await requestCompletion({ ...base, maxTokens: firstBudget });
+  if (!looksCutOff(first)) return first.text;
+
+  const retryBudget = opts.retryMaxTokens ?? growTokenBudget(firstBudget);
+  console.warn(`[llm-client] prose reply looks cut off at max_tokens=${firstBudget} (finish_reason=${first.finishReason ?? 'n/a'}, ${first.text.length} chars); retrying with ${retryBudget}`);
+  let best = first;
+  try {
+    const second = await requestCompletion({ ...base, maxTokens: retryBudget });
+    if (!looksCutOff(second)) return second.text;
+    if (second.text.length > best.text.length || isMarkerOnly(best.text)) best = second;
+  } catch (e) {
+    if (isLlmAbort(e)) throw e;
+    console.error('[llm-client] prose retry failed; trimming the first reply instead:', e);
+  }
+  if (isMarkerOnly(best.text)) return '';
+  const trimmed = trimToLastSentence(best.text);
+  console.warn(`[llm-client] prose still cut off after retry; trimmed ${best.text.length} -> ${trimmed.length} chars`);
+  return trimmed;
 }
