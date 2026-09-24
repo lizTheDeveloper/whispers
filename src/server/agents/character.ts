@@ -23,6 +23,12 @@ export interface PartyMemberView {
   /** What the viewing character is to them, when only their sheet states the tie ("son"). */
   viewerIsTheir?: string;
   age?: number | string;
+  /** How to refer to them ("she/her"), as the sheets state it; unset = not stated. */
+  pronouns?: string;
+  /** What THEY call the viewing character, when it is not just the viewer's name. */
+  callsYou?: string;
+  /** Taken out (FATE): down, unable to act or speak until they recover. */
+  takenOut?: boolean;
 }
 
 interface CharacterContext {
@@ -33,6 +39,8 @@ interface CharacterContext {
   memories?: CharacterMemory[];
   worldContext?: string;
   partyMembers?: PartyMemberView[];
+  /** This character's own pronouns as the sheets state them (their own, or a companion's relation word); unset = not stated. */
+  ownPronouns?: string;
 }
 
 const FEMININE = /\b(mother|mom|mum|mama|sister|daughter|wife|aunt|grandmother|grandma|granny|niece|girlfriend|stepmother|stepdaughter|stepsister)\b/i;
@@ -41,6 +49,21 @@ function pronounFor(relation: string | undefined): 'her' | 'him' | 'them' {
   if (relation && FEMININE.test(relation)) return 'her';
   if (relation && MASCULINE.test(relation)) return 'him';
   return 'them';
+}
+
+/** The companion's pronouns: stated on the sheets, or implied by the viewer's own relation word ("mother" → she/her). */
+export function companionPronouns(p: PartyMemberView): string | null {
+  if (p.pronouns?.trim()) return p.pronouns.trim();
+  const implied = pronounFor(p.relation);
+  return implied === 'her' ? 'she/her' : implied === 'him' ? 'he/him' : null;
+}
+
+/** "Biz — pronouns not stated: say "Biz" or "they", never he/him/his or she/her." */
+export function pronounRule(p: PartyMemberView): string {
+  const pron = companionPronouns(p);
+  return pron
+    ? `${p.name}: ${pron}`
+    : `${p.name}: pronouns not stated — say "${getFirstName(p.name)}" or "they", never he/him/his or she/her`;
 }
 
 /**
@@ -69,7 +92,22 @@ export function describeCompanion(p: PartyMemberView): string {
     ? ` (you call ${pron} "${p.address.trim()}")`
     : '';
   const age = p.age !== undefined && String(p.age).trim() ? `, age ${String(p.age).trim()}` : '';
-  return `- ${p.name}${who}${address}: ${p.highConcept}${age} (trouble: "${p.trouble}")`;
+  const stated = companionPronouns(p);
+  const pronouns = stated
+    ? `; pronouns: ${stated}`
+    : `; pronouns not stated — refer to them by name or "they", never "he" or "she"`;
+  const callsYou = p.callsYou?.trim() ? `; they call you "${p.callsYou.trim()}"` : '';
+  const out = p.takenOut
+    ? ` [TAKEN OUT — down and out of action: cannot act, speak or help until someone helps them up or the scene ends. You could help them.]`
+    : '';
+  return `- ${p.name}${who}${address}: ${p.highConcept}${age}${pronouns}${callsYou} (trouble: "${p.trouble}")${out}`;
+}
+
+/** "Liz → "Mom"" for each companion this character has an address term for. */
+function addressDirective(members: PartyMemberView[]): string {
+  const terms = members.filter(p => p.address?.trim() && p.address.trim().toLowerCase() !== getFirstName(p.name).toLowerCase() && p.address.trim().toLowerCase() !== p.name.trim().toLowerCase());
+  if (terms.length === 0) return '';
+  return ` When your spokenWords talk TO a companion, call them what you call them: ${terms.map(p => `${getFirstName(p.name)} is "${p.address!.trim()}" ("${p.address!.trim()}, can you…?")`).join('; ')} — never their first name, and never "${terms[0]!.address!.trim()} ${getFirstName(terms[0]!.name)}".`;
 }
 
 const ADDRESS_DIRECTIVE = 'address them the way your character naturally would — by the name, title or relation you use for them';
@@ -173,6 +211,9 @@ export class CharacterAgent {
           .map(m => m.content)
       : [];
     const companionNames = (ctx.partyMembers ?? []).map(addressTermFor).join(', ');
+    const pronounBlock = (ctx.partyMembers ?? []).length > 0
+      ? `\nWhen you mention a companion: ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.`
+      : '';
     const companionBlock = companionActions.length > 0
       ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — complement them. At least one proposed action MUST engage them directly — ${ADDRESS_DIRECTIVE} (${companionNames}): "I tell ${companionNames} to cover me while I..." or "I ask ${companionNames} what they think about..." or "I grab ${companionNames}'s arm and pull them toward...". Characters who never interact feel like strangers.`
       : '';
@@ -185,7 +226,7 @@ export class CharacterAgent {
       `<scene>\n${ctx.sceneNarration}\n</scene>`,
       worldBlock ? `\n<world>${worldBlock}\n</world>` : '',
       ownActionsBlock ? `\n<recent_actions>${ownActionsBlock}\n</recent_actions>` : '',
-      companionBlock ? `\n<companions>${companionBlock}\n</companions>` : '',
+      companionBlock || pronounBlock ? `\n<companions>${companionBlock}${pronounBlock}\n</companions>` : '',
       skillRotationBlock ? `\n<skill_rotation>${skillRotationBlock}\n</skill_rotation>` : '',
       phraseVarietyBlock ? `\n<phrasing>${phraseVarietyBlock}\n</phrasing>` : '',
       npcDirective ? `\n<npcs>${npcDirective}\n</npcs>` : '',
@@ -296,7 +337,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `\n<task>`,
       `Choose your action now.`,
       `IMPORTANT: Your innerThought must be SPECIFIC — name people, places, items, or events. Never write vague thoughts like "Something feels off" or "I need to be careful." Instead: "Cassius was near the wine cellar when the poison was placed — I should confront him" or "My bruised ankle means I can't outrun the Phantom, so I'll use the narrow passage as a chokepoint." Reference your memories, your state, and the current situation.${whisper ? ' Your FIRST sentence must address the whisper directly — explain WHY you chose to follow, partially follow, or resist it. "The voice urges caution, and my bruised ribs agree — I cannot afford another fight" (followed). "The voice wants me to steal the key, but Mirra trusted me with her secret — I will not betray that" (ignored). "The whisper has a point about the passage, though I will approach my own way" (partially-followed). The player who whispered needs to understand your reasoning.' : ''}`,
-      `DIALOGUE: If your action involves talking, confronting, persuading, questioning, threatening, comforting, or arguing with ANYONE (NPC or companion), set "spokenWords" to your ACTUAL WORDS — not a description of speaking, but the words themselves. "Where did you hide the note, Cassius?" not "I ask Cassius about the note." If your action is purely physical (fighting, sneaking, searching), set spokenWords to null. Characters who speak feel alive; characters who only act feel like puppets.`,
+      `DIALOGUE: If your action involves talking, confronting, persuading, questioning, threatening, comforting, or arguing with ANYONE (NPC or companion), set "spokenWords" to your ACTUAL WORDS — not a description of speaking, but the words themselves. "Where did you hide the note, Cassius?" not "I ask Cassius about the note." If your action is purely physical (fighting, sneaking, searching), set spokenWords to null. Characters who speak feel alive; characters who only act feel like puppets.${addressDirective(ctx.partyMembers ?? [])}${(ctx.partyMembers ?? []).length > 0 ? ` Companions' pronouns — ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.` : ''}`,
       `whisperedInfluence DEFINITIONS — pick the one that MATCHES your action:`,
       `- "followed": Your action DIRECTLY does what the whisper suggested (same target, same approach). The voice said "confront the merchant" and you confront the merchant.`,
       `- "partially-followed": The whisper SHAPED your thinking but you adapted it. The voice said "confront the merchant" and you investigated the merchant instead, or confronted someone else.`,
@@ -347,6 +388,9 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
     return [
       `You ARE ${d.name}. Stay completely in character.`,
       ageText ? `Age: ${ageText}. Think, talk and act like someone your age — how you see the world, what you notice, what you would and would not do.` : '',
+      (ctx.ownPronouns ?? d.pronouns)?.trim()
+        ? `Your pronouns: ${(ctx.ownPronouns ?? d.pronouns)!.trim()}.`
+        : `Your pronouns have not been stated — others refer to you by name or "they".`,
       `High concept: ${d.highConcept}`,
       `Trouble: ${d.trouble}`,
       `Personality: ${d.personality}`,

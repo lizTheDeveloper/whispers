@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { DmAgent, describeRelationships, introduceCharacter, type PartyMember } from './agents/dm.js';
+import { DmAgent, describeRelationships, introduceCharacter, pronounsFor, statedGender, type PartyMember } from './agents/dm.js';
 import { CharacterAgent, type PartyMemberView } from './agents/character.js';
 import type { DmOpening } from './agents/schemas.js';
 import { ExtractorAgent } from './agents/extractor.js';
@@ -16,6 +16,11 @@ import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import { transcriptVisibleTo, storyLines } from './transcript-visibility.js';
 import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { PauseReason, ServerMessage } from '../shared/protocol.js';
+import {
+  premiseImpliesArrival, hasArrivalBeat, fallbackArrival,
+  repairPronouns, repairAddress, type GuardPerson, type AddressTerm,
+  TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
+} from './narrative-guards.js';
 
 /**
  * Consecutive turns with no whisper from any human before the table pauses
@@ -101,7 +106,10 @@ export class GameLoop {
     // never reach the log. A replay-write failure must never cost a live
     // table its broadcast, hence the try/catch: the log is recovery, play
     // is the product.
-    this.broadcastFn = (msg: ServerMessage) => {
+    this.broadcastFn = (raw: ServerMessage) => {
+      // The narrative guards run here, on the way out, so nothing reaches a
+      // player or the replay log unrepaired (see guardMessage).
+      const msg = this.guardMessage(raw);
       try {
         recordReplayBroadcast(this.db, this.campaignId, msg);
       } catch (e) {
@@ -287,19 +295,150 @@ export class GameLoop {
       age: c.definition.age,
       pronouns: c.definition.pronouns,
       relationships: c.definition.relationships,
+      ...(isTakenOut(c.state) ? { takenOut: true } : {}),
     }));
   }
 
+  /**
+   * Everyone the pronoun guard protects: each party member's gender as the
+   * sheets state it (null = nobody said), and the words companions use for
+   * them ("Mom" is a mention of Liz).
+   */
+  private guardPeople(): GuardPerson[] {
+    const chars = Array.from(this.characters.values());
+    const party = this.partyForDm();
+    return chars.map((c, i) => ({
+      name: c.definition.name,
+      gender: statedGender(party[i]!, party),
+      aliases: chars.flatMap(o => (o.id === c.id ? [] : (o.definition.relationships ?? [])
+        .filter(r => this.namesMatch(r.to, c.definition.name) && r.address?.trim() && !this.namesMatch(r.address, c.definition.name))
+        .map(r => r.address!.trim()))),
+    }));
+  }
+
+  /** Lower-cased words of known place and item names: capitalised in prose, but never a person. */
+  private nonPersonWords(): Set<string> {
+    let names: string[] = [];
+    try {
+      names = [
+        ...this.worldBible.getAllLocationNames(this.campaignId),
+        ...(this.db.prepare('SELECT name FROM items WHERE campaign_id = ?').all(this.campaignId) as Array<{ name: string }>).map(r => r.name),
+      ];
+    } catch (e) {
+      console.error('[game-loop] could not read place/item names for the pronoun guard:', e);
+    }
+    return new Set(names.flatMap(n => n.toLowerCase().match(/[a-z][a-z'’-]*/g) ?? []));
+  }
+
+  /** The pronoun guard over one piece of prose (dialogue in quotes is never touched). */
+  private guardText(text: string): string {
+    if (!text || this.characters.size === 0) return text;
+    try {
+      const fixed = repairPronouns(text, this.guardPeople(), { nonPersonWords: this.nonPersonWords() });
+      if (fixed !== text) console.log(`[guard] pronouns repaired: "${text.slice(0, 80)}" → "${fixed.slice(0, 80)}"`);
+      return fixed;
+    } catch (e) {
+      console.error('[guard] pronoun guard failed, text left as written:', e);
+      return text;
+    }
+  }
+
+  /** What `speakerId` calls each companion, when that is not simply their name ("Mom" for Liz). */
+  private addressTermsOf(speakerId: string): AddressTerm[] {
+    const speaker = this.characters.get(speakerId);
+    if (!speaker) return [];
+    return (speaker.definition.relationships ?? []).flatMap(r => {
+      const target = Array.from(this.characters.values()).find(o => o.id !== speakerId && this.namesMatch(r.to, o.definition.name));
+      return target && r.address?.trim() ? [{ name: target.definition.name, address: r.address.trim() }] : [];
+    });
+  }
+
+  /**
+   * The single funnel every outgoing message passes through (the broadcast
+   * wrapper calls it; addTranscript runs the same text guard). DM prose —
+   * narration, resolutions, scene summaries — and character actions and
+   * thoughts get the pronoun guard; a character's own spoken words get only
+   * the address guard, since dialogue pronouns can mean anyone.
+   */
+  private guardMessage(msg: ServerMessage): ServerMessage {
+    switch (msg.type) {
+      case 'narration': return { ...msg, text: this.guardText(msg.text) };
+      case 'resolution': return { ...msg, text: this.guardText(msg.text) };
+      case 'scene-end': return { ...msg, summary: this.guardText(msg.summary) };
+      case 'action-proposals': return { ...msg, actions: msg.actions.map(a => this.guardText(a)) };
+      case 'action-taken': {
+        const terms = this.addressTermsOf(msg.characterId);
+        return {
+          ...msg,
+          action: repairAddress(this.guardText(msg.action), terms, { vocative: false }),
+          innerThought: repairAddress(this.guardText(msg.innerThought), terms, { vocative: false }),
+          spokenWords: msg.spokenWords ? repairAddress(msg.spokenWords, terms, { vocative: true }) : msg.spokenWords,
+        };
+      }
+      default: return msg;
+    }
+  }
+
   /** How `viewer` sees `other`: the relation and address term from viewer's sheet, or the reverse tie from other's. */
-  private companionView(viewer: Character, other: Character): Pick<PartyMemberView, 'relation' | 'address' | 'viewerIsTheir' | 'age'> {
+  private companionView(viewer: Character, other: Character): Pick<PartyMemberView, 'relation' | 'address' | 'viewerIsTheir' | 'age' | 'pronouns' | 'callsYou' | 'takenOut'> {
     const mine = (viewer.definition.relationships ?? []).find(r => this.namesMatch(r.to, other.definition.name));
-    const theirs = mine ? undefined : (other.definition.relationships ?? []).find(r => this.namesMatch(r.to, viewer.definition.name));
+    const theirTie = (other.definition.relationships ?? []).find(r => this.namesMatch(r.to, viewer.definition.name));
+    const theirs = mine ? undefined : theirTie;
+    const party = this.partyForDm();
+    const member = party.find(p => p.name === other.definition.name);
+    const pronouns = member ? pronounsFor(member, party) : null;
+    const callsYou = theirTie?.address?.trim() && !this.namesMatch(theirTie.address, viewer.definition.name) ? theirTie.address.trim() : undefined;
     return {
       relation: mine?.relation,
       address: mine?.address,
       viewerIsTheir: theirs?.relation,
       age: other.definition.age,
+      ...(pronouns ? { pronouns } : {}),
+      ...(callsYou ? { callsYou } : {}),
+      ...(isTakenOut(other.state) ? { takenOut: true } : {}),
     };
+  }
+
+  /** This character's own pronouns as the sheets state them, or undefined. */
+  private ownPronouns(c: Character): string | undefined {
+    const party = this.partyForDm();
+    const member = party.find(p => p.name === c.definition.name);
+    return (member && pronounsFor(member, party)) ?? undefined;
+  }
+
+  /** Mark a character taken out: out of action until the next scene, or until a companion helps them up. */
+  private markTakenOut(c: Character): void {
+    if (isTakenOut(c.state)) return;
+    c.state.consequences.push(TAKEN_OUT);
+    this.persistCharacterState(c);
+  }
+
+  /** Bring a taken-out character back into the action and tell the table. */
+  private recoverFromTakenOut(c: Character, why: string): void {
+    if (!isTakenOut(c.state)) return;
+    c.state.consequences = c.state.consequences.filter(x => x !== TAKEN_OUT);
+    console.log(`[game-loop] ${c.definition.name} recovers from being taken out — ${why}`);
+    const text = `[${c.definition.name} comes round and is back in the action — ${why}]`;
+    this.addTranscript('system', text);
+    this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene });
+    this.persistCharacterState(c);
+  }
+
+  private persistCharacterState(c: Character): void {
+    this.broadcastFn({ type: 'character-state-update', characterId: c.id, state: c.state });
+    this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(JSON.stringify(c.state), c.id);
+  }
+
+  /** DM prose that says a party member is taken out makes it so — the mechanics follow the story. */
+  private applyDeclaredTakenOut(prose: string): void {
+    for (const c of this.characters.values()) {
+      if (isTakenOut(c.state)) continue;
+      if (declaredTakenOut(prose, [c.definition.name]).length > 0) {
+        console.log(`[game-loop] DM narration declared ${c.definition.name} taken out — marking them out of action`);
+        this.markTakenOut(c);
+      }
+    }
   }
 
   /**
@@ -334,6 +473,9 @@ export class GameLoop {
     const stock = campaign.scenario_id ? loadStockScenario(campaign.scenario_id) : null;
     const scenarioOpening = stock?.openingNarration?.trim() || null;
     const premise = (seed?.premise ?? stock?.seed.premise ?? '').trim();
+    // An isekai/portal/summoned premise (or backstory) is an arrival, and the
+    // opening must show it happening to them — enforced below, not just asked.
+    const arrivalExpected = !scenarioOpening && premiseImpliesArrival(premise, ...Array.from(this.characters.values()).map(c => c.definition.backstory));
     const places = this.worldBible.getAllLocationNames(this.campaignId).map(name => ({
       name,
       description: this.worldBible.getLocationByName(this.campaignId, name)?.description ?? null,
@@ -353,7 +495,7 @@ export class GameLoop {
         influences: getInfluences(this.db, this.campaignId),
         // The opening alone also reads backstories: where they come from decides how they arrive.
         party: this.partyForDm({ withBackstory: true }),
-      }, { premise, scenarioOpening, places }), (e) => {
+      }, { premise, scenarioOpening, places, arrivalExpected }), (e) => {
       console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
       return null;
     });
@@ -371,7 +513,8 @@ export class GameLoop {
       }
     }
 
-    const sceneText = scenarioOpening ?? (opening?.narration.trim() || premise);
+    let sceneText = scenarioOpening ?? (opening?.narration.trim() || premise);
+    if (arrivalExpected) sceneText = this.withArrival(sceneText, opening, premise);
     if (sceneText) {
       this.addTranscript('dm', sceneText);
       this.broadcastFn({ type: 'narration', text: sceneText, sceneNumber: this.state.currentScene, locationName });
@@ -388,6 +531,31 @@ export class GameLoop {
     }
     this.openingJustDelivered = true;
     console.log(`[game-loop] Opening delivered (${scenarioOpening ? 'scenario' : opening?.narration.trim() ? 'DM' : 'premise'} scene-setting, ${this.characters.size} introductions)`);
+  }
+
+  /**
+   * The opening of a transported party always carries an arrival beat. The
+   * DM's own `arrival` field when it wrote a real one; its narration alone
+   * when that already lands the party (arrival language plus a party member
+   * or "they"); otherwise a deterministic line built from the premise, put
+   * before the DM's scenery. A DM `arrival` that is only scenery is kept, but
+   * after the fallback — it never stands in for the arrival.
+   */
+  private withArrival(sceneText: string, opening: DmOpening | null, premise: string): string {
+    const names = Array.from(this.characters.values()).map(c => getFirstName(c.definition.name));
+    const dmArrival = opening?.arrival?.trim() ?? '';
+    const narration = opening?.narration.trim() ?? '';
+    const partyWord = new RegExp(`\\b(${[...names, 'they', 'them', 'their', 'you'].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'i');
+    let lead: string[];
+    if (dmArrival && hasArrivalBeat(dmArrival)) {
+      lead = [dmArrival];
+    } else if (!dmArrival && narration && hasArrivalBeat(narration) && partyWord.test(narration)) {
+      return sceneText;
+    } else {
+      console.log('[game-loop] Opening had no arrival beat — adding one built from the premise');
+      lead = [fallbackArrival(premise, names), dmArrival].filter(Boolean);
+    }
+    return [...lead, sceneText].filter(Boolean).join('\n\n');
   }
 
   /**
@@ -598,6 +766,7 @@ export class GameLoop {
     if (!narration) return;
 
     this.addTranscript('dm', narration.narration);
+    this.applyDeclaredTakenOut(narration.narration);
 
     if (narration.currentLocationName) {
       if (narration.currentLocationName === this.lastLocationName) {
@@ -705,9 +874,15 @@ export class GameLoop {
   private async processTurn(characterId: string, campaign: any): Promise<void> {
     const character = this.characters.get(characterId);
     if (!character) return;
+    // Who was already down before this turn: only they can be helped up by it.
+    const downBeforeTurn = new Set(Array.from(this.characters.values()).filter(c => isTakenOut(c.state)).map(c => c.id));
 
-    if (character.state.consequences.includes('Taken Out (recovering)')) {
+    if (isTakenOut(character.state)) {
+      // Down and out of action: no proposals, no whisper window, no action.
+      // They come back at the next scene, or when a companion helps them up.
       console.log(`[game-loop] Skipping ${character.definition.name} — taken out and recovering`);
+      const first = getFirstName(character.definition.name);
+      this.broadcastFn({ type: 'narration', text: `[${first} is still down — out of action until someone helps ${first} up, or the scene ends]`, sceneNumber: this.state.currentScene });
       this.state.currentTurn++;
       this.sceneTurnCount++;
       return;
@@ -749,6 +924,7 @@ export class GameLoop {
         const lastAction = this.transcript.filter(m => m.role === 'character' && m.characterId === id).slice(-1)[0]?.content;
         return { name: c.definition.name, highConcept: c.definition.highConcept, trouble: c.definition.trouble, stress: c.state.stress, lastAction: lastAction || undefined, ...this.companionView(character, c) };
       });
+    const ownPronouns = this.ownPronouns(character);
 
     const proposals = await this.haltable(() => this.characterAgent.proposeActions({
         definition: character.definition,
@@ -758,6 +934,7 @@ export class GameLoop {
         memories,
         worldContext: fullCharContext,
         partyMembers,
+        ownPronouns,
       }), (e) => {
       console.error('[game-loop] action proposal failed:', e);
       return { actions: [{ description: 'Look around cautiously', reasoning: 'Default action' }, { description: 'Press forward despite the uncertainty', reasoning: 'Fallback bold option' }] };
@@ -814,7 +991,7 @@ export class GameLoop {
     }
 
     const decision = await this.haltable(() => this.characterAgent.decideAction(
-        { definition: character.definition, state: character.state, sceneNarration, transcript: transcriptVisibleTo(this.transcript, characterId), memories, worldContext: fullCharContext, partyMembers },
+        { definition: character.definition, state: character.state, sceneNarration, transcript: transcriptVisibleTo(this.transcript, characterId), memories, worldContext: fullCharContext, partyMembers, ownPronouns },
         whisper,
       ), (e) => {
       console.error('[game-loop] action decision failed:', e);
@@ -832,6 +1009,19 @@ export class GameLoop {
     decision.chosenAction = decision.chosenAction.replace(/\*+/g, '').replace(/_+/g, '').replace(/^#+\s*/, '').trim();
     if ('spokenWords' in decision && decision.spokenWords) {
       decision.spokenWords = decision.spokenWords.replace(/\*+/g, '').replace(/_+/g, '').trim();
+    }
+    // The pronoun guard on the character's own action and thought, here at
+    // the source so the transcript line, the DM's ruling and every screen
+    // carry the same text.
+    decision.chosenAction = this.guardText(decision.chosenAction);
+    decision.innerThought = this.guardText(decision.innerThought);
+    // The address guard, likewise before anyone reads it: Biz calls Liz
+    // "Mom", in speech and in thought.
+    const addressTerms = this.addressTermsOf(characterId);
+    if (addressTerms.length > 0) {
+      if (decision.spokenWords) decision.spokenWords = repairAddress(decision.spokenWords, addressTerms, { vocative: true });
+      decision.innerThought = repairAddress(decision.innerThought, addressTerms, { vocative: false });
+      decision.chosenAction = repairAddress(decision.chosenAction, addressTerms, { vocative: false });
     }
 
     if (decision.chosenAction.trim().length < 20) {
@@ -973,7 +1163,7 @@ export class GameLoop {
           inventory: character.state.inventory,
           partyMembers: Array.from(this.characters.entries())
             .filter(([id]) => id !== characterId)
-            .map(([id, c]) => ({ id, name: c.definition.name })),
+            .map(([id, c]) => ({ id, name: c.definition.name, ...(isTakenOut(c.state) ? { takenOut: true } : {}) })),
         },
       ), (e) => {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
@@ -1139,7 +1329,7 @@ export class GameLoop {
 
     const narrationLower = resolution.narration.toLowerCase();
     const firstName = getFirstName(character.definition.name);
-    const newConsequences = character.state.consequences.filter(c => !preConsequences.includes(c) && c !== 'Taken Out (recovering)');
+    const newConsequences = character.state.consequences.filter(c => !preConsequences.includes(c) && c !== TAKEN_OUT);
     for (const cons of newConsequences) {
       if (!narrationLower.includes(cons.toLowerCase().split(/\s+/)[0]!)) {
         resolution.narration += ` ${firstName} winces — ${cons.toLowerCase()}.`;
@@ -1168,9 +1358,22 @@ export class GameLoop {
         this.addTranscript('system', takenOutMsg);
         this.broadcastFn({ type: 'narration', text: takenOutMsg, sceneNumber: this.state.currentScene });
         c.state.stress = 1;
-        if (!c.state.consequences.includes('Taken Out (recovering)')) {
-          c.state.consequences.push('Taken Out (recovering)');
-          (c as any)._takenOutScene = this.state.currentScene;
+        if (!isTakenOut(c.state)) c.state.consequences.push(TAKEN_OUT);
+      }
+    }
+    // …and when the DM's prose says someone is taken out, so do the mechanics.
+    this.applyDeclaredTakenOut(resolution.narration);
+    for (const c of this.characters.values()) if (isTakenOut(c.state)) affectedCharIds.add(c.id);
+
+    // A companion who is down gets back up when this character helps them
+    // and it does not fail outright.
+    if (resolution.outcome !== 'failure') {
+      const aidText = `${decision.chosenAction} ${decision.spokenWords ?? ''}`;
+      for (const other of this.characters.values()) {
+        if (other.id === characterId || !isTakenOut(other.state) || !downBeforeTurn.has(other.id)) continue;
+        const namesForThem = [getFirstName(other.definition.name), other.definition.name, ...this.addressTermsOf(characterId).filter(t => t.name === other.definition.name).map(t => t.address)];
+        if (aidsCharacter(aidText, namesForThem)) {
+          this.recoverFromTakenOut(other, `${getFirstName(character.definition.name)} helps ${getFirstName(other.definition.name)} up`);
         }
       }
     }
@@ -1326,6 +1529,7 @@ export class GameLoop {
     }
     if (this.stopped || this.pauseReason) return;
 
+    summary = this.guardText(summary);
     this.transcript = [
       { role: 'system' as const, content: `[Session recap] ${summary}`, timestamp: new Date().toISOString() },
       ...toKeep,
@@ -1338,11 +1542,14 @@ export class GameLoop {
     // Becomes the next scene's "[Previous scene]" line that every character
     // reads — so, like compaction, story only: no whispers, no DM secrets.
     const worldState = this.worldBible.getPlayerKnowledge(this.campaignId, this.state.currentLocationId ?? undefined);
-    const summary = await this.haltable(() => this.dm.summarizeScene(storyLines(this.transcript), charNames, worldState), (e) => {
+    const rawSummary = await this.haltable(() => this.dm.summarizeScene(storyLines(this.transcript), charNames, worldState), (e) => {
       console.error('[game-loop] Scene summary failed:', e);
       return 'The scene draws to a close.';
     });
-    if (summary === null) return;
+    if (rawSummary === null) return;
+    // Guarded once here, so the broadcast, the stored scene and the next
+    // scene's "[Previous scene]" line all carry the same repaired text.
+    const summary = this.guardText(rawSummary);
     const whisperStats = Array.from(this.sceneWhisperStats.values()).map(s => ({
       name: s.name,
       followed: s.followed,
@@ -1380,22 +1587,8 @@ export class GameLoop {
       const oldStress = char.state.stress;
       char.state.stress = 0;
 
-      const recoverable: string[] = [];
-      const kept: string[] = [];
-      for (const c of char.state.consequences) {
-        if (c === 'Taken Out (recovering)') {
-          const scenesOut = (char as any)._takenOutScene ?? 0;
-          if (this.state.currentScene - scenesOut >= 1) {
-            recoverable.push(c);
-          } else {
-            kept.push(c);
-          }
-        } else if (char.state.consequences.length > 1) {
-          kept.push(c);
-        } else {
-          recoverable.push(c);
-        }
-      }
+      // Taken out lasts until the next scene; see recoverAtSceneBreak.
+      const { kept, recovered: recoverable } = recoverAtSceneBreak(char.state.consequences);
       char.state.consequences = kept;
 
       if (oldStress > 0 || recoverable.length > 0) {
@@ -1958,6 +2151,11 @@ export class GameLoop {
   }
 
   private addTranscript(role: TranscriptMessage['role'], content: string, characterId?: string): void {
-    this.transcript.push({ role, content, characterId, timestamp: new Date().toISOString() });
+    // Story text gets the same pronoun guard as the broadcast funnel. A
+    // player's whisper is their own words and is never rewritten.
+    // Character lines ("Liz: I …") are guarded at the source in processTurn —
+    // here the "Name:" bookkeeping prefix would read as a mention of them.
+    const guarded = role === 'dm' || role === 'system' ? this.guardText(content) : content;
+    this.transcript.push({ role, content: guarded, characterId, timestamp: new Date().toISOString() });
   }
 }

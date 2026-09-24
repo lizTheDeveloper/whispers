@@ -56,6 +56,8 @@ export interface PartyMember {
   /** Only the opening reads it — where they come from shapes how they arrive. */
   backstory?: string;
   relationships?: CharacterRelationship[];
+  /** Taken out (FATE): down and out of action until they recover. */
+  takenOut?: boolean;
 }
 
 const FEMININE_RELATIONS = /\b(mother|mom|mum|mama|sister|daughter|wife|aunt|grandmother|grandma|granny|niece|girlfriend|stepmother|stepdaughter|stepsister)\b/i;
@@ -68,7 +70,7 @@ export function pronounForRelation(relation: string): 'her' | 'him' | 'them' {
   return 'them';
 }
 
-type Gender = 'f' | 'm' | 'n';
+export type Gender = 'f' | 'm' | 'n';
 
 /** "she/her" -> f, "he/him" -> m, "they/them" -> n; anything else is not something to build grammar on. */
 function genderFromPronouns(pronouns: string | undefined): Gender | null {
@@ -91,7 +93,7 @@ function sameFirstName(a: string, b: string): boolean {
  * for them ("mother" on Biz's sheet says Liz is a woman). Nothing else — not
  * a name, not an age, and never an inverse the code worked out.
  */
-function statedGender(member: PartyMember, party: PartyMember[]): Gender | null {
+export function statedGender(member: PartyMember, party: PartyMember[]): Gender | null {
   const own = genderFromPronouns(member.pronouns);
   if (own) return own;
   if (member.pronouns?.trim()) return null;
@@ -229,7 +231,8 @@ export function describeParty(members: PartyMember[]): string {
     }
     const rels = describeRelationships(m);
     const address = describeAddressTerms(m, members);
-    return `- ${m.name}: ${m.highConcept}${age}${gender}.${[...rels, ...address].map(x => ' ' + x).join('')}`;
+    const out = m.takenOut ? ` ${m.name} is TAKEN OUT: down and out of action — cannot act, move or speak on their own until they recover (a companion helps them up, or the next scene). Do not narrate ${m.name} doing, saying or noticing anything.` : '';
+    return `- ${m.name}: ${m.highConcept}${age}${gender}.${[...rels, ...address].map(x => ' ' + x).join('')}${out}`;
   });
   const hasAges = members.some(m => m.age !== undefined && String(m.age).trim());
   const hasAddress = members.some(m => describeAddressTerms(m, members).length > 0);
@@ -241,6 +244,13 @@ export function describeParty(members: PartyMember[]): string {
     'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
     hasAddress ? 'Address terms are personal to the relationship: a term like "Mom" is what one character calls another, never that person\'s name. Only that character uses it, and only in their own dialogue; NPCs and everyone else use the name. Narration uses names too.' : '',
   ].filter(Boolean).join('\n');
+}
+
+/** How to refer to a party member, as far as the sheets say: "she/her", the player's own words, or null (not stated). */
+export function pronounsFor(member: PartyMember, party: PartyMember[]): string | null {
+  if (member.pronouns?.trim()) return member.pronouns.trim();
+  const g = statedGender(member, party);
+  return g === 'f' ? 'she/her' : g === 'm' ? 'he/him' : g === 'n' ? 'they/them' : null;
 }
 
 const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
@@ -513,10 +523,14 @@ export class DmAgent {
     premise: string;
     scenarioOpening: string | null;
     places: Array<{ name: string; description: string | null }>;
+    /** The premise or backstories transport the party here: the arrival beat is required. */
+    arrivalExpected?: boolean;
   }): Promise<DmOpening> {
     const { systemPrompt, criticalReminder } = this.buildSystemPrompt(ctx);
     const personalityReminder = criticalReminder ? `\n\nPERSONALITY REQUIREMENT: ${criticalReminder}` : '';
     const party = ctx.party ?? [];
+    const names = party.map(p => p.name).join(' and ') || 'the party';
+    const arrivalExpected = !!opts.arrivalExpected && !opts.scenarioOpening;
     const placeList = opts.places.slice(0, 8)
       .map(p => `- ${p.name}${p.description ? `: ${p.description}` : ''}`).join('\n');
 
@@ -534,12 +548,15 @@ export class DmAgent {
         : '',
       placeList ? `\n<places>\n${placeList}\n</places>` : '',
       `\n<task>`,
+      arrivalExpected
+        ? `0. arrival: REQUIRED — 1-2 sentences of the moment of arrival itself, happening to ${names}: the lurch or fall or flash, landing or waking up here, blinking, disoriented, realising a moment ago they were somewhere else entirely. This is about THEM, not the place — it must never be scenery alone. The narration below picks up right after it.`
+        : `0. arrival: "".`,
       opts.scenarioOpening
         ? `1. narration: "" (the scene is already set).`
         : `1. narration: 3-5 vivid sentences told from the characters' point of view, at the exact moment the premise puts them here. Read the premise and where they come from: if they have just been transported, summoned, isekaied, shipwrecked or otherwise pulled out of their old lives, this scene IS their arrival — the moment they land or wake up here, disoriented, the strangeness of this world hitting people who have never seen it before. If they already belong here, open on them as the situation begins. Show the place as it lands on THEM — not just scenery or a description of the place with nobody in it. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`,
       `2. introductions: one per party member, 1-2 sentences each, describing that character as the others would see them on first glance — look, bearing, manner — and stating what they are to each other exactly as the party block says (e.g. "Liz, Biz's mother, ..."). Never invent a relationship that is not stated, and never a gender: use only the relation words and pronouns the party block gives, and where it says gender is not stated, use the name or "they" and words like kid or child. Do not narrate what anyone calls anyone — that shows in their own dialogue. Use the party members' exact names.`,
       `3. currentLocationName: copy one exact name from <places> if the party is at one of them, otherwise "".${personalityReminder}`,
-      `Respond as JSON: { "narration": "...", "introductions": [{ "name": "exact character name", "text": "..." }], "currentLocationName": "..." }`,
+      `Respond as JSON: { "arrival": "${arrivalExpected ? '...' : ''}", "narration": "...", "introductions": [{ "name": "exact character name", "text": "..." }], "currentLocationName": "..." }`,
       `</task>`,
     ].filter(Boolean).join('\n');
 
@@ -553,7 +570,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string }> }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean }> }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
@@ -587,7 +604,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
         : '';
       charBlock = `\nACTING CHARACTER (narrate THEIR action, not another party member's): ${characterInfo.name} (id: ${characterInfo.id})\nAspects: ${aspectList}\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}${inventoryLine}`;
       if (characterInfo.partyMembers && characterInfo.partyMembers.length > 0) {
-        charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})`).join(', ')}`;
+        charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})${p.takenOut ? ' — TAKEN OUT, down and unable to act or speak' : ''}`).join(', ')}`;
       }
       charBlock += '\n';
     }
@@ -612,7 +629,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       `NARRATION RULES: Write the result in THIRD PERSON using the ACTING CHARACTER's name (NOT another party member's name). NEVER echo the action text — not even paraphrased with "manages to" or "tries to" prepended. Instead, describe the CONSEQUENCES and WORLD REACTION: what changes in the environment, how NPCs respond, what the character sees/hears/feels. BAD: "Kael manages to swing his sword at the ghost." GOOD: "Kael's blade arcs through the spectral figure — it shrieks, recoiling into the shadows, but a chill crawls up Kael's sword arm where the ghost's essence grazed him." Start with the character's name, then show what HAPPENS, not what they ATTEMPTED. 2-3 vivid sentences.`,
       `NPC DIALOGUE: If the action involves talking to, questioning, persuading, or confronting an NPC, the narration MUST include the NPC's spoken response in quotation marks. NPCs who respond with actual words create real drama — "I'll tell you nothing, sellsword" hits harder than "the merchant refuses."`,
       `COOPERATIVE ACTIONS: If the action references a party member by name (coordinating, protecting, assisting), lower the difficulty by 1 and narrate how the teamwork helps. If the action HARMS or abandons a party member, add stress to BOTH characters — betrayal costs everyone.`,
-      `PARTY DIALOGUE: If the action includes spoken words addressed to a companion (quoted dialogue), show a BRIEF physical reaction from that companion in your narration — a nod, a glare, a flinch, a skeptical eyebrow, a hand on their weapon. Do NOT put words in the companion's mouth (they speak on their own turn), but show they HEARD and REACTED. Dead-eyed companions who ignore each other kill immersion.`,
+      `PARTY DIALOGUE: If the action includes spoken words addressed to a companion (quoted dialogue), show a BRIEF physical reaction from that companion in your narration — a nod, a glare, a flinch, a skeptical eyebrow, a hand on their weapon. Do NOT put words in the companion's mouth (they speak on their own turn), but show they HEARD and REACTED. Dead-eyed companions who ignore each other kill immersion. A companion who is TAKEN OUT does not react, speak or act at all — they are down until they recover.`,
       `INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If they USE an item destructively (a potion consumed, a key that breaks), add {"field":"inventory","action":"remove","value":"<item name>"} to stateChanges. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"}.`,
       `FATE POINT ECONOMY: If this action touches the character's trouble aspect or a consequence, COMPEL it — add {"field":"fatePoints","action":"set","value":${(characterInfo?.fatePoints ?? 3) + 1}} and narrate the complication. If the character spent effort invoking an aspect (referenced it in their action), spend a fate point: {"field":"fatePoints","action":"set","value":${Math.max(0, (characterInfo?.fatePoints ?? 3) - 1)}}.${consequenceGuide}${personalityReminder}`,
       `Respond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens.${narrationHint}", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }`,
