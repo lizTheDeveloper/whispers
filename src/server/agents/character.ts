@@ -61,7 +61,7 @@ interface CharacterContext {
 export function characterItemsBlock(self: string, party: Array<{ name: string; inventory: string[] }> | undefined, gone: string[] | undefined): string {
   if (!party || party.length === 0) return '';
   const lines = party.map(p => `- ${p.name}${p.name === self ? ' (you)' : ''}: ${p.inventory.length > 0 ? p.inventory.join(', ') : 'nothing'}`);
-  const onHand = `<items_on_hand>\nWhat each of you is carrying right now:\n${lines.join('\n')}\nYou can only use, show, offer or hand over what is on your own line. A companion's things stay theirs until they hand them to you — ask for them, never just take them.\n</items_on_hand>`;
+  const onHand = `<items_on_hand>\nWhat each of you is carrying right now:\n${lines.join('\n')}\nYou can only use, show, offer or hand over what is on your own line. A companion's things stay theirs until they hand them to you — ask for them, never just take them. What you say counts too (spokenWords): never say you have, carry or brought something that is not on your own line — if a companion holds it, it is theirs (to the companion holding a lantern: "you have the lantern", never "I have a lantern").\n</items_on_hand>`;
   const lost = (gone ?? []).filter(Boolean);
   const notOnHand = lost.length > 0
     ? `\n<items_not_on_hand>\nGone — given away, used up, eaten or lost: ${lost.join(', ')}. Nobody at the table has these any more. Never propose or choose using, offering, showing, reaching for or taking any of them, from your bag, your pocket or anyone else.\n</items_not_on_hand>`

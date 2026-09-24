@@ -2,14 +2,14 @@ import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Entity, Location, Item, GameEvent, Relationship } from '../shared/types.js';
 import { npcPronounBlock, pronounsInNarration, npcKeyName, namesSameNpc, npcMentioned } from './npc-pronouns.js';
-import { itemKey, itemHead, namesOneThing } from './narrative-guards.js';
+import { itemKey, itemHead, namesOneThing, softVariants, itemPossessor, withoutCount } from './narrative-guards.js';
 
 export { npcKeyName };
 
 export interface WorldBibleDiff {
   newLocations: Array<{ name: string; description: string | null; terrain: string | null }>;
   newEntities: Array<{ name: string; type: string; description: string | null; disposition: string | null; motivation?: string | null; pronouns?: string | null }>;
-  newItems: Array<{ name: string; description: string | null; properties?: Record<string, unknown>; holderId?: string; locationId?: string }>;
+  newItems: Array<{ name: string; description: string | null; properties?: Record<string, unknown>; holderId?: string; locationId?: string; /** The NPC the story shows holding it (the extractor's word). */ heldBy?: string | null }>;
   newEvents: Array<{ sceneNumber: number; description: string; participants: string[]; outcome: string | null }>;
   newRelationships: Array<{ entityAName: string; entityBName: string; type: string; description: string | null }>;
 }
@@ -590,25 +590,56 @@ export class WorldBible {
 
   /**
    * The one item a newly extracted name is another name for, or undefined:
-   * an item not gone, in play this scene (touched this scene, or carried by
-   * a player character), that the name could be (namesOneThing: "Stamp of
-   * Clarity" or "Square Stamp" for "The Stamp", "Green Bottle Cap" for
-   * "Bottle cap") — and no other such item shares its head noun, so "Stamp"
-   * beside a Red Stamp and a Blue Stamp is nobody's alias.
+   *  - an item not gone, in play this scene (touched this scene, or carried by
+   *    a player character), that the name could be (namesOneThing: "Stamp of
+   *    Clarity" or "Square Stamp" for "The Stamp", "Green Bottle Cap" for
+   *    "Bottle cap", "Void Ticket" for "Voided Ticket") — and no other such
+   *    item shares its head noun, so "Stamp" beside a Red Stamp and a Blue
+   *    Stamp is nobody's alias;
+   *  - else, any scene: the one item not gone whose name differs only in soft
+   *    words (softVariants: a possessive, an -ing/-ed word, a describing word)
+   *    at the same place, or that is the same NPC's (live NUMMRL: "Badger’s
+   *    Spectacles" and "Vibrating Spectacles", both Barnaby the Badger's).
    */
-  private aliasTarget(campaignId: string, name: string, scene: number): ItemRow | undefined {
+  private aliasTarget(campaignId: string, name: string, scene: number, ctx: { locationId?: string; ownerId?: string | null } = {}): ItemRow | undefined {
     const head = itemHead(name);
     if (!head) return undefined;
     const isPc = this.db.prepare('SELECT 1 FROM characters WHERE id = ?');
-    const inPlay = this.itemRows(campaignId).filter(r => {
-      const props = propsOf(r.properties);
-      if (props.gone) return false;
-      return props.scene === scene || (!!r.holder_id && !!isPc.get(r.holder_id));
-    });
-    const sameHead = inPlay.filter(r => [r.name, ...aliasesOf(r.properties)].some(n => itemHead(n) === head));
-    if (sameHead.length !== 1) return undefined;
-    const row = sameHead[0]!;
-    return [row.name, ...aliasesOf(row.properties)].some(n => namesOneThing(n, name)) ? row : undefined;
+    const live = this.itemRows(campaignId).filter(r => !propsOf(r.properties).gone);
+    const namesOf = (r: ItemRow) => [r.name, ...aliasesOf(r.properties)];
+    const inPlay = live.filter(r => propsOf(r.properties).scene === scene || (!!r.holder_id && !!isPc.get(r.holder_id)));
+    const sameHead = inPlay.filter(r => namesOf(r).some(n => itemHead(n) === head));
+    if (sameHead.length === 1 && namesOf(sameHead[0]!).some(n => namesOneThing(n, name))) return sameHead[0]!;
+    if (sameHead.length > 1) return undefined;
+    const owner = ctx.ownerId ?? this.itemOwner(campaignId, name, null);
+    const variants = live.filter(r => namesOf(r).some(n => softVariants(n, name)) && (() => {
+      const at = propsOf(r.properties).locationId;
+      if (ctx.locationId && typeof at === 'string' && at === ctx.locationId) return true;
+      const theirs = this.itemOwner(campaignId, r.name, r.holder_id);
+      return !!owner && owner === theirs;
+    })());
+    return variants.length === 1 ? variants[0]! : undefined;
+  }
+
+  /**
+   * The NPC a thing is, by the record, one of: the NPC holding it; else the one
+   * NPC its possessor names ("Badger’s Spectacles" → Barnaby the Badger); else
+   * the one NPC whose description names it ("Badger with vibrating
+   * spectacles" → "Vibrating Spectacles"). Null when none is clear.
+   */
+  private itemOwner(campaignId: string, name: string, holderId: string | null): string | null {
+    const npcs = this.db.prepare("SELECT id, name, description FROM entities WHERE campaign_id = ? AND type IN ('npc', 'creature')").all(campaignId) as Array<{ id: string; name: string; description: string | null }>;
+    if (holderId && npcs.some(n => n.id === holderId)) return holderId;
+    const possessor = itemPossessor(name);
+    if (possessor) {
+      const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(possessor)}(?![\\p{L}\\p{N}])`, 'iu');
+      const named = npcs.filter(n => re.test(n.name));
+      return named.length === 1 ? named[0]!.id : null;
+    }
+    const bare = withoutCount(name).trim().replace(/^(?:the|a|an)\s+/i, '');
+    if (bare.split(/\s+/).length < 2) return null;
+    const described = npcs.filter(n => n.description && mentionsPhrase(n.description, bare));
+    return described.length === 1 ? described[0]!.id : null;
   }
 
   /**
@@ -616,15 +647,22 @@ export class WorldBible {
    * character holds it on record, and whether it is gone for good. For the
    * DM's <items_on_hand> world list.
    */
-  getItemPlaces(campaignId: string): Array<{ name: string; heldBy: string | null; heldByPc: boolean; gone: boolean }> {
+  getItemPlaces(campaignId: string): Array<{ name: string; heldBy: string | null; heldByPc: boolean; gone: boolean; scene: number | null; locationId: string | null }> {
     return (this.db.prepare(
-      `SELECT i.name, e.name AS npc, c.id AS pc, ${goneSql('i.properties')} AS gone
+      `SELECT i.name, i.properties, e.name AS npc, c.id AS pc, ${goneSql('i.properties')} AS gone
        FROM items i
        LEFT JOIN entities e ON i.holder_id = e.id
        LEFT JOIN characters c ON i.holder_id = c.id
        WHERE i.campaign_id = ?`
-    ).all(campaignId) as Array<{ name: string; npc: string | null; pc: string | null; gone: number }>)
-      .map(r => ({ name: r.name, heldBy: r.npc, heldByPc: !!r.pc, gone: !!r.gone }));
+    ).all(campaignId) as Array<{ name: string; properties: string | null; npc: string | null; pc: string | null; gone: number }>)
+      .map(r => {
+        const props = propsOf(r.properties);
+        return {
+          name: r.name, heldBy: r.npc, heldByPc: !!r.pc, gone: !!r.gone,
+          scene: typeof props.scene === 'number' ? props.scene : null,
+          locationId: typeof props.locationId === 'string' ? props.locationId : null,
+        };
+      });
   }
 
   /**
@@ -632,9 +670,10 @@ export class WorldBible {
    * a player character (holderId), with an NPC (npcName), lying in the world
    * (neither), or gone for good. A thing set down in the world that the world
    * does not know yet ("Pen" from Liz's torn tote) becomes a world item, so
-   * it can be picked up again.
+   * it can be picked up again. A thing lying in the world keeps the location
+   * it was set down at (locationId), so a pick-up elsewhere is not it.
    */
-  placeItem(campaignId: string, itemName: string, place: { holderId?: string | null; npcName?: string | null; gone?: boolean; scene?: number }): void {
+  placeItem(campaignId: string, itemName: string, place: { holderId?: string | null; npcName?: string | null; gone?: boolean; scene?: number; locationId?: string | null }): void {
     let row = this.findItemRow(campaignId, itemName);
     if (!row) {
       // A thing set down in the world is new to it, and so is a thing eaten
@@ -649,6 +688,8 @@ export class WorldBible {
     const props = propsOf(row.properties);
     if (place.gone) props.gone = 1; else delete props.gone;
     if (place.scene !== undefined) props.scene = place.scene;
+    if (place.gone || place.holderId || npc) delete props.locationId;
+    else if (place.locationId) props.locationId = place.locationId;
     this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1, properties = ? WHERE id = ?')
       .run(place.gone ? null : (place.holderId ?? npc), JSON.stringify(props), row.id);
   }
@@ -809,13 +850,24 @@ export class WorldBible {
     return reverses[type] ?? `have a ${type} relationship with`;
   }
 
+  /** An NPC shown holding a thing holds it, unless a party member does or it is gone. */
+  private holdIfFree(itemId: string, npc: { id: string; name: string } | null, isPc: Database.Statement): void {
+    if (!npc) return;
+    const row = this.db.prepare('SELECT name, holder_id, properties FROM items WHERE id = ?').get(itemId) as { name: string; holder_id: string | null; properties: string | null } | undefined;
+    if (!row || propsOf(row.properties).gone || (row.holder_id && isPc.get(row.holder_id)) || row.holder_id === npc.id) return;
+    const props = propsOf(row.properties);
+    delete props.locationId;
+    this.db.prepare('UPDATE items SET holder_id = ?, properties = ? WHERE id = ?').run(npc.id, JSON.stringify(props), itemId);
+    console.log(`[world-bible] "${row.name}" is held by ${npc.name} (the story shows it)`);
+  }
+
   /**
    * `markKnown` is for diffs drawn from the story itself (the fact extractor
    * reading the whisper-free transcript): everything they name, new or
    * existing, becomes known to the party. Seeding leaves it off — a seed is
    * the DM's private notes.
    */
-  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean; markKnown?: boolean; /** The scene the facts come from: items are marked with it, and a new name for a thing in play this scene is an alias. */ sceneNumber?: number; /** Seeding: the seed's NPCs are all meant — "Clerk Marni" and "Marni's Assistant" are two people. */ seeding?: boolean }): void {
+  applyDiff(campaignId: string, diff: WorldBibleDiff, opts?: { allowNewLocations?: boolean; markKnown?: boolean; /** The scene the facts come from: items are marked with it, and a new name for a thing in play this scene is an alias. */ sceneNumber?: number; /** Where the facts come from: a new thing no one holds lies here, and a soft variant of a thing here is an alias. */ locationId?: string; /** Seeding: the seed's NPCs are all meant — "Clerk Marni" and "Marni's Assistant" are two people. */ seeding?: boolean }): void {
     const allowNewLocations = opts?.allowNewLocations ?? false;
     const markKnown = opts?.markKnown ?? false;
     const tx = this.db.transaction(() => {
@@ -849,27 +901,41 @@ export class WorldBible {
         }
       }
       const scene = opts?.sceneNumber;
+      const isPc = this.db.prepare('SELECT 1 FROM characters WHERE id = ?');
       for (const item of diff.newItems) {
+        // "Squeaky Stool" is The Squeaky Stool, who talks (live NUMMRL): an NPC is never an item.
+        const npc = this.findSameNpc(campaignId, item.name, { byHeadName: false });
+        if (npc) {
+          console.log(`[world-bible] Dropped extracted item "${item.name}" — that is the NPC ${npc.name}`);
+          continue;
+        }
+        // Madame Quill held up "The Smudged Compass" (live NUMMRL): the NPC shown holding it is its holder.
+        const holder = typeof item.heldBy === 'string' && item.heldBy.trim() ? this.findSameNpc(campaignId, item.heldBy.trim()) : null;
         // "Pen" is "The Pen" (normalized name, or a known alias).
         const existingItem = this.findItemRow(campaignId, item.name);
         if (existingItem) {
           if (item.description && itemKey(existingItem.name) === itemKey(item.name)) this.db.prepare('UPDATE items SET description = ? WHERE id = ?').run(item.description, existingItem.id);
           if (markKnown) this.db.prepare('UPDATE items SET known_to_party = 1 WHERE id = ?').run(existingItem.id);
           if (scene !== undefined) this.db.prepare('UPDATE items SET properties = ? WHERE id = ?').run(JSON.stringify({ ...propsOf(existingItem.properties), scene }), existingItem.id);
+          this.holdIfFree(existingItem.id, holder, isPc);
           continue;
         }
         // One stamp under four names (live RZBU7G): a new name for the one
-        // thing in play this scene it could be is an alias, not a new item.
-        const target = scene !== undefined ? this.aliasTarget(campaignId, item.name, scene) : undefined;
+        // thing in play this scene it could be is an alias, not a new item;
+        // so is a soft variant of the same NPC's thing or a thing at this place.
+        const target = scene !== undefined ? this.aliasTarget(campaignId, item.name, scene, { locationId: opts?.locationId, ownerId: holder?.id ?? null }) : undefined;
         if (target) {
           const props = propsOf(target.properties);
           props.aliases = [...aliasesOf(target.properties), item.name];
           this.db.prepare('UPDATE items SET properties = ? WHERE id = ?').run(JSON.stringify(props), target.id);
           if (markKnown) this.db.prepare('UPDATE items SET known_to_party = 1 WHERE id = ?').run(target.id);
           console.log(`[world-bible] "${item.name}" is another name for "${target.name}" — filed as an alias, not a new item`);
+          this.holdIfFree(target.id, holder, isPc);
           continue;
         }
-        this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: { ...(item.properties ?? {}), ...(scene !== undefined ? { scene } : {}) }, holderId: item.holderId ?? null, locationId: item.locationId ?? null }, markKnown);
+        const holderId = holder?.id ?? null;
+        const at = !holderId && opts?.locationId ? { locationId: opts.locationId } : {};
+        this.addItem({ id: genId(), campaignId, name: item.name, description: item.description, properties: { ...(item.properties ?? {}), ...(scene !== undefined ? { scene } : {}), ...at }, holderId, locationId: item.locationId ?? null }, markKnown);
       }
       for (const evt of diff.newEvents) {
         if (evt.outcome) {

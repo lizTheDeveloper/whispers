@@ -807,21 +807,81 @@ function nounForms(n: string): string {
 }
 const nounAlt = (nouns: string[]) => `(?:${nouns.map(nounForms).join('|')})`;
 
+/** A count on an item's name: "Bottle caps ×2" (live NUMMRL: Liz's second bottle cap was "not added twice"). */
+const COUNT = /\s*×\s*(\d+)\s*$/;
+
+/** An item's name without its count: "Bottle caps ×2" → "Bottle caps". */
+export function withoutCount(name: string): string {
+  return name.replace(COUNT, '').trim();
+}
+
+/** How many of a thing a name holds: "Bottle caps ×3" → 3, "Bottle cap" → 1, an uncounted stack ("Bottle caps") → null. */
+export function itemCount(name: string): number | null {
+  const m = name.match(COUNT);
+  if (m) return Math.max(1, parseInt(m[1]!, 10));
+  return isStack(name) ? null : 1;
+}
+
+/** One word in the plural: "cap" → "caps", "match" → "matches", "berry" → "berries". */
+function pluralWord(w: string): string {
+  if (/[^aeiou]y$/i.test(w)) return w.slice(0, -1) + 'ies';
+  if (/(?:s|x|z|ch|sh)$/i.test(w)) return w + 'es';
+  return w + 's';
+}
+
+/**
+ * A thing's name with a count: 1 is the single ("Bottle cap"), more is the
+ * plural with the count ("Bottle caps ×2"). A name whose last word is not its
+ * noun ("Form 7-B", "Stamp of Clarity") keeps its words: "Form 7-B ×2".
+ */
+export function withCount(name: string, n: number): string {
+  const single = singleOf(name);
+  if (n <= 1) return single;
+  const m = single.match(/^(.*?)([A-Za-z'’-]+)$/);
+  const plural = m && itemHead(single) === m[2]!.toLowerCase() ? m[1]! + pluralWord(m[2]!) : single;
+  return `${plural} ×${n}`;
+}
+
+/**
+ * `item` added to an inventory that already holds `held` (the same thing, by
+ * sameItem): counts add up ("Bottle cap" + "Bottle cap" → "Bottle caps ×2");
+ * an uncounted stack stays the stack ("Bottle caps" + one is "Bottle caps").
+ */
+export function mergeCount(held: string, item: string): string {
+  const a = itemCount(held);
+  const b = itemCount(item);
+  if (a === null) return held;
+  if (b === null) return withoutCount(item);
+  return withCount(withoutCount(held), a + b);
+}
+
+/**
+ * One taken from `held`: what is left, or null when nothing is. A counted
+ * name counts down ("Bottle caps ×2" → "Bottle cap"); an uncounted stack
+ * stays; a single is gone.
+ */
+export function lessOne(held: string): string | null {
+  const n = itemCount(held);
+  if (n === null) return held;
+  return n > 1 ? withCount(withoutCount(held), n - 1) : null;
+}
+
 /** The item's name with its last word in the singular: "Bottle caps" → "Bottle cap" (one from the stack). */
 export function singleOf(name: string): string {
-  const m = name.trim().match(/^(.*?)([A-Za-z'’-]+)$/);
-  return m ? m[1]! + singularWord(m[2]!) : name.trim();
+  const bare = withoutCount(name);
+  const m = bare.match(/^(.*?)([A-Za-z'’-]+)$/);
+  return m ? m[1]! + singularWord(m[2]!) : bare;
 }
 
 /** A stack of things under one name — its head noun is a plural ("Bottle caps", "Marbles"). */
 export function isStack(name: string): boolean {
-  const last = name.split(/[:(]/)[0]!.trim().split(/\s+/).pop() ?? '';
+  const last = withoutCount(name).split(/[:(]/)[0]!.trim().split(/\s+/).pop() ?? '';
   return /^[A-Za-z'’-]+$/.test(last) && singularWord(last).toLowerCase() !== last.toLowerCase();
 }
 
 /** The noun an item's name is, in the singular: "Orange Key" → key, "The Letter of Truth" → letter, "Form 9-B: Return to Source (Crumpled)" → form, "Bottle caps" → cap. */
 export function itemHead(name: string): string | null {
-  const core = name.split(/[:(]/)[0]!.replace(/\s+of\s+.*$/i, '');
+  const core = withoutCount(name).split(/[:(]/)[0]!.replace(/\s+of\s+.*$/i, '');
   // Whole words only: "9-B" is a label, not a noun.
   const words = core.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z'’-]+$/, '')).filter(w => /^[a-z][a-z'’-]*$/.test(w) && !['the', 'a', 'an'].includes(w));
   return words.length > 0 ? singularWord(words[words.length - 1]!) : null;
@@ -846,15 +906,75 @@ const DESCRIPTIVE = new Set(['shiny', 'glinting', 'gleaming', 'glittering', 'glo
  * "Bottle Cap" (never a stack and a single side by side, live WXKC2C) are one key.
  */
 export function itemKey(name: string): string {
-  return singleOf(name.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' '));
+  return singleOf(withoutCount(name).toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' '));
 }
 
 /** The words that pick a thing out, singular and lower-case, without articles, describing words or "of": "The Green Bottle Caps" → green, bottle, cap. */
 function itemWords(name: string): string[] {
-  return name.toLowerCase().replace(/[:(),]/g, ' ').split(/\s+/)
+  return withoutCount(name).toLowerCase().replace(/[:(),]/g, ' ').split(/\s+/)
     .map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ''))
     .filter(w => w && !['the', 'a', 'an', 'of'].includes(w) && !DESCRIPTIVE.has(w))
-    .map(singularWord);
+    .map(w => stemWord(singularWord(w)));
+}
+
+/**
+ * A word's stem, for telling whether two names could be one thing: "voided"
+ * and "void" (live NUMMRL: "Voided Ticket" and "Void Ticket" filed apart),
+ * "smudged" and "smudge", "vibrating" and "vibrate". Labels and short words
+ * are left alone.
+ */
+export function stemWord(w: string): string {
+  if (!/^[a-z'’-]+$/.test(w)) return w;
+  let s = w;
+  if (/ing$/.test(s) && s.length - 3 >= 4) s = s.slice(0, -3);
+  else if (/ed$/.test(s) && s.length - 2 >= 3) s = s.slice(0, -2);
+  if (/([^aeiou])\1$/.test(s) && s.length > 3) s = s.slice(0, -1);
+  if (/e$/.test(s) && s.length >= 4) s = s.slice(0, -1);
+  return s;
+}
+
+/** A possessive word ("Badger's", "Quill’s"): whose the thing is, not what it is. */
+const POSSESSIVE_WORD = /^[a-z][\w-]*['’]s?$/i;
+
+/**
+ * The words of a name that only say how a thing looks or whose it is: describing
+ * words, -ing/-ed words ("Vibrating", "Smudged") and possessives ("Badger's").
+ * Colours, materials, labels and numbers are not soft — they tell things apart.
+ */
+function isSoftWord(raw: string): boolean {
+  const w = raw.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9'’]+$/g, '');
+  if (!w) return true;
+  if (POSSESSIVE_WORD.test(w) && /['’]/.test(w)) return true;
+  if (DESCRIPTIVE.has(w)) return true;
+  return /^[a-z-]+(?:ing|ed)$/.test(w) && w.replace(/-/g, '').length >= 5;
+}
+
+/** The possessor a name opens with, lower-case: "Badger’s Spectacles" → badger, "Madame Quill's Ledger" → madame quill. */
+export function itemPossessor(name: string): string | null {
+  const m = withoutCount(name).trim().replace(/^(?:the|a|an)\s+/i, '').match(/^((?:[\w-]+\s+){0,2}[\w-]+)['’]s?\s+\S/);
+  return m ? m[1]!.toLowerCase() : null;
+}
+
+/**
+ * Two names for one thing that differ only in soft words: the same head noun,
+ * and every word one has that the other lacks is a describing word, an -ing/-ed
+ * word or a possessive — "Badger’s Spectacles" / "Vibrating Spectacles",
+ * "Voided Ticket" / "Void Ticket". Two different possessors ("Quill's Ledger",
+ * "Barnaby's Ledger") are two things. Whether they ARE one thing is up to the
+ * caller: the same place, or the same NPC's.
+ */
+export function softVariants(a: string, b: string): boolean {
+  const head = itemHead(a);
+  if (!head || head !== itemHead(b)) return false;
+  const pa = itemPossessor(a);
+  const pb = itemPossessor(b);
+  if (pa && pb && pa !== pb) return false;
+  const words = (n: string) => withoutCount(n).split(/[:(]/)[0]!.replace(/\s+of\s+.*$/i, '').split(/\s+/).filter(w => w && !/^(?:the|a|an)$/i.test(w));
+  const stems = (n: string) => words(n).map(w => ({ raw: w, stem: stemWord(singularWord(w.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '').replace(/['’]s?$/, ''))) }));
+  const wa = stems(a);
+  const wb = stems(b);
+  const extra = [...wa.filter(x => !wb.some(y => y.stem === x.stem)), ...wb.filter(y => !wa.some(x => x.stem === y.stem))];
+  return extra.every(x => isSoftWord(x.raw));
 }
 
 /**
@@ -1608,6 +1728,8 @@ export function withoutHeldParaphrases<T extends { name: string }>(items: T[], h
 
 /** Verbs by which an option uses, gives or reaches for a thing. */
 const USE_VERB = String.raw`\b(?:use|uses|using|hand|hands|give|gives|offer|offers|pull|pulls|take|takes|grab|grabs|snag|snags|bribe|bribes|eat|eats|share|shares|show|shows|hold|holds|tap|taps|wave|waves|sign|signs|write|writes|toss|tosses|throw|throws|slide|slides|slip|slips|press|presses|place|places|put|puts|break|breaks|unwrap|unwraps|reach\s+for|dig\s+(?:for|out)|jingle|jingles|click|clicks|point|points|swing|swings|with)\b`;
+/** The thing right after is the means: "calmed by a …", "fixed with the …", "using my …". */
+const MEANS = /\b(?:by|with|using|use|uses)\s+(?:(?:a|an|the|my|our|your|his|her|their|some|that|this|one|[A-Z][\w'’-]*['’]s)\s+)?(?:[\w'’-]+\s+){0,2}$/i;
 /** Looking for a lost thing is fine. */
 const SEEK = /\b(?:search(?:es)?|look(?:s)?\s+for|hunt(?:s)?\s+for|find|finds|retriev(?:e|es)|recover(?:s)?|pick(?:s)?\s+up|ask\w*\s+(?:\w+\s+){0,3}?(?:about|where|for))\b/i;
 
@@ -1630,6 +1752,9 @@ export function optionsWithoutGoneItems<T extends { description: string }>(optio
       if (!namesOneThing(g, optionThingName(o.description, at, m[0], itemHead(g)!))) continue;
       const before = o.description.slice(0, at);
       const clause = before.split(/[.;!?]|,\s*|\band\b|\bthen\b/i).pop() ?? '';
+      // "…if the ink can be calmed by a granola bar" (live NUMMRL): the gone
+      // thing as the means is using it, even inside a question.
+      if (MEANS.test(clause)) return true;
       if (SEEK.test(clause)) continue;
       if (new RegExp(USE_VERB, 'i').test(clause) || /\b(?:my|our|[A-Z][\w'’-]*['’]s)\s+(?:[\w-]+\s+){0,2}$/.test(clause)) return true;
     }

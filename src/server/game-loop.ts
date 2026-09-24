@@ -30,7 +30,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames, withoutCount, itemCount, lessOne,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -974,10 +974,19 @@ export class GameLoop {
     try {
       const chars = Array.from(this.characters.values());
       const places = this.worldBible.getItemPlaces(this.campaignId);
+      const scene = this.state.currentScene;
+      const locationId = this.state.currentLocationId ?? null;
+      // Lying here: set down at this location, or — where the record has no
+      // place — touched this scene (live NUMMRL: a glint pocketed at the Queue
+      // was taken for the cap sunk at the Inkwell Market).
+      const here = (p: { scene: number | null; locationId: string | null }) => (p.locationId ? p.locationId === locationId : p.scene === null || p.scene === scene);
+      const loose = places.filter(p => !p.gone && !p.heldBy && !p.heldByPc);
       const plan = planItemMoves(moves, chars.map(c => ({ id: c.id, name: c.definition.name, inventory: [...(c.state.inventory ?? [])] })), {
         worldItems: this.worldBible.getItemNames(this.campaignId),
         aliases: this.worldBible.getItemAliases(this.campaignId),
-        looseItems: places.filter(p => !p.gone && !p.heldBy && !p.heldByPc).map(p => p.name),
+        looseItems: loose.filter(here).map(p => p.name),
+        elsewhere: loose.filter(p => !here(p)).map(p => p.name),
+        npcItems: places.filter(p => !p.gone && p.heldBy).map(p => ({ name: p.name, heldBy: p.heldBy! })),
       });
       for (const note of plan.rejected) console.warn(note);
       for (const note of plan.notes) console.log(note);
@@ -990,13 +999,15 @@ export class GameLoop {
         }
       }
       const undrop = (item: string) => { this.itemsDropped = this.itemsDropped.filter(d => !sameItem(d, item)); };
-      const scene = this.state.currentScene;
       const npcNames = this.allNpcs().map(n => n.name);
       const partyNames = chars.map(c => c.definition.name);
       for (const m of plan.applied) {
-        if (m.to.kind === 'pc') {
+        if (m.to.kind === 'pc' && m.fresh) {
+          // Another one picked up here; the record's lies at another place and stays there.
+          continue;
+        } else if (m.to.kind === 'pc') {
           undrop(m.item);
-          this.worldBible.placeItem(this.campaignId, m.item, { holderId: m.to.id, scene });
+          this.worldBible.placeItem(this.campaignId, withoutCount(m.item), { holderId: m.to.id, scene });
         } else if (m.to.kind === 'npc' && eatenByReceiver(prose, m.to.name, m.item, [...partyNames, ...npcNames])) {
           // Handed over and eaten in the same beat (live RZBU7G: "Granola bar":
           // Liz → Clerk 4-B, "…takes a bite"): consumed, not the clerk's to hoard.
@@ -1005,7 +1016,7 @@ export class GameLoop {
           if (m.from.kind === 'pc') this.noteItemLeft(m.item);
           console.log(`[items] "${m.item}": ${m.to.name} eats it in the same beat — consumed, not held`);
         } else if (m.to.kind === 'world') {
-          this.worldBible.placeItem(this.campaignId, m.item, { scene });
+          this.worldBible.placeItem(this.campaignId, m.item, { scene, locationId });
           if (m.from.kind === 'pc') {
             if (!this.itemsDropped.some(d => sameItem(d, m.item))) this.itemsDropped.push(m.item);
             this.noteItemLeft(m.item);
@@ -2272,14 +2283,15 @@ export class GameLoop {
         console.log(`[game-loop] Added un-narrated consequence: "${cons}"`);
       }
     }
-    const gainedItems = (character.state.inventory ?? []).filter(i => !preInventory.includes(i));
+    // A count going up ("Bottle cap" → "Bottle caps ×2") is not a new thing to narrate.
+    const gainedItems = (character.state.inventory ?? []).filter(i => !preInventory.some(p => sameItem(p, i)));
     for (const item of gainedItems) {
       if (!narrationLower.includes(item.toLowerCase().split(/\s+/)[0]!)) {
         resolution.narration += ` ${firstName} pockets the ${item.toLowerCase()}.`;
         console.log(`[game-loop] Added un-narrated item gain: "${item}"`);
       }
     }
-    const lostItems = preInventory.filter(i => !(character.state.inventory ?? []).includes(i));
+    const lostItems = preInventory.filter(i => !(character.state.inventory ?? []).some(n => sameItem(n, i)));
     for (const item of lostItems) {
       if (!narrationLower.includes(item.toLowerCase().split(/\s+/)[0]!)) {
         resolution.narration += ` The ${item.toLowerCase()} is gone.`;
@@ -2453,7 +2465,7 @@ export class GameLoop {
         .then(facts => {
           const total = facts.newLocations.length + facts.newEntities.length + facts.newItems.length + facts.newEvents.length + facts.newRelationships.length;
           if (total > 0) {
-            this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene });
+            this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
             console.log(`[game-loop] Periodic extraction (turn ${this.state.currentTurn}): ${total} facts (${facts.newEvents.length} events, ${facts.newRelationships.length} rels, ${facts.newEntities.length} entities)`);
           }
         })
@@ -2476,7 +2488,7 @@ export class GameLoop {
 
     try {
       const facts = await this.extractor.extractFacts(toExtract, this.state.currentScene);
-      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
     } catch (e) {
       console.error('Mid-scene fact extraction failed:', e);
     }
@@ -2558,7 +2570,7 @@ export class GameLoop {
         events: facts.newEvents.length,
         relationships: facts.newRelationships.length,
       }));
-      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true, sceneNumber: this.state.currentScene, locationId: this.state.currentLocationId ?? undefined });
     } catch (e: any) {
       console.error('[game-loop] Fact extraction failed:', e.message?.slice(0, 200));
     }
@@ -3022,7 +3034,10 @@ export class GameLoop {
       const idx = field === 'inventory' && typeof value === 'string'
         ? arr.findIndex(i => typeof i === 'string' && sameItem(i, value))
         : arr.indexOf(value);
-      if (idx >= 0) arr.splice(idx, 1);
+      // One of "Bottle caps ×2" leaves "Bottle cap".
+      const left = idx >= 0 && field === 'inventory' && typeof value === 'string' && !isStack(value) && itemCount(arr[idx] as string) !== null ? lessOne(arr[idx] as string) : null;
+      if (left) arr[idx] = left;
+      else if (idx >= 0) arr.splice(idx, 1);
     }
     if (field === 'inventory' && typeof value === 'string') {
       if (action === 'remove') {

@@ -12,7 +12,7 @@
  *
  * Pure: no database, no LLM. The game loop applies the plan.
  */
-import { sameItem, isStack, singleOf, itemHead, namesOneThing } from './narrative-guards.js';
+import { sameItem, isStack, singleOf, itemHead, namesOneThing, withoutCount, mergeCount, lessOne } from './narrative-guards.js';
 
 /** One move as the DM states it. `from`/`to`: a player character's name, an NPC's name, "world", or null (appears / is gone). */
 export interface ItemMove {
@@ -29,7 +29,18 @@ export type ItemSide =
   | { kind: 'world' }
   | { kind: 'none' };
 
-export interface AppliedMove { item: string; from: ItemSide; to: ItemSide }
+export interface AppliedMove {
+  item: string;
+  from: ItemSide;
+  to: ItemSide;
+  /**
+   * Picked up from the world where the world's record of that name lies at
+   * another place (live NUMMRL: the Bottle cap sunk at the Inkwell Market,
+   * and a "tiny shiny glint" pocketed at the Queue): another one, so the
+   * record stays where it is.
+   */
+  fresh?: true;
+}
 
 export interface MovePlan {
   /** Every party member's inventory after the moves, by id (unchanged ones included). */
@@ -101,14 +112,30 @@ const describe = (s: ItemSide) => s.kind === 'pc' || s.kind === 'npc' ? s.name :
  *    alias names); picked up from the world under a new name, it is the one
  *    thing lying loose (opts.looseItems) that name could be ("Green Bottle
  *    Cap" for the dropped "Bottle cap").
- *  - to a party member: added once — "Granola Bar" is the "Granola bar"
- *    already there.
+ *    Only a thing lying HERE (opts.looseItems: at this location, or touched
+ *    this scene) is picked up by name or head noun; a world item of that name
+ *    lying elsewhere (opts.elsewhere) is not it (live NUMMRL).
+ *  - to a party member who already holds it: a new one when the thing
+ *    demonstrably came from somewhere — a companion who held it, one lying
+ *    loose here, an NPC the record has holding it, or another one picked up
+ *    away from the record's — and the counts add ("Bottle cap" + one is
+ *    "Bottle caps ×2"; live NUMMRL). Otherwise it is the same thing restated
+ *    ("Granola Bar" is the "Granola bar" already there): not added twice.
  *  - to an NPC, the world or nowhere: it simply leaves the giver.
  */
 export function planItemMoves(
   moves: ItemMove[],
   party: Array<{ id: string; name: string; inventory: string[] }>,
-  opts: { worldItems?: string[]; aliases?: Array<{ alias: string; name: string }>; looseItems?: string[] } = {},
+  opts: {
+    worldItems?: string[];
+    aliases?: Array<{ alias: string; name: string }>;
+    /** World things lying loose HERE: at the current location, or touched this scene. */
+    looseItems?: string[];
+    /** World things lying loose somewhere else. */
+    elsewhere?: string[];
+    /** Things the record has an NPC holding. */
+    npcItems?: Array<{ name: string; heldBy: string }>;
+  } = {},
 ): MovePlan {
   const inventories = new Map(party.map(p => [p.id, [...p.inventory]]));
   const applied: AppliedMove[] = [];
@@ -123,6 +150,9 @@ export function planItemMoves(
     const to = resolveSide(move.to, party);
     let item = move.item;
     let dropsOne = false;
+    let fresh = false;
+    /** Whether this is demonstrably a unit more for a receiver who already holds one. */
+    let newUnit = false;
 
     if (sameSide(from, to)) {
       const holders = from.kind === 'world'
@@ -157,11 +187,24 @@ export function planItemMoves(
       }
       const one = isStack(held) && (dropsOne || move.qty === 1 || !isStack(move.item));
       item = one ? singleOf(held) : held;
-      if (!one) inventories.set(from.id, inv.filter(i => i !== held));
+      if (one) {
+        // "Bottle caps ×2" counts down to "Bottle cap"; an uncounted stack stays.
+        const left = lessOne(held);
+        if (left !== held) inventories.set(from.id, inv.flatMap(i => (i === held ? (left ? [left] : []) : [i])));
+      } else {
+        inventories.set(from.id, inv.filter(i => i !== held));
+      }
+      newUnit = true;
     } else {
       // Canonical name: the world's own spelling when the DM's names a world item, or the item an alias names.
       item = worldItems.find(w => sameItem(w, move.item)) ?? aliasOf(move.item) ?? move.item;
-      if (from.kind === 'world' && item === move.item && !worldItems.some(w => sameItem(w, item))) {
+      if (from.kind === 'world' && (opts.elsewhere ?? []).some(e => sameItem(e, item)) && !(opts.looseItems ?? []).some(l => sameItem(l, item))) {
+        // The record's one lies at another place: this is another one.
+        notes.push(`[items] "${move.item}" from the world: the record's "${item}" lies at another place — this is another one, and that one stays where it is`);
+        item = move.item;
+        fresh = true;
+        newUnit = true;
+      } else if (from.kind === 'world' && item === move.item && !worldItems.some(w => sameItem(w, item))) {
         const head = itemHead(move.item);
         const loose = (opts.looseItems ?? []).filter(l => head && itemHead(l) === head);
         if (loose.length === 1 && namesOneThing(loose[0]!, move.item)) {
@@ -169,7 +212,9 @@ export function planItemMoves(
           notes.push(`[items] "${move.item}" from the world: the one loose thing by that name is "${item}" — the move is taken as that`);
         }
       }
-      if (from.kind === 'world' && to.kind === 'pc' && worldItems.some(w => sameItem(w, item))) {
+      if (from.kind === 'world' && (opts.looseItems ?? []).some(l => sameItem(l, item))) newUnit = true;
+      if (from.kind === 'npc' && (opts.npcItems ?? []).some(n => sameItem(n.name, item) && n.heldBy.toLowerCase() === from.name.toLowerCase())) newUnit = true;
+      if (!fresh && from.kind === 'world' && to.kind === 'pc' && worldItems.some(w => sameItem(w, item))) {
         // One off the floor from a stack a member still holds ("Bottle cap", Biz's "Bottle caps") is one, not the stack.
         const holders = party.filter(p => p.id !== to.id && inventories.get(p.id)!.some(i => sameItem(i, item) && !(isStack(i) && !isStack(item))));
         if (holders.length === 1) {
@@ -182,13 +227,18 @@ export function planItemMoves(
 
     if (to.kind === 'pc') {
       const inv = inventories.get(to.id)!;
-      if (inv.some(i => sameItem(i, item))) {
-        notes.push(`[items] ${to.name} already holds "${inv.find(i => sameItem(i, item))}"; "${item}" is not added twice`);
+      const had = inv.find(i => sameItem(i, item));
+      if (had && newUnit) {
+        const merged = mergeCount(had, item);
+        inventories.set(to.id, inv.map(i => (i === had ? merged : i)));
+        notes.push(`[items] ${to.name} already holds "${had}" and gets one more: "${merged}"`);
+      } else if (had) {
+        notes.push(`[items] ${to.name} already holds "${had}"; "${item}" is the same one restated — not added twice`);
       } else {
         inventories.set(to.id, [...inv, item]);
       }
     }
-    applied.push({ item, from, to });
+    applied.push({ item: to.kind === 'pc' ? item : withoutCount(item), from, to, ...(fresh ? { fresh: true as const } : {}) });
     notes.push(`[items] "${item}": ${describe(from)} → ${describe(to)} (the DM's itemMoves)`);
   }
   return { inventories, applied, rejected, notes };
