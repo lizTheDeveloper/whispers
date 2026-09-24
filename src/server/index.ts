@@ -24,10 +24,11 @@ import {
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
-import { DmAgent, wantsNoSpoilers, nextSetupQuestion } from './agents/dm.js';
+import { DmAgent, wantsNoSpoilers, nextSetupQuestion, setupToneRule } from './agents/dm.js';
+import { softenForChildren } from './narrative-guards.js';
 import { GameLoop, campaignWantsGentlePeril, worldIntroductionAsShown } from './game-loop.js';
 import { gateGentleTone } from './tone-gate.js';
-import { guardInterviewReply, neutralSetupNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
+import { guardInterviewReply, neutralSetupNouns, sheetWithNeutralNouns, sheetWithCompanionPronouns, type PronounMember } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
@@ -513,6 +514,11 @@ function sendLobbyState(ws: WebSocket, campaign: import('../shared/types.js').Ca
  * (timeout, outage, malformed proxy response) is caught, logged, and sends
  * nothing rather than stall or corrupt character creation.
  */
+/** The host asked for gentle peril (campaignWantsGentlePeril); a read failure is not a yes. */
+function tableWantsGentlePeril(db: import('better-sqlite3').Database, campaignId: string): boolean {
+  try { return campaignWantsGentlePeril(db, campaignId); } catch (e) { console.error('[dm-chat] could not read the table tone:', e); return false; }
+}
+
 async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/types.js').Campaign, sessionToken: string): Promise<void> {
   try {
     const db = getDb();
@@ -1421,7 +1427,12 @@ wss.on('connection', (ws) => {
           // "She and her ten-year-old son Biz" (copied from the world seed)
           // while Biz's pronouns are unknown or they/them: "kid".
           const self: PronounMember = { name: sheet.name ?? '', pronouns: sheet.pronouns ?? null, relationships: sheet.relationships ?? [] };
-          return sheetWithNeutralNouns(withStatedStuntDescriptions(withStatedAddressTerms(sheet, terms), playerLines), [...(self.name ? [self] : []), ...tableMembers]);
+          // Round 15 (RZBU7G): "…attached to Mom and afraid of losing them"
+          // in Biz's (they/them) sheet, meaning Liz (she/her).
+          return sheetWithCompanionPronouns(
+            sheetWithNeutralNouns(withStatedStuntDescriptions(withStatedAddressTerms(sheet, terms), playerLines), [...(self.name ? [self] : []), ...tableMembers]),
+            tableCharacters,
+          );
         };
         const sheetAsOfReply = withStated(reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview));
         reply.reply = repeated
@@ -1518,13 +1529,28 @@ wss.on('connection', (ws) => {
       // message the host already watched arrive.
       try {
         const before = currentReadiness(campaign);
-        const reply = await dm.setupChat({
+        const setupOpts = {
           preset: campaign.dmPreset,
           systemId: campaign.systemId,
           history: currentPlayer.setupChat,
           unmet: setupUnmetForModel(before),
           hostTableRole: campaign.hostTableRole,
-        });
+        };
+        let reply = await dm.setupChat(setupOpts);
+        // Round 15 (RZBU7G): at a table whose host asked for gentle peril,
+        // the setup chat offered "the risk of being filed away in a drawer
+        // forever" as the danger. Once the host has asked, each reply passes
+        // the tone gate like the DM's play prose (tone-gate.ts): flagged, it
+        // is written fresh once with the phrases as feedback.
+        if (setupToneRule(currentPlayer.setupChat) && reply.reply.trim()) {
+          reply = (await gateGentleTone({
+            kind: 'setup',
+            first: reply,
+            textOf: r => r.reply,
+            regenerate: feedback => dm.setupChat({ ...setupOpts, toneFeedback: feedback }),
+            soften: r => ({ ...r, reply: softenForChildren(r.reply) }),
+          })).value;
+        }
         // The chat reply is conversation only. Live (E9W9YT) the model wrote
         // its own draft into it — a "Plot Hook:" block, then raw
         // "dmInstructions:" / "dmCustomPrompt:" dumps — so labelled draft
@@ -1615,6 +1641,7 @@ wss.on('connection', (ws) => {
             dmInstructions: after.dmInstructions ?? '',
             history: currentPlayer.setupChat,
             existing: getWorldSeed(db, after.id) ?? stock?.seed ?? null,
+            gentlePeril: tableWantsGentlePeril(db, after.id),
           }), currentPlayer.setupChat.filter(m => m.role === 'user').map(m => m.content));
 
           // accept-world-seed is fully synchronous and can complete — mark
@@ -1736,6 +1763,7 @@ wss.on('connection', (ws) => {
           dmInstructions: campaign.dmInstructions ?? '',
           history,
           existing: getWorldSeed(db, campaign.id),
+          gentlePeril: tableWantsGentlePeril(db, campaign.id),
         }), history.filter(m => m.role === 'user').map(m => m.content));
         // The draft above sat behind a real LLM call, which the host's own
         // accept-world-seed (fully synchronous, no await of its own) can

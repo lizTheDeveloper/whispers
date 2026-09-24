@@ -28,7 +28,7 @@
  */
 import { callLlm, ambientLlmSignal, isLlmAbort, LlmAbortError } from './agents/llm-client.js';
 
-export type ToneKind = 'ruling' | 'narration' | 'opening' | 'world-intro' | 'epilogue' | 'reflection';
+export type ToneKind = 'ruling' | 'narration' | 'opening' | 'world-intro' | 'epilogue' | 'reflection' | 'setup';
 
 export interface ToneVerdict {
   flagged: boolean;
@@ -54,6 +54,7 @@ const KIND_LABEL: Record<ToneKind, string> = {
   'world-intro': "the player's first look at the world",
   epilogue: 'the closing narration of the whole story',
   reflection: "a character's last words and last thought as the story ends",
+  setup: "the game master's setup chat with the host, before play — the dangers and ideas it offers become the story",
 };
 
 /**
@@ -65,12 +66,19 @@ export function toneJudgeSystemPrompt(kind: ToneKind): string {
   return [
     'TONE JUDGE for a family tabletop game. A child of about ten is at this table, or the host asked for gentle peril. You read ONE passage the game is about to show them and flag only what is wrong for that table. Real stakes, mishaps, grumpy officials, silly danger, mysteries and mild suspense are FINE — never flag those.',
     'Flag a phrase when it:',
-    '1. threatens to file, re-file, process, stamp, catalogue, erase or delete a PERSON, or to take away who they are or their name — "re-file your entire identity under the category of Unresolved Naps", "mistakes must be filed" (said at the kid), "a lullaby that makes one forget one\'s own name";',
+    '1. threatens to file, re-file, sort, recycle, process, stamp, catalogue, erase or delete a PERSON, or to take away who they are or their name — "re-file your entire identity under the category of Unresolved Naps", "mistakes must be filed" (said at the kid), "a lullaby that makes one forget one\'s own name";',
     '2. separates the child from their grown-up, even as a joke — "or the queue will think you are two separate forms!";',
     '3. uses creepy or bodily imagery around people: burying them, chewing or biting, hungry things that want them, floors dissolving under them, eyes that are not eyes — "bury them in a paperwork avalanche", "as if their presence has just been chewed on", "very sticky ghosts … all very hungry", "pull them back from the dissolving floor", "eyes that are less eyes and more swirling vortices of ink";',
     '4. describes a player character\'s body, bare skin or undress — "You and your companion stand bare-chested".',
+    // Round 15 (live RZBU7G): the misses the four lines above let through.
+    '5. makes anything permanent or "forever" for the party, or keeps them from the way home: something closing, lost or stuck for good, or the party kept here until some far-off date — "if you pick it up, the door behind you will open, but the path behind us will close forever", "you\'ll be stuck here until the quarterly audit";',
+    '6. gives the child any bodily discomfort or pain, however small — "rattles the teeth in Biz\'s skull", "makes Biz\'s teeth ache", "not good for one\'s skin";',
+    '7. is body-horror about ANYONE, NPCs too: eyes bulging or popping, skin stretching, tearing or peeling, bodies bending wrong — "her eyes widening until they nearly pop out of her head", "the wet *slap* of paper skin stretching tight across a vent grille";',
+    '8. has the party chased, hunted, pursued or closed in on, by anything — "the amber light is chasing them down the main shaft";',
+    '9. hints that children get collected, taken, kept or sorted away — "keep your children close… they have a habit of… collecting them".',
+    'NOT these: an NPC chasing a runaway form, a pigeon collecting forms, a door that shuts until the lunch chime, a queue that sends you back to the start, a stomach flipping on a lift, kindly crinkling eyes. Things happening to objects, or a setback that can be undone, are fine.',
     ending
-      ? '5. THIS IS AN ENDING. It must close warm and resolved enough: the party together and safe, the day\'s trouble settled enough to rest. Flag the closing words if they leave a question hanging, the party waiting, stuck or in limbo, the world still pulsing or unsettled, or a hope that is only half there — "remains unanswered, and the beige ripples … continue their slow, wet pulse", "…is still open, and we face it together." A thread may stay open for next time only when the last note is warm and settled.'
+      ? '10. THIS IS AN ENDING. It must close warm and resolved enough: the party together and safe, the day\'s trouble settled enough to rest. Flag the closing words if they leave a question hanging, the party waiting, stuck or in limbo, the world still pulsing or unsettled, or a hope that is only half there — "remains unanswered, and the beige ripples … continue their slow, wet pulse", "…is still open, and we face it together.", "The question of the stuck pressure valve remains open for another day, but for now…". A closing sentence that says something "remains open", is left "for another day", "unanswered" or "still waiting" is flagged even when it turns warm halfway. A thread may stay open for next time only when it is named earlier and the last sentences are warm and settled.'
       : '',
     'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"]}. Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok".',
   ].filter(Boolean).join('\n');
@@ -163,7 +171,7 @@ export function toneFeedback(phrases: string[], kind: ToneKind): string {
   const ending = ENDINGS.has(kind)
     ? ' This is the ending: close warm and settled — the party together and safe, the trouble done enough to rest — never on an open question, a wait or something still unsettled.'
     : '';
-  return `A reader for this gentle table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with none of these phrases and nothing like them: no filing, erasing or forgetting a person, nothing that parts the child from their grown-up, no creepy or bodily imagery, nothing about anyone's body.${ending}`;
+  return `A reader for this gentle table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with none of these phrases and nothing like them: no filing, erasing or forgetting a person, nothing that parts the child from their grown-up, nothing lost or closed forever, nobody chased or collected, no creepy or bodily imagery, no aches or pains, nothing about anyone's body.${ending}`;
 }
 
 export interface GateResult<T> {

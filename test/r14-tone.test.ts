@@ -273,7 +273,8 @@ describe('3. no stock line or stock phrase comes round again, for either charact
     }
     const shapes = said.map(skeleton);
     expect(new Set(shapes).size).toBe(shapes.length);
-    expect(said.filter(l => l.includes('fate is generous to those it tests'))).toHaveLength(1);
+    // Round 15 retired this one: it read as a template (test/r15-tone.test.ts, 6).
+    expect(said.filter(l => l.includes('fate is generous to those it tests'))).toHaveLength(0);
     expect(said.filter(l => l.includes('the pull of old habits'))).toHaveLength(1);
     expect(said.filter(l => l.includes('rears its head'))).toHaveLength(1);
   });

@@ -418,6 +418,18 @@ export function childToneRule(party: PartyMember[], opts: { gentlePeril?: boolea
   return `FAMILY TABLE: ${who}, playing at this table.${asked} Peril and stakes are fine, in the ${GENTLE_PERIL_REGISTER} Never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die. Keep the imagery a ten-year-old can read, for EVERYONE in the scene, NPCs included: no nooses or hanging, no bones cracking or breaking, no blood, wounds or gore, no death imagery (corpses, skulls, "dying" light, graves), no branding or burning skin, nothing "terrifying" or "horrifying".${ending}`;
 }
 
+/**
+ * The setup chat once the host has asked for gentle peril (round 15,
+ * RZBU7G): the chat sat outside the register and offered the host "the
+ * risk of being filed away in a drawer forever" as the danger of a gentle
+ * table. Only the host's own words count — the DM asking "do you want
+ * gentle peril?" is not the host asking for it. '' when the host has not.
+ */
+export function setupToneRule(history: Array<{ role: string; content: string }>): string {
+  if (!wantsGentlePeril(history.filter(m => m.role === 'user').map(m => m.content))) return '';
+  return `\n\nGENTLE PERIL: the host asked for gentle peril. Everything you write — "reply", dmInstructions and dmCustomPrompt, and every example dangers you offer the host to choose from — stays in the ${GENTLE_PERIL_REGISTER}`;
+}
+
 const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
 const NON_NAME_WORDS = new Set(['The', 'They', 'Their', 'A', 'An', 'And', 'But', 'Or', 'I', 'We', 'You', 'He', 'She', 'It', 'This', 'That', 'These', 'Those', 'Keep', 'Make', 'Let', 'Use', 'Run', 'Give', 'When', 'If', 'Both', 'Each', 'All']);
 
@@ -492,6 +504,7 @@ Storytelling principles:
 - Actions have real consequences. Not every plan works. Failure creates drama.
 - NPCs have their own goals and react to the party's actions, even between scenes.
 - VOICE YOUR NPCs: When an NPC is present and the scene involves them, give them ACTUAL DIALOGUE in quotation marks. A tavern keeper says "You'll find no friends past the Irongate — just ghosts and the things that eat them." A guard captain barks "State your business or turn back." NPCs who speak feel alive; NPCs who are only described feel like furniture. At least one NPC should speak per narration when NPCs are present.
+- QUOTES: every quotation you open, you close. A word quoted inside speech closes before the speech does ('…never mention the word "taxation."'), and a closed quotation is followed by a space and the next sentence — never a comma ('…a name in ink!' The air thickens.).
 - The world moves forward whether characters act or not — time pressure matters.
 - Introduce complications that force hard choices, not just combat encounters.
 - Use the environment as an active element — weather, terrain, crowds, lighting.
@@ -963,6 +976,8 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     history: Array<{ role: string; content: string }>;
     unmet: string[];
     hostTableRole?: TableRole | null;
+    /** The tone gate flagged the last reply (tone-gate.ts): the phrases, quoted, for one fresh try. */
+    toneFeedback?: string;
   }): Promise<DmSetupReply> {
     const ruleContext = this.lookupRules(opts.systemId, 'setting tone genre campaign');
     const unmetBlock = opts.unmet.length > 0
@@ -999,7 +1014,7 @@ Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.
 PLAYER CHARACTERS: never give the host's player characters a gender the host has not stated — not in "reply", dmInstructions, dmCustomPrompt or anywhere else. Use the host's own relation words: if the host says "my kid Biz", write "her kid Biz" or "Biz", never "son", "daughter", "boy" or "girl"; if the host gave no pronouns for a character, use their name.${spoilerBlock}
 ${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` : ''}${unmetBlock}
 
-Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }`;
+Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dmInstructions": null, "dmCustomPrompt": null }${setupToneRule(opts.history)}${opts.toneFeedback?.trim() ? `\n\n<tone_feedback>\n${opts.toneFeedback.trim()}\n</tone_feedback>` : ''}`;
 
     // The greeting (no history yet) has a user turn of its own: Qwen's chat
     // template refuses a request without one, and live the greeting failed
@@ -1074,6 +1089,8 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
     dmInstructions: string;
     history: Array<{ role: string; content: string }>;
     existing: WorldSeed | null;
+    /** The host asked for gentle peril: the premise, NPCs and hooks are drafted in the register too. */
+    gentlePeril?: boolean;
   }): Promise<WorldSeed> {
     const transcript = opts.history.map(m => `[${m.role}] ${m.content}`).join('\n');
     // Round 14 (7RAAQ7): Button's pronouns were it/its and its description
@@ -1106,7 +1123,7 @@ PLAYER CHARACTERS: never give the host's player characters a gender the host has
 
 NO SPOILERS: The host reads every field of this world on a card before play — the premise, the location and NPC descriptions, dispositions and motivations, the plotHooks and the items — and the host may be playing. None of it may reveal or hint at a twist, a culprit, who is responsible for anything, who is behind anything, a hidden motive, or the answer to a mystery. Not even obliquely: no "rumors hint at a deliberate cover-up", no "someone wants the truth buried", no "it was no accident". Motivations say what an NPC openly wants; plotHooks say what is happening on the surface, as open questions. If the conversation asks something the story should answer ("whose mistake brought us here?"), leave it an open question — the answers belong to the DM's private direction, never to this world.
 
-Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"...","pronouns":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
+${opts.gentlePeril ? `${childToneRule([], { gentlePeril: true })} This holds for the premise, every NPC's motivation and every plot hook: they are the dangers the story will be made of.\n\n` : ''}Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"...","pronouns":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
 
     return callLlm({
       messages: [
@@ -1235,7 +1252,8 @@ Every reply carries the sheet as it stands so far, finished or not: {"reply": "y
 Fill in every field the player has stated or you have inferred and reflected back; leave the rest empty ("", [], {}). When the player states something outright — a name, what they are, what trouble dogs them, something they can do — record it in the sheet at once, in their words lightly tidied, and do not ask for it again. Include everything from earlier turns too, not just what changed. Only when you know nothing yet may "definition" be null.
 
 Each stunt is its name AND what it does, in one string ("Tiny and Quick — can squeeze through gaps grown-ups cannot fit through"), keeping the description the player gave — never just the name.
-"age" is a number or short phrase if you know it, else null. "pronouns" is how this character is referred to ("she/her", "he/him", "they/them", or the player's own words) — fill it only with what the player told you when asked, or said outright about pronouns; otherwise null. Do not work it out from a gendered word ("mom", "boy") — ask instead. Never assume a gender from a name, an age, a role or anything else, and until "pronouns" is filled, no field of the sheet (high concept, trouble, aspects, stunts, personality, backstory) may call the character he, him, his, she or her — write "Fast on their feet", not "Fast on his feet". "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a kid whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Use the player's own relation word: "my kid Biz" is "kid", not "son" — never assume a gender. Fill it from what the player told you — including anything the backstory states, such as "her kid Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
+"age" is a number or short phrase if you know it, else null. "pronouns" is how this character is referred to ("she/her", "he/him", "they/them", or the player's own words) — fill it only with what the player told you when asked, or said outright about pronouns; otherwise null. Do not work it out from a gendered word ("mom", "boy") — ask instead. Never assume a gender from a name, an age, a role or anything else, and until "pronouns" is filled, no field of the sheet (high concept, trouble, aspects, stunts, personality, backstory) may call the character he, him, his, she or her — write "Fast on their feet", not "Fast on his feet". "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a kid whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Use the player's own relation word: "my kid Biz" is "kid", not "son" — never assume a gender. Fill it from what the player told you — including anything the backstory states, such as "her kid Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.
+SOMEONE ELSE IN THE SHEET: the personality, backstory, aspects and trouble are about this character, but when they mention someone this character is tied to, that person keeps their OWN pronouns — the ones listed for them at the table, or else the ones the player's relation word gives them ("Mom", "mother" → she/her; "Dad" → he/him) — never this character's. A they/them kid whose mom is Liz is "afraid of losing her" or "afraid of losing Mom", never "afraid of losing them". When in doubt, use the person's name or the player's word for them.`;
 
     const messages = [{ role: 'system', content: systemPrompt }, ...opts.history];
     const last = messages[messages.length - 1];

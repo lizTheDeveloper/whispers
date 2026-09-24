@@ -1996,6 +1996,125 @@ export function bleakEnding(text: string): boolean {
   return !!text && (BLEAK.test(text) || LIMBO.some(re => re.test(text)));
 }
 
+/** A sentence that leaves a thread hanging: "remains open", "for another day", "unanswered", "still waiting". */
+const OPEN_THREAD = /\b(?:remains?|remained|stays?|stayed|is|are|was|were|still)\s+(?:open|unanswered|unsolved|unresolved|a\s+mystery)\b|\bfor\s+another\s+day\b|\bunanswered\b|\bstill\s+waiting\b|\bleft\s+(?:open|hanging)\b/i;
+/** A sentence that lands warm: the party safe, together, at home, smiling. */
+const WARM = /\b(?:warm(?:th|ly)?|safe(?:ly)?|together|home|hand\s+in\s+hand|smil(?:e|es|ed|ing)|hug(?:s|ged|ging)?|laugh(?:s|ed|ing|ter)?|giggl\w*|grin(?:s|ned|ning)?|cozy|cosy|glow(?:s|ed|ing)?|content(?:ed)?|peace(?:ful)?|relie(?:f|ved)|calm)\b/i;
+/** Where an open thread can turn warm inside one sentence: ", but for now, …", "; …", " — …". */
+const TURN = /,\s*(?:but|yet)\s+|;\s+|\s+[—–]\s+/g;
+
+/** The warm last line a gentle ending falls back on. */
+export function warmClose(names: string[]): string {
+  const who = names.map(n => n.trim()).filter(Boolean);
+  if (who.length === 0) return 'Everyone is together, and that is enough for today.';
+  if (who.length === 1) return `${who[0]} is safe, and that is enough for today.`;
+  return `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]} are together, and that is enough for today.`;
+}
+
+/**
+ * A gentle table's ending that was flagged twice for leaving a thread open
+ * (round 15, RZBU7G): "The question of the stuck pressure valve remains open
+ * for another day, but for now, the amber light … feels exactly like home."
+ * went out as the last words after both drafts were flagged. Trailing
+ * sentences that leave a thread open go; one that turns warm halfway keeps
+ * its warm half ("For now, the amber light…"). When no warm sentence is
+ * left, the warm close is added. An ending whose last words are already
+ * settled is returned as it is — naming the open thread earlier is fine.
+ */
+export function closeOpenEnding(text: string, names: string[]): string {
+  if (!text?.trim()) return text;
+  const sentences = text.trim().split(SENTENCE_SPLIT).map(s => s.trim()).filter(Boolean);
+  const kept = [...sentences];
+  let changed = false;
+  while (kept.length > 0 && OPEN_THREAD.test(kept[kept.length - 1]!)) {
+    const last = kept[kept.length - 1]!;
+    let warmHalf: string | null = null;
+    for (const m of last.matchAll(TURN)) {
+      const head = last.slice(0, m.index);
+      const tail = last.slice(m.index! + m[0].length).trim();
+      if (OPEN_THREAD.test(head) && !OPEN_THREAD.test(tail) && WARM.test(tail)) { warmHalf = capitalize(tail); break; }
+    }
+    changed = true;
+    if (warmHalf) { kept[kept.length - 1] = warmHalf; break; }
+    kept.pop();
+  }
+  if (!changed) return text;
+  if (!kept.some(s => WARM.test(s) && !OPEN_THREAD.test(s))) kept.push(warmClose(names));
+  const out = kept.join(' ');
+  console.log(`[guard] gentle ending: open thread closed ${changedSpan(text, out)}`);
+  return out;
+}
+
+// ─── Quotes ─────────────────────────────────────────────────────────────────
+
+/** A straight quote at `i` that opens: at the start, after a space, a bracket or a dash (or a single quote that itself opens), with a word after it. */
+function opensAt(text: string, i: number): boolean {
+  if (i + 1 >= text.length || /\s/.test(text[i + 1]!)) return false;
+  if (i === 0 || /[\s(\[—–]/.test(text[i - 1]!)) return true;
+  return /['‘]/.test(text[i - 1]!) && (i === 1 || /[\s(\[—–]/.test(text[i - 2]!));
+}
+
+/**
+ * The quotations in `p` that open and never close — straight or curly —
+ * each closed where the single-quoted speech it sits in closes (`"taxation.'`
+ * → `"taxation."'`), or, when it is the last quotation in the paragraph, at
+ * the paragraph's end. Openers and closers are paired in order, so a
+ * balanced quote after the stray one ("Curious Kid Collector") is not
+ * mistaken for its close. Anything less clear is left as written.
+ */
+function closeOpenQuotes(p: string, kind: 'straight' | 'curly'): string {
+  const closeMark = kind === 'straight' ? '"' : '”';
+  const marks: number[] = [];
+  const unmatched: number[] = [];
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i]!;
+    if (kind === 'straight' ? c !== '"' : c !== '“' && c !== '”') continue;
+    marks.push(i);
+    const opener = kind === 'straight' ? opensAt(p, i) : c === '“';
+    if (opener) unmatched.push(i);
+    else unmatched.pop();
+  }
+  if (unmatched.length === 0) return p;
+  let out = p;
+  // From the last, so earlier indexes stay put.
+  for (const at of [...unmatched].reverse()) {
+    const nextMark = marks.find(i => i > at) ?? out.length;
+    const span = out.slice(at + 1, nextMark);
+    const outer = span.match(/[.!?,…]?['’](?=\s|$)/);
+    if (outer && outer.index !== undefined) {
+      const cut = at + 1 + outer.index + outer[0].length - 1;
+      out = out.slice(0, cut) + closeMark + out.slice(cut);
+    } else if (nextMark === out.length && at === marks[marks.length - 1]) {
+      const trail = out.match(/\s*$/)![0];
+      out = out.slice(0, out.length - trail.length) + closeMark + out.slice(out.length - trail.length);
+    }
+  }
+  return out;
+}
+
+/**
+ * Quote marks the model left unbalanced in the public text, tidied
+ * (round 15, RZBU7G). qwen writes speech in single quotes inside its JSON
+ * and loses track of a quote nested in one: `…the word "taxation.'`, and
+ * joins narration to a closed quote with a comma: `…in ink!', The air…`.
+ * Paragraph by paragraph: no comma between a closed quotation and the
+ * capitalised sentence after it; a double (or curly) quote left open is
+ * closed before the single quote that ends its speech, or at the end of the
+ * paragraph. Single quotes are never counted — they double as apostrophes.
+ */
+export function tidyQuotes(text: string): string {
+  if (!text || !/["“”'’]/.test(text)) return text;
+  const out = text.split(/(\n+)/).map(p => {
+    if (/^\n+$/.test(p) || !p.trim()) return p;
+    let q = p.replace(/([.!?…])(['’"”]),\s+(?=[A-Z])/g, '$1$2 ');
+    if ((q.match(/"/g) ?? []).length % 2 === 1) q = closeOpenQuotes(q, 'straight');
+    if ((q.match(/“/g) ?? []).length > (q.match(/”/g) ?? []).length) q = closeOpenQuotes(q, 'curly');
+    return q;
+  }).join('');
+  if (out !== text) console.log(`[guard] quotes tidied: ${changedSpan(text, out)}`);
+  return out;
+}
+
 // ─── Repetition ─────────────────────────────────────────────────────────────
 
 const STOP = new Set(['the', 'and', 'with', 'that', 'this', 'from', 'into', 'onto', 'over', 'under', 'their', 'there', 'they', 'them', 'then', 'than', 'what', 'when', 'where', 'which', 'while', 'your', 'have', 'has', 'had', 'were', 'was', 'been', 'being', 'will', 'would', 'could', 'should', 'about', 'above', 'after', 'again', 'along', 'around', 'because', 'before', 'behind', 'below', 'between', 'every', 'each', 'just', 'like', 'more', 'most', 'only', 'other', 'some', 'such', 'through', 'very', 'still', 'toward', 'towards', 'across', 'against', 'another', 'itself', 'himself', 'herself', 'themselves', 'something', 'nothing', 'someone', 'says', 'said', 'asks', 'steps', 'turns', 'looks', 'voice', 'eyes', 'hand', 'hands', 'head', 'face', 'room', 'moment', 'party']);
