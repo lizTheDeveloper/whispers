@@ -1185,6 +1185,32 @@ function longestSharedRun(a: string[], b: string[]): number {
  * sentences are never judged. '' when every sentence repeats — the caller
  * then treats the beat as repeated whole.
  */
+const SPEECH_VERB = /\b(?:says?|said|saying|asks?|asked|asking|repl(?:y|ies|ied|ying)|chimes?|chimed|chiming|whispers?|whispered|mutters?|muttered|murmurs?|murmured|calls?|called|calling|cr(?:y|ies|ied)|shouts?|shouted|snaps?|snapped|adds?|added|continues?|continued|hums?|hummed|squeaks?|squeaked|barks?|barked|declares?|declared|announces?|announced|demands?|demanded|insists?|insisted|beeps?|beeped|clicks?|clicked|grumbles?|grumbled|sighs?|sighed|laughs?|laughed|booms?|boomed|trills?|trilled|chirps?|chirped|honks?|honked|squawks?|squawked|stammers?|stammered|warns?|warned|explains?|explained|pleads?|pleaded|exclaims?|exclaimed|intones?|intoned|drones?|droned|recites?|recited|whirs?|whirred|rasps?|rasped|coos?|cooed|wails?|wailed|yelps?|yelped|blurts?|blurted)\b|\bvoice\b/i;
+
+/** A unit that is nothing but a quotation ("'The static is a violation!'"). */
+function quoteOnly(unit: string | undefined): boolean {
+  if (!unit) return false;
+  const runs = quoteRuns(unit.trim());
+  return runs.some(r => r.quoted) && runs.every(r => r.quoted || !/[\p{L}\p{N}]/u.test(r.text));
+}
+
+/**
+ * The words that say who is speaking, beside a quotation: `"The static is a
+ * violation!" Officer Tick-Tock chimes, its voice sounding like a wind-up
+ * toy. "And the witness…"`. Live (7MJXE5) the repeat guard dropped that
+ * middle sentence (its voice description had been used before) and the two
+ * quotes ran together with nobody saying them. An unquoted sentence with a
+ * speech verb (or "voice") next to a quote-only sentence is attribution.
+ */
+function isSpeechAttribution(unit: string, prev: string | undefined, next: string | undefined): boolean {
+  if (!quoteOnly(prev) && !quoteOnly(next)) return false;
+  const runs = quoteRuns(unit);
+  // A sentence with dialogue of its own is judged by that dialogue (below).
+  if (runs.some(r => r.quoted)) return false;
+  const unquoted = runs.map(r => r.text).join(' ');
+  return SPEECH_VERB.test(unquoted);
+}
+
 export function withoutRepeatedSentences(text: string, recent: string[], opts: { coverage?: number; run?: number } = {}): string {
   if (!text?.trim()) return text;
   const earlier = recent.filter(Boolean).join('\n');
@@ -1196,10 +1222,20 @@ export function withoutRepeatedSentences(text: string, recent: string[], opts: {
   let dropped = 0;
   const out = paragraphs.map(p => {
     if (/^\n+$/.test(p) || !p.trim()) return p;
-    const kept = storyUnits(p.trim()).filter(u => {
+    const units = storyUnits(p.trim());
+    const kept = units.filter((u, i) => {
       const words = beatWords(u);
       if (words.length < 6) return true;
-      const repeated = beatOverlap(u, earlier) >= coverage || longestSharedRun(words, earlierWords) >= runLen;
+      // Who is speaking stays with what they say: dropped, the quotes on
+      // either side run together unattributed.
+      if (isSpeechAttribution(u, units[i - 1], units[i + 1])) return true;
+      const isRepeat = (t: string, w: string[]) => beatOverlap(t, earlier) >= coverage || longestSharedRun(w, earlierWords) >= runLen;
+      // A new line of dialogue keeps its sentence, attribution and all:
+      // only the quote itself being said again drops it.
+      const spoken = quoteRuns(u).filter(r => r.quoted).map(r => r.text).join(' ');
+      const spokenWords = beatWords(spoken);
+      if (spokenWords.length >= 4 && !isRepeat(spoken, spokenWords)) return true;
+      const repeated = isRepeat(u, words);
       if (repeated) dropped++;
       return !repeated;
     });
@@ -1226,14 +1262,23 @@ export function withoutRepeatedSentences(text: string, recent: string[], opts: {
  */
 const TUG: Record<string, string> = { tighten: 'tug at', tightens: 'tugs at', tightening: 'tugging at', tightened: 'tugged at', coil: 'tug at', coils: 'tugs at', coiling: 'tugging at', coiled: 'tugged at', squeeze: 'tug at', squeezes: 'tugs at', squeezing: 'tugging at', squeezed: 'tugged at' };
 const SWEEP: Record<string, string> = { eat: 'sweep', eats: 'sweeps', eating: 'sweeping', ate: 'swept', eaten: 'swept', devour: 'sweep', devours: 'sweeps', devouring: 'sweeping', devoured: 'swept', gobble: 'sweep', gobbles: 'sweeps', gobbling: 'sweeping', gobbled: 'swept' };
+const GRUMBLE: Record<string, string> = { bite: 'grumble', bites: 'grumbles', biting: 'grumbling', bit: 'grumbled' };
 const CHILD_SOFTENERS: Array<[RegExp, string | ((...args: string[]) => string)]> = [
   [/\bnooses\b/gi, 'tangles of rope'],
   [/\bnoose\b/gi, 'tangle of rope'],
   [/\b(a|the)\s+bones?\s+(?:cracking|snapping|breaking|splintering)\b/gi, '$1 twig snapping'],
   [/\bbone[- ](?:cracking|snapping|breaking|shattering)\b/gi, 'twig-snapping'],
   [/\blike a brand\b/gi, 'like a warm coin'],
+  // "waddles with terrifying determination" → "…with great determination"
+  [/\bterrifying (determination|speed|precision|efficiency|focus|intensity|enthusiasm|confidence|purpose)\b/gi, 'great $1'],
   [/\ba terrifying\b/gi, 'an unnerving'],
   [/\bterrifying\b/gi, 'unnerving'],
+  [/\bhorrifying\b/gi, 'alarming'],
+  // "a heavy stamp slams down, missing their ear by a whisker" → "…, well clear of everyone"
+  [/,?\s*(?:narrowly |just |barely |only )?missing (?:(?:their|his|her|its|my|your|our|[\p{Lu}][\p{L}'’-]*['’]s)\s+(?:(?:left|right|tiny|small|little)\s+)?(?:ears?|head|nose|face|cheeks?|hands?|fingers?|feet|foot|toes?|shoulders?|arms?|legs?|knees?|elbows?|noses?|chin|hair|neck|back|tail)|(?:them|him|her|me|us|you)) by (?:a whisker|a hair(?:['’]s breadth)?|an inch|inches|mere inches|a fraction(?: of an inch)?|a finger['’]s width|millimet(?:re|er)s|centimet(?:re|er)s)\b/giu, ', well clear of everyone'],
+  // "the paperwork might breathe and bite back" → "…and grumble back"; "bites back a laugh" stays.
+  [/\b(bite|bites|biting|bit)\s+back\b(?!\s+(?:a|an|the|her|his|their|my|your|our|its|tears?|laughter|sobs?|words?|a\s))/gi,
+    (_m: string, verb: string) => `${GRUMBLE[verb.toLowerCase()] ?? 'grumble'} back`],
   // "a sound like a jaw cracking open" → "a sound like a drawer creaking open"
   [/\ba jaw (?:cracking|snapping|breaking|creaking)\b/gi, 'a drawer creaking'],
   [/\bjaws? (?:cracking|snapping|breaking)\b/gi, 'drawer creaking'],
@@ -1360,8 +1405,73 @@ export function repetitionNotes(dmLines: string[]): string {
     for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1);
   }
   const overused = [...counts].filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]).map(([w]) => w).slice(0, 8);
+  const phrases = recentPhrases(lines);
   const parts: string[] = [];
   if (quotes.length > 0) parts.push(`Lines of dialogue already spoken — do not repeat them, or have anyone echo them, word for word; NPCs say something new:\n${quotes.slice(-6).map(q => `- "${q}"`).join('\n')}`);
   if (overused.length > 0) parts.push(`Words you keep reaching for — do not repeat them; find fresh sensory detail: ${overused.join(', ')}.`);
+  if (phrases.length > 0) parts.push(`Phrases you have already used more than once — do not write any of them again, not even reworded slightly; describe gestures, bodies and NPC tics a new way: ${phrases.map(p => `"${p}"`).join(', ')}.`);
   return parts.join('\n');
+}
+
+// Function words: a phrase made only of these (plus one other word) is not a tic.
+const PHRASE_FUNCTION = new Set(['a', 'an', 'the', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'at', 'by', 'for', 'with', 'from', 'into', 'onto', 'as', 'is', 'are', 'was', 'were', 'be', 'it', 'its', 'it’s', "it's", 'he', 'she', 'they', 'his', 'her', 'their', 'them', 'him', 'you', 'your', 'i', 'my', 'me', 'we', 'our', 'us', 'that', 'this', 'there', 'then', 'than', 'so', 'if', 'not', 'no', 'up', 'out', 'off', 'over', 'like', 'just', 'one', 'all', 'while', 'who', 'what', 'which']);
+
+/**
+ * Three- and four-word phrases the DM has used in more than one recent beat
+ * — the tics a word list misses. Live (7MJXE5): "hand instinctively",
+ * "knuckles white" and "metronome legs jerking" came back beat after beat.
+ * Counted per beat, outside quoted speech (repeated dialogue is listed
+ * separately), never through a name, and a phrase needs at least two words
+ * that are not function words. A phrase that opens with an article ("the
+ * filing cabinet") is a thing's name, not a tic, and one ending on a function
+ * word is half a phrase. Longest first; a phrase inside a listed
+ * longer one is not listed again.
+ */
+export function recentPhrases(dmLines: string[], opts: { minBeats?: number; max?: number } = {}): string[] {
+  const minBeats = opts.minBeats ?? 2;
+  const max = opts.max ?? 10;
+  const beats = new Map<string, number>();
+  for (const l of dmLines.filter(Boolean)) {
+    const seen = new Set<string>();
+    for (const run of quoteRuns(l)) {
+      if (run.quoted) continue;
+      // Clauses: a phrase never spans punctuation or a name.
+      for (const clause of run.text.split(/[.,;:!?…()\[\]"“”—–]+|\s-\s/)) {
+        const tokens = clause.split(/\s+/).filter(Boolean);
+        let chunk: string[] = [];
+        const flush = () => {
+          for (const n of [4, 3]) {
+            for (let i = 0; i + n <= chunk.length; i++) {
+              const words = chunk.slice(i, i + n);
+              const content = words.filter(w => !PHRASE_FUNCTION.has(w) && w.length > 2);
+              if (content.length < 2) continue;
+              // "the filing cabinet" is a thing's name, not a tic; "far end of the" is half a phrase.
+              if (/^(?:the|a|an)$/.test(words[0]!) || PHRASE_FUNCTION.has(words[words.length - 1]!)) continue;
+              seen.add(words.join(' '));
+            }
+          }
+          chunk = [];
+        };
+        tokens.forEach((t, i) => {
+          const word = t.replace(/^[^\p{L}]+|[^\p{L}'’-]+$/gu, '');
+          // A capitalised word after the first is a name: the phrase breaks there.
+          if (!word || (i > 0 && /^\p{Lu}/u.test(word)) || /\*/.test(t)) { flush(); return; }
+          chunk.push(word.toLowerCase());
+        });
+        flush();
+      }
+    }
+    for (const p of seen) beats.set(p, (beats.get(p) ?? 0) + 1);
+  }
+  const repeated = [...beats].filter(([, n]) => n >= minBeats)
+    .sort((a, b) => b[1] - a[1] || b[0].split(' ').length - a[0].split(' ').length);
+  const out: string[] = [];
+  for (const [p] of repeated) {
+    if (out.some(o => o.includes(p))) continue;
+    // A shorter phrase already listed that this one contains: keep the longer.
+    for (let i = out.length - 1; i >= 0; i--) if (p.includes(out[i]!)) out.splice(i, 1);
+    out.push(p);
+    if (out.length >= max) break;
+  }
+  return out;
 }

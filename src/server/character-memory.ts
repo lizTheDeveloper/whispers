@@ -64,6 +64,20 @@ const MemoryExtractionSchema = z.object({
   })),
 });
 
+/**
+ * What a memory is written with, beyond the event itself. Live (7MJXE5)
+ * memories said "Barnaby… his tiny briefcase" (Barnaby is it/its), "Tick-Tock's
+ * … his voice cracking" (it/its) and "to protect him" of Biz (they/them): the
+ * memory prompts carried nobody's pronouns. Memories come back into every
+ * later prompt, so a wrong pronoun there spreads.
+ */
+export interface MemoryWritingOptions {
+  /** Everyone's pronouns — party and NPCs (castPronounLine). */
+  pronounNote?: string;
+  /** The deterministic text guards (NPC pronouns, the family-table softener), applied before a memory is stored. */
+  repair?: (text: string) => string;
+}
+
 export class CharacterMemoryStore {
   constructor(private db: Database.Database) {}
 
@@ -76,8 +90,10 @@ export class CharacterMemoryStore {
     whisper: string | null,
     sceneNumber: number,
     turnNumber: number,
+    opts: MemoryWritingOptions = {},
   ): Promise<CharacterMemory[]> {
     const whisperCtx = whisper ? `\nA voice whispered: "${whisper}"` : '';
+    const pronounNote = opts.pronounNote ? ` ${opts.pronounNote} Use exactly these pronouns for everyone the memory mentions.` : '';
 
     let memories: Array<{ type: MemoryType; content: string; emotionalValence: number; importance: number }>;
     try {
@@ -85,7 +101,7 @@ export class CharacterMemoryStore {
         messages: [
           {
             role: 'system',
-            content: `You extract episodic memories for a character named ${characterName}. Memories are first-person, concise (1-2 sentences), and capture what the character would actually remember — not a transcript summary. Focus on emotional impact, consequences, and relationships. Respond with ONLY a JSON object.`,
+            content: `You extract episodic memories for a character named ${characterName}. Memories are first-person, concise (1-2 sentences), and capture what the character would actually remember — not a transcript summary. Focus on emotional impact, consequences, and relationships.${pronounNote} Respond with ONLY a JSON object.`,
           },
           {
             role: 'user',
@@ -117,6 +133,7 @@ export class CharacterMemoryStore {
     );
 
     for (const mem of memories) {
+      if (opts.repair) mem.content = opts.repair(mem.content);
       const basDecay = mem.importance > 0.8 ? 0.02 : 0.05;
       const decayRate = (mem.type === 'social' || mem.type === 'discovery') ? basDecay * 0.5 : basDecay;
       const record: CharacterMemory = {
@@ -227,12 +244,14 @@ export class CharacterMemoryStore {
     turnNumber: number,
     /** What the actor calls the observer ("Mom"): in the observer's own memory that is "me"/"my". */
     observerAliases: string[] = [],
+    opts: MemoryWritingOptions = {},
   ): Promise<void> {
     let content: string;
+    const pronounNote = opts.pronounNote ? ` ${opts.pronounNote}` : '';
     try {
       const text = await callLlm({
         messages: [
-          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Attribute possessions and pockets exactly as narrated: "their pocket" in ${actorName}'s own action is ${actorName}'s own pocket, and a thing goes to someone else only when the outcome says so.${observerAliases.length > 0 ? ` When ${actorName} says ${observerAliases.map(a => `"${a}"`).join(' or ')}, that is you: write "me" and "my" ("my hand", never "${observerAliases[0]}'s hand").` : ''} Plain text only — no asterisks, no quotes, no JSON.` },
+          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Attribute possessions and pockets exactly as narrated: "their pocket" in ${actorName}'s own action is ${actorName}'s own pocket, and a thing goes to someone else only when the outcome says so.${observerAliases.length > 0 ? ` When ${actorName} says ${observerAliases.map(a => `"${a}"`).join(' or ')}, that is you: write "me" and "my" ("my hand", never "${observerAliases[0]}'s hand").` : ''}${pronounNote} Plain text only — no asterisks, no quotes, no JSON.` },
           { role: 'user', content: `${actorName}: "${action}"\nOutcome: "${outcome}"` },
         ],
         temperature: 0.3,
@@ -249,6 +268,7 @@ export class CharacterMemoryStore {
       content = this.fallbackObservation(actorName, action);
     }
     content = observerOwnWords(content, observerName, observerAliases);
+    if (opts.repair) content = opts.repair(content);
 
     this.db.prepare(
       `INSERT INTO character_memories (id, character_id, campaign_id, scene_number, turn_number, type, content, emotional_valence, importance, decay_rate)

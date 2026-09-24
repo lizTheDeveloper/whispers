@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Entity, Location, Item, GameEvent, Relationship } from '../shared/types.js';
-import { npcPronounBlock, pronounsInNarration } from './npc-pronouns.js';
+import { npcPronounBlock, pronounsInNarration, npcKeyName, namesSameNpc, npcMentioned } from './npc-pronouns.js';
+
+export { npcKeyName };
 
 export interface WorldBibleDiff {
   newLocations: Array<{ name: string; description: string | null; terrain: string | null }>;
@@ -23,15 +25,6 @@ function mentionsPhrase(text: string, needle: string, caseSensitive = false): bo
 }
 
 const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor', 'the', 'a', 'an', 'of']);
-
-/** Role words that come before a name and are not what narration calls them by: "Clerk Marni" is "Marni". */
-const ROLE_WORDS = new Set([...NAME_TITLES, 'clerk', 'officer', 'agent', 'mister', 'mr', 'mrs', 'ms', 'miss', 'madam', 'madame', 'dr', 'auntie', 'aunt', 'uncle', 'old', 'young', 'little', 'great', 'granny', 'grandpa', 'grandma']);
-
-/** The word narration calls an NPC by: "Marni" for "Clerk Marni", "Odo" for "Odo the Owl", "Postman’s" for "The Postman’s Shadow". */
-export function npcKeyName(name: string): string {
-  const words = name.trim().split(/\s+/);
-  return words.find(w => !ROLE_WORDS.has(w.toLowerCase().replace(/[^\p{L}]/gu, ''))) ?? words[0] ?? name;
-}
 
 function metadataOf(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== 'string') return {};
@@ -221,6 +214,29 @@ export class WorldBible {
       const p = metadataOf(r.metadata).pronouns;
       return typeof p === 'string' && p.trim() ? [{ name: r.name, pronouns: p.trim() }] : [];
     });
+  }
+
+  /**
+   * The pronouns of every NPC a character in the story could be talking
+   * about: the ones the party has met, the ones in the scene with them (met
+   * or not), and any `text` names. Live (7MJXE5) the character agents called
+   * Barnaby (it/its) "he" in speech and memories: their prompts had no line
+   * for him at all.
+   */
+  getNpcPronounsForParty(campaignId: string, locationId?: string | null, text = ''): Array<{ name: string; pronouns: string }> {
+    const rows = this.db.prepare('SELECT name, metadata, known_to_party, location_id FROM entities WHERE campaign_id = ? AND alive = 1 ORDER BY rowid ASC').all(campaignId) as Array<{ name: string; metadata: string | null; known_to_party: number; location_id: string | null }>;
+    return rows.flatMap(r => {
+      const p = metadataOf(r.metadata).pronouns;
+      if (typeof p !== 'string' || !p.trim()) return [];
+      const relevant = r.known_to_party === 1 || (!!locationId && r.location_id === locationId) || npcMentioned(text, r.name);
+      return relevant ? [{ name: r.name, pronouns: p.trim() }] : [];
+    });
+  }
+
+  /** An NPC's pronouns, from another entry that is the same NPC under a longer or shorter name ("Barnaby" / "Barnaby the Bureaucratic Goose"). Null when none, or when two disagree. */
+  private pronounsOfSameNpc(campaignId: string, name: string): string | null {
+    const found = new Set(this.getNpcPronouns(campaignId).filter(n => n.name.toLowerCase() !== name.toLowerCase() && namesSameNpc(name, n.name)).map(n => n.pronouns));
+    return found.size === 1 ? [...found][0]! : null;
   }
 
   /**
@@ -438,10 +454,10 @@ export class WorldBible {
     if (elsewhere.length > 0) {
       parts.push(`People you know of${locationId ? ' (not here)' : ''}: ` + elsewhere.map((n: any) => n.disposition ? `${n.name} (${n.disposition})` : n.name).join(', '));
     }
-    // The pronouns the story uses for the people the party has met.
-    const known = new Set((this.db.prepare('SELECT name FROM entities WHERE campaign_id = ? AND alive = 1 AND known_to_party = 1').all(campaignId) as Array<{ name: string }>).map(r => r.name));
-    const pronouns = this.getNpcPronouns(campaignId).filter(n => known.has(n.name));
-    if (pronouns.length > 0) parts.push(`How the story refers to them: ${pronouns.map(n => `${n.name} ${n.pronouns}`).join('; ')}`);
+    // The pronouns the story uses for the people the party has met, and for
+    // anyone in the scene with them (met or not): fixed, never switched.
+    const pronouns = this.getNpcPronounsForParty(campaignId, locationId);
+    if (pronouns.length > 0) parts.push(`How the story refers to them (fixed — use exactly these): ${pronouns.map(n => `${n.name} ${n.pronouns}`).join('; ')}`);
 
     const locs = (this.db.prepare('SELECT name, visited FROM locations WHERE campaign_id = ? AND known_to_party = 1 ORDER BY visited ASC LIMIT 8').all(campaignId) as any[])
       .filter((l: any) => l.name !== currentName);
@@ -535,7 +551,8 @@ export class WorldBible {
   ensureEntity(campaignId: string, name: string, locationId: string): void {
     const existing = this.db.prepare('SELECT id FROM entities WHERE campaign_id = ? AND name = ? COLLATE NOCASE').get(campaignId, name);
     if (!existing) {
-      this.addEntity({ id: genId(), campaignId, type: 'npc', name, description: null, disposition: null, alive: true, locationId, metadata: {} });
+      const pronouns = this.pronounsOfSameNpc(campaignId, name);
+      this.addEntity({ id: genId(), campaignId, type: 'npc', name, description: null, disposition: null, alive: true, locationId, metadata: pronouns ? { pronouns } : {} });
       console.log(`[world-bible] Auto-created NPC "${name}" from DM narration`);
     }
   }
@@ -682,7 +699,9 @@ export class WorldBible {
           if (ent.pronouns?.trim()) this.setNpcPronouns(campaignId, ent.name, ent.pronouns.trim());
           if (markKnown) this.db.prepare('UPDATE entities SET known_to_party = 1 WHERE id = ?').run(existing.id);
         } else {
-          this.addEntity({ id: genId(), campaignId, type: ent.type as Entity['type'], name: ent.name, description: ent.description, disposition: ent.disposition, alive: true, locationId: null, metadata: ent.pronouns?.trim() ? { pronouns: ent.pronouns.trim() } : {}, motivation: ent.motivation ?? null, knownToParty: markKnown });
+          // "Barnaby" is Barnaby the Bureaucratic Goose: his pronouns come with the name.
+          const pronouns = ent.pronouns?.trim() || this.pronounsOfSameNpc(campaignId, ent.name);
+          this.addEntity({ id: genId(), campaignId, type: ent.type as Entity['type'], name: ent.name, description: ent.description, disposition: ent.disposition, alive: true, locationId: null, metadata: pronouns ? { pronouns } : {}, motivation: ent.motivation ?? null, knownToParty: markKnown });
         }
       }
       for (const item of diff.newItems) {

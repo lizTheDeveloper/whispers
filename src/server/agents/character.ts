@@ -42,6 +42,18 @@ interface CharacterContext {
   partyMembers?: PartyMemberView[];
   /** This character's own pronouns as the sheets state them (their own, or a companion's relation word); unset = not stated. */
   ownPronouns?: string;
+  /** The fixed pronouns of every NPC this character could talk about — met, in the scene, or named in it. */
+  npcPronouns?: Array<{ name: string; pronouns: string }>;
+}
+
+/**
+ * The NPC pronoun line for a character's own words. Live (7MJXE5): Barnaby
+ * is it/its, and Biz said "Barnaby didn’t steal it, he’s showing us!" — the
+ * decision prompt, where spoken words come from, had no NPC pronouns at all.
+ */
+export function npcPronounRule(npcs: Array<{ name: string; pronouns: string }> | undefined): string {
+  if (!npcs || npcs.length === 0) return '';
+  return `People in the story and their pronouns — fixed; use exactly these in your action, your spoken words and your thoughts, whether or not you have been introduced: ${npcs.map(n => `${n.name}: ${n.pronouns}`).join('; ')}.`;
 }
 
 const FEMININE = /\b(mother|mom|mum|mama|sister|daughter|wife|aunt|grandmother|grandma|granny|niece|girlfriend|stepmother|stepdaughter|stepsister)\b/i;
@@ -365,7 +377,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `\n<task>`,
       `Choose your action now.`,
       `IMPORTANT: Your innerThought must be SPECIFIC — name people, places, items, or events. Never write vague thoughts like "Something feels off" or "I need to be careful." Instead: "Cassius was near the wine cellar when the poison was placed — I should confront him" or "My bruised ankle means I can't outrun the Phantom, so I'll use the narrow passage as a chokepoint." Reference your memories, your state, and the current situation.${whisper ? ' Your FIRST sentence must address the whisper directly — explain WHY you chose to follow, partially follow, or resist it. "The voice urges caution, and my bruised ribs agree — I cannot afford another fight" (followed). "The voice wants me to steal the key, but Mirra trusted me with her secret — I will not betray that" (ignored). "The whisper has a point about the passage, though I will approach my own way" (partially-followed). The player who whispered needs to understand your reasoning.' : ''}`,
-      `DIALOGUE: If your action involves talking, confronting, persuading, questioning, threatening, comforting, or arguing with ANYONE (NPC or companion), set "spokenWords" to your ACTUAL WORDS — not a description of speaking, but the words themselves. "Where did you hide the note, Cassius?" not "I ask Cassius about the note." If your action is purely physical (fighting, sneaking, searching), set spokenWords to null. Characters who speak feel alive; characters who only act feel like puppets.${addressDirective(ctx.partyMembers ?? [])}${(ctx.partyMembers ?? []).length > 0 ? ` Companions' pronouns — ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.` : ''}${kinWordDirective(ctx.partyMembers ?? [])}`,
+      `DIALOGUE: If your action involves talking, confronting, persuading, questioning, threatening, comforting, or arguing with ANYONE (NPC or companion), set "spokenWords" to your ACTUAL WORDS — not a description of speaking, but the words themselves. "Where did you hide the note, Cassius?" not "I ask Cassius about the note." If your action is purely physical (fighting, sneaking, searching), set spokenWords to null. Characters who speak feel alive; characters who only act feel like puppets.${addressDirective(ctx.partyMembers ?? [])}${(ctx.partyMembers ?? []).length > 0 ? ` Companions' pronouns — ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.` : ''}${kinWordDirective(ctx.partyMembers ?? [])}${ctx.npcPronouns && ctx.npcPronouns.length > 0 ? ` Everyone else — ${ctx.npcPronouns.map(n => `${n.name}: ${n.pronouns}`).join('; ')}.` : ''}`,
       `PUBLIC: "chosenAction" and "spokenWords" are seen by everyone at the table. The voice is private — never mention the whisper, the voice or its suggestion in them (not "ignoring the whisper", not "as the voice said"); just say what you do and say. Only "innerThought" may talk about the voice.`,
       `whisperedInfluence DEFINITIONS — pick the one that MATCHES your action:`,
       `- "followed": Your action DIRECTLY does what the whisper suggested (same target, same approach). The voice said "confront the merchant" and you confront the merchant.`,
@@ -443,6 +455,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
         ? `Inventory: ${ctx.state.inventory.join(', ')} — USE these items in your actions when relevant. A lantern lights dark places, a map reveals paths, a lockpick opens doors.`
         : '',
       memoryBlock,
+      npcPronounRule(ctx.npcPronouns),
       ctx.partyMembers && ctx.partyMembers.length > 0
         ? `\nYour companions:\n${ctx.partyMembers.map(p => {
             let line = describeCompanion(p);
