@@ -95,4 +95,10 @@ export type ServerMessage =
   // Broadcast on every pause/resume, and sent to a (re)joining socket when
   // the table is paused. reason is null on a resume.
   | { type: 'game-paused'; paused: boolean; reason: PauseReason | null; by?: string }
+  // Broadcast the moment the table starts closing (End Game, or the loop's
+  // own finale), before the epilogue is written: every open whisper window
+  // is closed with no turn taken, so clients stop their countdowns and lock
+  // the whisper box now rather than after the epilogue and closing
+  // reflections arrive. The 'ended' phase-change still follows.
+  | { type: 'game-ending' }
   | { type: 'error'; message: string };

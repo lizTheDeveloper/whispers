@@ -424,7 +424,12 @@ export class GameLoop {
   }
 
   async endGame(): Promise<void> {
+    // stop() has closed any open whisper window with no whisper, and the
+    // turn waiting on it bails on isStopped — no silence verdict, no trust
+    // change. Tell every client now, not after the epilogue and closing
+    // reflections, so no countdown keeps running under the ending.
     this.stop();
+    this.broadcastFn({ type: 'game-ending' });
     await this.generateEpilogue();
     this.broadcastFn({ type: 'phase-change', phase: 'ended' });
   }
@@ -490,7 +495,12 @@ export class GameLoop {
   restoreForEpilogue(): void {
     this.loadCharacters();
     const checkpoint = loadCheckpoint(this.db, this.campaignId);
-    if (checkpoint) this.state = { ...this.state, ...checkpoint.state };
+    if (checkpoint) {
+      this.state = { ...this.state, ...checkpoint.state };
+      // The unfinished scene's story, so the epilogue can tell it.
+      this.sceneTurnCount = checkpoint.state.sceneTurnCount ?? 0;
+      if (checkpoint.transcript) this.transcript = checkpoint.transcript;
+    }
   }
 
   /** Park while paused. Resolves true to carry on, false once stopped. */
@@ -521,6 +531,7 @@ export class GameLoop {
 
   /** The loop's own natural end (finale, session cap): same close-out as End Game, plus the DB write end-game's handler would have made. */
   private async finishSession(): Promise<void> {
+    this.broadcastFn({ type: 'game-ending' });
     await this.generateEpilogue();
     setCampaignPhase(this.db, this.campaignId, 'ended');
     setCampaignPaused(this.db, this.campaignId, null);
@@ -1421,6 +1432,12 @@ export class GameLoop {
     const scenes = this.db.prepare(
       'SELECT scene_number, summary FROM scenes WHERE campaign_id = ? ORDER BY scene_number ASC'
     ).all(this.campaignId) as Array<{ scene_number: number; summary: string }>;
+    // Scenes are only stored when endScene closes them, so a scene End Game
+    // interrupted is played-but-unstored: count it, and give the DM its
+    // story, whenever any turn happened in it.
+    const inProgress = this.sceneTurnCount > 0 && !scenes.some(s => s.scene_number === this.state.currentScene);
+    const scenesPlayed = scenes.length + (inProgress ? 1 : 0);
+    const currentScene = inProgress ? this.currentSceneStory(8000) : '';
 
     const charLines = Array.from(this.characters.values()).map(c => {
       const memories = this.memoryStore.recall(c.id, 3);
@@ -1437,7 +1454,13 @@ export class GameLoop {
       : '';
 
     const sceneSummaries = scenes.map(s => `Scene ${s.scene_number}: ${s.summary}`).join('\n\n');
+    // DM-level world context stays (names, tone, what was still open), but it
+    // is labelled as background: the events come from the record above it.
     const worldState = this.worldBible.getCompactSummary(this.campaignId);
+    const record = [
+      `Finished scenes:\n${sceneSummaries || '(none — the session ended before any scene closed)'}`,
+      currentScene ? `Scene ${this.state.currentScene}, unfinished when the session ended — what happened, in order:\n${currentScene}` : '',
+    ].filter(Boolean).join('\n\n');
 
     const presetVoices: Record<string, string> = {
       professor: 'You are an academic storyteller. End with a teaching moment — what did the characters (and the players) learn? Reference a specific rule or mechanic that shaped the story. Warm, slightly pedantic, like a favorite teacher closing a lesson.',
@@ -1449,8 +1472,8 @@ export class GameLoop {
     try {
       const epilogue = await callLlm({
         messages: [
-          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences.` },
-          { role: 'user', content: `Session complete: ${this.state.currentScene} scenes, ${this.state.currentTurn} turns.\n\nScenes:\n${sceneSummaries}\n\nCharacters:\n${charLines}${relBlock}\n\nWorld:\n${worldState}\n\nWrite a brief closing narration. What did the characters accomplish? What was lost along the way? What questions linger? End with one evocative image — the kind players remember.` },
+          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them.` },
+          { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.` },
         ],
         maxTokens: 512,
       });
@@ -1463,11 +1486,23 @@ export class GameLoop {
       console.error('[game-loop] Epilogue generation failed:', e);
     }
 
-    await this.generateCharacterClosingReflections(scenes);
+    await this.generateCharacterClosingReflections(scenes, currentScene);
   }
 
-  private async generateCharacterClosingReflections(scenes: Array<{ scene_number: number; summary: string }>): Promise<void> {
-    const sceneSummaries = scenes.map(s => s.summary).join(' ');
+  /**
+   * The unfinished scene as the table saw it: story lines only (no whisper
+   * text, no whisper verdicts), dice left out, newest kept when it runs long.
+   */
+  private currentSceneStory(maxChars: number): string {
+    const lines = storyLines(this.transcript).filter(m => m.role !== 'dice').map(m => `- ${m.content}`);
+    let text = lines.join('\n');
+    if (text.length > maxChars) text = `…${text.slice(text.length - maxChars)}`;
+    return text;
+  }
+
+  private async generateCharacterClosingReflections(scenes: Array<{ scene_number: number; summary: string }>, currentScene: string): Promise<void> {
+    const finished = scenes.map(s => s.summary).join(' ').slice(0, 500);
+    const sceneSummaries = [finished, currentScene.slice(-1000)].filter(Boolean).join('\n');
     for (const [charId, char] of this.characters) {
       const memories = this.memoryStore.recall(charId, 6);
       if (memories.length === 0) continue;
@@ -1481,7 +1516,7 @@ export class GameLoop {
         const reflection = await callLlm({
           messages: [
             { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
-            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nWhat happened: ${sceneSummaries.slice(0, 500)}\n\nWrite your final words and thought. Be specific — name a person, place, or moment. One line each.` },
+            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nWhat happened: ${sceneSummaries}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. One line each.` },
           ],
           maxTokens: 200,
           temperature: 0.7,
