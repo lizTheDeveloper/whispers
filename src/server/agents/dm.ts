@@ -370,15 +370,34 @@ export function childrenInParty(party: PartyMember[]): string[] {
 }
 
 /**
- * The one tone rule a table with a child gets. Seen live: "'Wanders off' —
- * the words could be Biz's epitaph." about a ten-year-old. Danger stays;
- * the morbid framing goes.
+ * Did the host ask for gentle or cozy peril ("gentle peril only, nothing
+ * scary or gory", "cozy", "kid-friendly")? Read off what is on record — the
+ * host's setup messages and the direction the DM wrote from them — so the
+ * wish holds for the whole game, not just the setup chat.
  */
-export function childToneRule(party: PartyMember[]): string {
+export function wantsGentlePeril(texts: Array<string | null | undefined>): boolean {
+  return texts.some(t => !!t && /\b(?:gentle|mild|light|soft|low|cozy|cosy)[- ](?:peril|danger|stakes|scares?|adventure|tension)\b|\bcou?[sz]y\b|\b(?:kid|child|family)[- ]friendly\b|\bnothing (?:too )?(?:scary|gory|frightening|violent)\b|\bno (?:gore|violence|scary)\b/i.test(t));
+}
+
+/** How a gentle-peril table is run: what tension is made of, and what it never is. */
+const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, silliness, lost things, bureaucratic obstacles, ticking clocks, puzzles and near-misses — real stakes, told the way a good children\'s book tells them. Never describe bodily harm or pain (no bones, skulls, jaws, teeth rattling in heads, sharp pain, wounds, blood or gore), no weapons or weapon sounds (no guns, gunshots, blades), nobody is ever hunted, stalked, preyed on or eaten — not by crowds, doors, monsters or anything else — and nothing tightens around anyone\'s body (no ropes, nooses or chains). Threats are grumpy, silly, bureaucratic or mysterious, never predatory.';
+
+/**
+ * The one tone rule a table with a child gets — or a table whose host asked
+ * for gentle peril. Seen live: "'Wanders off' — the words could be Biz's
+ * epitaph." about a ten-year-old (E9W9YT), and in N7RQZ7, with the host's
+ * "gentle peril only": "a sound like a jaw cracking open… rattles her teeth
+ * in her skull", "the crowd turning with hunting intent", "echoing like a
+ * gunshot". Stakes stay; the harm, the weapons and the hunting go.
+ */
+export function childToneRule(party: PartyMember[], opts: { gentlePeril?: boolean } = {}): string {
   const kids = childrenInParty(party);
-  if (kids.length === 0) return '';
+  if (kids.length === 0) {
+    return opts.gentlePeril ? `GENTLE PERIL: the host asked for gentle peril. Run every scene in the ${GENTLE_PERIL_REGISTER}` : '';
+  }
   const who = kids.length === 1 ? `${kids[0]} is a child` : `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]} are children`;
-  return `FAMILY TABLE: ${who}, playing at this table. Peril and stakes are fine — danger, fear, narrow escapes, real consequences — but never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die. Keep the imagery a ten-year-old can read, for EVERYONE in the scene, NPCs included: no nooses or hanging, no bones cracking or breaking, no blood, wounds or gore, no death imagery (corpses, skulls, "dying" light, graves), no branding or burning skin, nothing "terrifying" or "horrifying". Tension comes from mischief, puzzles, near-misses and ticking clocks instead.`;
+  const asked = opts.gentlePeril ? ' The host asked for gentle peril too.' : '';
+  return `FAMILY TABLE: ${who}, playing at this table.${asked} Peril and stakes are fine, in the ${GENTLE_PERIL_REGISTER} Never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die. Keep the imagery a ten-year-old can read, for EVERYONE in the scene, NPCs included: no nooses or hanging, no bones cracking or breaking, no blood, wounds or gore, no death imagery (corpses, skulls, "dying" light, graves), no branding or burning skin, nothing "terrifying" or "horrifying".`;
 }
 
 const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
@@ -422,6 +441,8 @@ export function assembleSystemPrompt(input: {
   dmInstructions: string | null;
   campaignMaterials: string | null;
   influences: string[];
+  /** The host asked for gentle or cozy peril (wantsGentlePeril). */
+  gentlePeril?: boolean;
   /** The live party. When present, it is stated as authoritative and setup-invented PCs are dropped from the direction. */
   party?: PartyMember[];
 }): { systemPrompt: string; criticalReminder: string; narrationHint: string } {
@@ -473,7 +494,7 @@ Storytelling principles:
   if (dmInstructions) prompt += `\nDM direction: ${dmInstructions}\n`;
   const partyBlock = describeParty(input.party ?? []);
   if (partyBlock) prompt += `\n${partyBlock}\n`;
-  const toneRule = childToneRule(input.party ?? []);
+  const toneRule = childToneRule(input.party ?? [], { gentlePeril: input.gentlePeril });
   if (toneRule) prompt += `\n${toneRule}\n`;
 
   if (input.campaignMaterials) {
@@ -514,6 +535,18 @@ interface DmContext {
   influences: string[];
   /** The live party. Optional so older callers keep working; play always passes it. */
   party?: PartyMember[];
+  /** The host asked for gentle or cozy peril: the tone rule goes into every turn's prompt, not only the system prompt. */
+  gentlePeril?: boolean;
+}
+
+/**
+ * The tone rule again, in the turn's own message: a system-prompt rule alone
+ * drifted by mid-session (live N7RQZ7, a ten-year-old at the table and a
+ * host who asked for gentle peril). '' when the table has neither.
+ */
+function turnToneBlock(ctx: DmContext): string {
+  const rule = childToneRule(ctx.party ?? [], { gentlePeril: ctx.gentlePeril });
+  return rule ? `\n<tone>\n${rule}\n</tone>` : '';
 }
 
 export class DmAgent {
@@ -634,6 +667,7 @@ export class DmAgent {
       locationList,
       `\n<transcript>\n${recentTranscript}\n</transcript>`,
       repetition ? `\n<already_said>\n${repetition}\n</already_said>` : '',
+      turnToneBlock(ctx),
       pacing?.repeatedBeat ? `\n<repeated>\nYour last draft repeated this earlier beat almost word for word — the table has already read it:\n"${pacing.repeatedBeat}"\nDo NOT reuse its sentences, its NPC lines or its images. Write what happens NEXT, after it.\n</repeated>` : '',
       `\n<task>`,
       `Narrate what happens next in 2-4 vivid sentences. Describe ONE moment, not multiple rounds. VARY YOUR OPENING — don't start with the character's name every time. Try starting with: a sound, an NPC speaking, a sensory detail, a shift in the environment, or an action in progress. If UNRESOLVED THREADS appear in the world state, let them echo in the background — an overheard rumor, a shadow of the unfinished business, a ticking clock. Don't resolve them in narration, but keep them alive.\nNPC INITIATIVE: If activeNpcs are present, at least one NPC must SPEAK or ACT in the narration — they approach the party, ask a question, block a path, offer information, make a demand, or reveal something. "The foreman steps from the shadows, voice hoarse: 'You shouldn't be down here.'" NPCs who initiate create drama the characters MUST respond to.${partyHint}`,
@@ -716,7 +750,7 @@ export class DmAgent {
     });
   }
 
-  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean }> }): Promise<DmResolution> {
+  async resolve(ctx: DmContext, action: string, diceResult: DiceResult | null, sceneNumber?: number, characterInfo?: { id: string; name: string; skills: Record<string, number>; stress: number; consequences: string[]; fatePoints: number; aspects?: string[]; highConcept?: string; trouble?: string; inventory?: string[]; partyMembers?: Array<{ id: string; name: string; takenOut?: boolean; inventory?: string[] }> }): Promise<DmResolution> {
     const ruleContext = this.lookupRules(ctx.systemId, action);
 
     const skillList = characterInfo ? Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ') : '';
@@ -750,7 +784,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
         : '';
       charBlock = `\nACTING CHARACTER (narrate THEIR action, not another party member's): ${characterInfo.name} (id: ${characterInfo.id})\nAspects: ${aspectList}\nSkills: ${Object.entries(characterInfo.skills).map(([k, v]) => `${k}:+${v}`).join(', ')}\nStress: ${characterInfo.stress}/3 | Consequences: ${characterInfo.consequences.join(', ') || 'none'} | Fate Points: ${characterInfo.fatePoints}${inventoryLine}`;
       if (characterInfo.partyMembers && characterInfo.partyMembers.length > 0) {
-        charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})${p.takenOut ? ' — TAKEN OUT, down and unable to act or speak' : ''}`).join(', ')}`;
+        charBlock += `\nParty members: ${characterInfo.partyMembers.map(p => `${p.name} (id: ${p.id})${p.inventory && p.inventory.length > 0 ? ` carrying ${p.inventory.join(', ')}` : ''}${p.takenOut ? ' — TAKEN OUT, down and unable to act or speak' : ''}`).join(', ')}`;
       }
       charBlock += '\n';
     }
@@ -768,6 +802,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       `\n<context>\n${recentTranscript}\n</context>`,
       repetition ? `\n<already_said>\n${repetition}\n</already_said>` : '',
       ruleContext ? `\n<rules>\n${ruleContext}\n</rules>` : '',
+      turnToneBlock(ctx),
       `\n<task>`,
       `Resolve ${characterInfo ? characterInfo.name + "'s" : 'this'} action using the FATE steps above. A wounded character (high stress, existing consequences) should face HIGHER difficulty (+1 per consequence). Apply meaningful state changes:`,
       `- "tie": minor cost (1 stress, or reveal information to an enemy, or lose time)`,
@@ -778,7 +813,7 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
       `NPC DIALOGUE: If the action involves talking to, questioning, persuading, or confronting an NPC, the narration MUST include the NPC's spoken response in quotation marks. NPCs who respond with actual words create real drama — "I'll tell you nothing, sellsword" hits harder than "the merchant refuses."`,
       `COOPERATIVE ACTIONS: If the action references a party member by name (coordinating, protecting, assisting), lower the difficulty by 1 and narrate how the teamwork helps. If the action HARMS or abandons a party member, add stress to BOTH characters — betrayal costs everyone.`,
       `PARTY DIALOGUE: If the action includes spoken words addressed to a companion (quoted dialogue), show a BRIEF physical reaction from that companion in your narration — a nod, a glare, a flinch, a skeptical eyebrow, a hand on their weapon. Do NOT put words in the companion's mouth (they speak on their own turn), but show they HEARD and REACTED. Dead-eyed companions who ignore each other kill immersion. A companion who is TAKEN OUT does not react, speak or act at all — they are down until they recover.`,
-      `INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If they USE an item destructively (a potion consumed, a key that breaks), add {"field":"inventory","action":"remove","value":"<item name>"} to stateChanges. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"} — and only then: the narration must show them taking it, picking it up or being handed it. Saying an item is theirs, asking for it or claiming it in words is NOT gaining it; an item someone else holds stays theirs unless your narration shows it change hands.`,
+      `INVENTORY: If the character's inventory contains an item relevant to their action, acknowledge it in the narration and lower difficulty by 1. If an item a party member holds is used up, destroyed, lost, taken, stolen, eaten or swallowed, torn to uselessness, or given away — theirs or a companion's (use that companion's id) — add {"characterId":"<holder's id>","field":"inventory","action":"remove","value":"<exact item name>"} to stateChanges. When an item passes between party members, remove it from the giver AND add it to the receiver. If they GAIN an item through this action, add {"field":"inventory","action":"add","value":"<item name>"} — and only then: the narration must show them taking it, picking it up or being handed it. Saying an item is theirs, asking for it or claiming it in words is NOT gaining it; an item someone else holds stays theirs unless your narration shows it change hands.`,
       `FATE POINT ECONOMY: If this action touches the character's trouble aspect or a consequence, COMPEL it — add {"field":"fatePoints","action":"set","value":${(characterInfo?.fatePoints ?? 3) + 1}} and narrate the complication. If the character spent effort invoking an aspect (referenced it in their action), spend a fate point: {"field":"fatePoints","action":"set","value":${Math.max(0, (characterInfo?.fatePoints ?? 3) - 1)}}.${consequenceGuide}${personalityReminder}`,
       `Respond as JSON: { "diceExpression": "${diceResult?.expression ?? 'null'}", "difficulty": <number>, "skill": "<skill>", "outcome": "success|failure|tie|success-with-cost", "narration": "2-3 sentences describing what happens.${narrationHint}", "stateChanges": [{"characterId": "${characterInfo?.id ?? '<id>'}", "field": "stress|consequences|fatePoints|inventory", "action": "set|add|remove", "value": <value>}] }`,
       `stateChanges must be objects, not strings. Use [] if no mechanical changes apply.`,
@@ -1177,6 +1212,7 @@ Fill in every field the player has stated or you have inferred and reflected bac
       campaignMaterials: campaignMaterials || null,
       influences: ctx.influences,
       party: ctx.party,
+      gentlePeril: ctx.gentlePeril,
     });
   }
 

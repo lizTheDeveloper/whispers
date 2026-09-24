@@ -198,7 +198,7 @@ export class CharacterMemoryStore {
     try {
       const text = await callLlm({
         messages: [
-          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Plain text only — no asterisks, no quotes, no JSON.` },
+          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Attribute possessions and pockets exactly as narrated: "their pocket" in ${actorName}'s own action is ${actorName}'s own pocket, and a thing goes to someone else only when the outcome says so. Plain text only — no asterisks, no quotes, no JSON.` },
           { role: 'user', content: `${actorName}: "${action}"\nOutcome: "${outcome}"` },
         ],
         temperature: 0.3,

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { DmAgent, childToneRule, childrenInParty, describeRelationships, introduceCharacter, pronounsFor, type PartyMember } from './agents/dm.js';
+import { DmAgent, childToneRule, childrenInParty, wantsGentlePeril, describeRelationships, introduceCharacter, pronounsFor, type PartyMember } from './agents/dm.js';
 import { CharacterAgent, type PartyMemberView } from './agents/character.js';
 import type { DmNarration as DmNarrationResult, DmOpening } from './agents/schemas.js';
 import { ExtractorAgent } from './agents/extractor.js';
@@ -9,7 +9,7 @@ import { getInfluences, setCampaignPaused, setCampaignPhase } from './room.js';
 import { loadStockScenario, getWorldSeed, seedWorld } from './world-seed.js';
 import { CharacterMemoryStore } from './character-memory.js';
 import { callProse, isLlmAbort, runWithLlmSignal } from './agents/llm-client.js';
-import { findPronounConflicts, repairGenderedNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
+import { findPronounConflicts, ownKinNouns, repairGenderedNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
 import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
@@ -27,7 +27,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransfer, softenForChildren, repeatsRecentBeat,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, sameItem, changedSpan, softenForChildren, repeatsRecentBeat,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -475,6 +475,36 @@ export class GameLoop {
     }));
   }
 
+  private gentlePerilCache: boolean | null = null;
+
+  /**
+   * Did the host ask for gentle or cozy peril? Recorded where the host said
+   * it — their setup messages and the direction written from them, all
+   * stored on the campaign — and read once per game.
+   */
+  private gentlePeril(): boolean {
+    if (this.gentlePerilCache !== null) return this.gentlePerilCache;
+    try {
+      const row = this.db.prepare('SELECT setup_chat, dm_instructions, dm_custom_prompt FROM campaigns WHERE id = ?').get(this.campaignId) as { setup_chat?: string | null; dm_instructions?: string | null; dm_custom_prompt?: string | null } | undefined;
+      let hostLines: string[] = [];
+      try {
+        const chat = row?.setup_chat ? JSON.parse(row.setup_chat) as Array<{ role: string; content: string }> : [];
+        hostLines = Array.isArray(chat) ? chat.filter(m => m?.role === 'user' && typeof m.content === 'string').map(m => m.content) : [];
+      } catch { /* an unreadable chat says nothing */ }
+      this.gentlePerilCache = wantsGentlePeril([...hostLines, row?.dm_instructions, row?.dm_custom_prompt]);
+      if (this.gentlePerilCache) console.log('[game-loop] the host asked for gentle peril — it goes into every turn');
+    } catch (e) {
+      console.error('[game-loop] could not read the table tone:', e);
+      this.gentlePerilCache = false;
+    }
+    return this.gentlePerilCache;
+  }
+
+  /** A child at the table, or a host who asked for gentle peril: the family-table softener applies. */
+  private familyTable(): boolean {
+    return childrenInParty(this.partyForDm()).length > 0 || this.gentlePeril();
+  }
+
   /**
    * DM-authored prose — narration, resolutions, summaries, the epilogue —
    * calls party members by name: "Biz steadies Mom" becomes "Biz steadies
@@ -489,11 +519,11 @@ export class GameLoop {
       // …and "a paper sprite—Wanders Off After Anything Shiny—flits" is just a sprite.
       // …and whispers come only from players: no voice in anyone's ear.
       let fixed = withoutDmWhispers(namesInNarration(sheetPhrasesToNames(highConceptsToNames(text, party), this.sheetOwners()), terms));
-      if (fixed !== text) console.log(`[guard] address term in narration replaced by a name: "${text.slice(0, 80)}" → "${fixed.slice(0, 80)}"`);
+      if (fixed !== text) console.log(`[guard] narration names/phrases repaired: ${changedSpan(text, fixed)}`);
       // "her son Biz" for a they/them Biz: the noun only, never a pronoun.
       fixed = repairGenderedNouns(fixed, this.pronounMembers());
       // A table with a child: the few images that read as horror, softened.
-      if (childrenInParty(this.partyForDm()).length > 0) fixed = softenForChildren(fixed);
+      if (this.familyTable()) fixed = softenForChildren(fixed);
       return fixed;
     } catch (e) {
       console.error('[guard] narration name guard failed, text left as written:', e);
@@ -649,6 +679,51 @@ export class GameLoop {
   }
 
   /** DM prose that says a party member is taken out makes it so — the mechanics follow the story. */
+  /**
+   * The party's inventories follow the DM's prose (narratedItemEvents): an
+   * item narrated into a member's keeping is theirs (and no longer the
+   * companion's who handed it over); an item narrated destroyed, eaten,
+   * lost, taken or given away leaves its holder. Returns the characters
+   * whose inventory changed.
+   */
+  private trackNarratedItems(prose: string): Set<string> {
+    const changed = new Set<string>();
+    if (!prose || this.characters.size === 0) return changed;
+    try {
+      const chars = Array.from(this.characters.values());
+      const party = chars.map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] }));
+      const byName = (n: string) => chars.find(c => c.definition.name === n);
+      const drop = (c: Character, item: string) => {
+        const before = c.state.inventory ?? [];
+        c.state.inventory = before.filter(i => !sameItem(i, item));
+        if (c.state.inventory.length !== before.length) changed.add(c.id);
+      };
+      for (const e of narratedItemEvents(prose, party, this.worldBible.getItemNames(this.campaignId))) {
+        if (e.kind === 'gain') {
+          const to = byName(e.to);
+          if (!to) continue;
+          const from = e.from ? byName(e.from) : undefined;
+          if (from) drop(from, e.item);
+          if (!(to.state.inventory ?? []).some(i => sameItem(i, e.item))) {
+            to.state.inventory = [...(to.state.inventory ?? []), e.item];
+            changed.add(to.id);
+          }
+          this.worldBible.updateItemHolder(this.campaignId, e.item, to.id);
+          console.log(`[items] ${e.to} now holds "${e.item}"${e.from ? ` (from ${e.from})` : ''}: the DM's prose shows it`);
+        } else {
+          const from = byName(e.from);
+          if (!from) continue;
+          drop(from, e.item);
+          this.worldBible.updateItemHolder(this.campaignId, e.item, null);
+          console.log(`[items] ${e.from} no longer holds "${e.item}": the DM's prose shows it gone`);
+        }
+      }
+    } catch (err) {
+      console.error('[items] narrated item tracking failed, inventories left as they were:', err);
+    }
+    return changed;
+  }
+
   private applyDeclaredTakenOut(prose: string): void {
     for (const c of this.characters.values()) {
       if (isTakenOut(c.state)) continue;
@@ -713,6 +788,7 @@ export class GameLoop {
         influences: getInfluences(this.db, this.campaignId),
         // The opening alone also reads backstories: where they come from decides how they arrive.
         party: this.partyForDm({ withBackstory: true }),
+        gentlePeril: this.gentlePeril(),
       }, { premise, scenarioOpening, places, arrivalExpected }), (e) => {
       console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
       return null;
@@ -982,6 +1058,7 @@ export class GameLoop {
         systemId: campaign.system_id,
         influences: getInfluences(this.db, this.campaignId),
         party: this.partyForDm(),
+        gentlePeril: this.gentlePeril(),
       },
       pacing: {
         sceneNumber: this.state.currentScene,
@@ -1045,6 +1122,14 @@ export class GameLoop {
     if (narration.narration) {
       this.addTranscript('dm', narration.narration);
       this.applyDeclaredTakenOut(narration.narration);
+      // A narration beat can hand things over or destroy them too (live:
+      // "'The Alphabet has swallowed the key,' he hisses").
+      for (const cid of this.trackNarratedItems(narration.narration)) {
+        const c = this.characters.get(cid);
+        if (!c) continue;
+        this.sendStateUpdate(cid, c.state);
+        this.db.prepare("UPDATE characters SET state = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(c.state), cid);
+      }
     }
 
     if (narration.currentLocationName) {
@@ -1330,6 +1415,23 @@ export class GameLoop {
       decision.innerThought = repairAddress(decision.innerThought, addressTerms, { vocative: false });
       decision.chosenAction = repairAddress(decision.chosenAction, addressTerms, { vocative: false });
     }
+    // "My son is a minor" from a Liz whose sheet calls Biz her "kid", with
+    // Biz they/them: the speaker's own word for their only child at the table.
+    {
+      const members = this.pronounMembers();
+      const speaker = members.find(m => this.namesMatch(m.name, character.definition.name));
+      if (speaker) {
+        if (decision.spokenWords) decision.spokenWords = ownKinNouns(decision.spokenWords, speaker, members);
+        decision.chosenAction = ownKinNouns(decision.chosenAction, speaker, members);
+        decision.innerThought = ownKinNouns(decision.innerThought, speaker, members);
+      }
+      // "…before the crowd eats us": a family table's words, the character's
+      // own included, keep to gentle peril.
+      if (this.familyTable()) {
+        if (decision.spokenWords) decision.spokenWords = softenForChildren(decision.spokenWords);
+        decision.chosenAction = softenForChildren(decision.chosenAction);
+      }
+    }
     // A companion's trait is a trait: "I warn the Wanders Off…" is "I warn Biz…".
     {
       const others = this.sheetOwners().filter(o => !this.namesMatch(o.name, character.definition.name));
@@ -1494,6 +1596,7 @@ export class GameLoop {
           campaignId: this.campaignId, worldSummary, transcript: this.transcript, systemId: campaign.system_id,
           influences: getInfluences(this.db, this.campaignId),
           party: this.partyForDm(),
+          gentlePeril: this.gentlePeril(),
         },
         decision.spokenWords
           ? `${decision.chosenAction} — says: "${decision.spokenWords}"`
@@ -1507,7 +1610,7 @@ export class GameLoop {
           inventory: character.state.inventory,
           partyMembers: Array.from(this.characters.entries())
             .filter(([id]) => id !== characterId)
-            .map(([id, c]) => ({ id, name: c.definition.name, ...(isTakenOut(c.state) ? { takenOut: true } : {}) })),
+            .map(([id, c]) => ({ id, name: c.definition.name, inventory: c.state.inventory ?? [], ...(isTakenOut(c.state) ? { takenOut: true } : {}) })),
         },
       ), (e) => {
       console.error('[game-loop] resolution failed, narrating without mechanics:', e);
@@ -1651,14 +1754,31 @@ export class GameLoop {
       if (change.field !== 'inventory' || change.action === 'remove' || typeof change.value !== 'string') return true;
       const who = change.characterId ? this.characters.get(change.characterId) : undefined;
       if (!who) return true;
-      if (narratesItemTransfer(resolution.narration, change.value, who.definition.name)) return true;
-      console.warn(`[game-loop] dropped an inventory add of "${change.value}" for ${who.definition.name}: the ruling never shows it changing hands`);
+      // The hand-off may have been narrated a beat earlier: live, the
+      // Postman slipped the envelope into Biz's hand in LIZ's ruling.
+      if (narratesItemTransferRecently(resolution.narration, this.recentDmBeats(4), change.value, who.definition.name)) return true;
+      console.warn(`[game-loop] dropped an inventory add of "${change.value}" for ${who.definition.name}: neither this ruling nor the last few DM beats show it changing hands`);
       return false;
     });
     for (const change of resolution.stateChanges) {
       if (change.characterId && change.field && change.action) {
         this.applyStateChange(change.characterId, change.field, change.action, change.value);
         affectedCharIds.add(change.characterId);
+      }
+    }
+    // An item handed to a companion leaves the hands it came from, even when
+    // the ruling only added it to the receiver (live: Biz pressed the Orange
+    // Key into Liz's palm; Liz gained it and Biz would have kept it too). The
+    // giver is the acting character, or a member the ruling names.
+    for (const change of resolution.stateChanges) {
+      if (change.field !== 'inventory' || change.action !== 'add' || typeof change.value !== 'string' || !change.characterId) continue;
+      for (const other of this.characters.values()) {
+        if (other.id === change.characterId || !(other.state.inventory ?? []).some(i => sameItem(i, change.value as string))) continue;
+        const named = new RegExp(`\\b${getFirstName(other.definition.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(resolution.narration);
+        if (other.id !== characterId && !named) continue;
+        other.state.inventory = (other.state.inventory ?? []).filter(i => !sameItem(i, change.value as string));
+        affectedCharIds.add(other.id);
+        console.log(`[items] "${change.value}" passed from ${other.definition.name} to ${this.characters.get(change.characterId)?.definition.name ?? 'a companion'}`);
       }
     }
 
@@ -1685,6 +1805,11 @@ export class GameLoop {
         console.log(`[game-loop] Added un-narrated item loss: "${item}"`);
       }
     }
+
+    // Items the ruling itself moved or destroyed, whatever stateChanges said:
+    // "Biz tucks the key into their treasure pocket", "…tearing completely,
+    // leaving only a damp, useless smear".
+    for (const cid of this.trackNarratedItems(resolution.narration)) affectedCharIds.add(cid);
 
     for (const cid of affectedCharIds) {
       const c = this.characters.get(cid);
@@ -2026,7 +2151,7 @@ export class GameLoop {
     ].filter(Boolean).join('\n\n');
 
     const facts = this.endingFacts();
-    const toneRule = childToneRule(this.partyForDm());
+    const toneRule = childToneRule(this.partyForDm(), { gentlePeril: this.gentlePeril() });
 
     const presetVoices: Record<string, string> = {
       professor: 'You are an academic storyteller. End with a teaching moment — what did the characters (and the players) learn? Reference a specific rule or mechanic that shaped the story. Warm, slightly pedantic, like a favorite teacher closing a lesson.',
@@ -2146,8 +2271,16 @@ export class GameLoop {
         const text = reflection.trim();
         const spokenMatch = text.match(/SPOKEN:\s*"?([^"]+)"?/i);
         const thoughtMatch = text.match(/THOUGHT:\s*(.+)/i);
-        const spoken = spokenMatch?.[1]?.trim();
-        const thought = thoughtMatch?.[1]?.trim();
+        // The character's own words: their word for their kid, and gentle peril at a family table.
+        const members = this.pronounMembers();
+        const self = members.find(m => this.namesMatch(m.name, char.definition.name));
+        const ownWords = (t: string | undefined) => {
+          if (!t) return t;
+          const kin = self ? ownKinNouns(t, self, members) : t;
+          return this.familyTable() ? softenForChildren(kin) : kin;
+        };
+        const spoken = ownWords(spokenMatch?.[1]?.trim());
+        const thought = ownWords(thoughtMatch?.[1]?.trim());
 
         if (spoken || thought) {
           this.broadcastFn({
@@ -2333,10 +2466,15 @@ export class GameLoop {
         state.fatePoints = Math.max(0, Math.min(value, 5));
       }
     } else if (action === 'add' && Array.isArray(state[field])) {
-      (state[field] as unknown[]).push(value);
+      // One of each item: "Orange Key" is already "The Orange Key".
+      const arr = state[field] as unknown[];
+      if (!(field === 'inventory' && typeof value === 'string' && arr.some(i => typeof i === 'string' && sameItem(i, value)))) arr.push(value);
     } else if (action === 'remove' && Array.isArray(state[field])) {
       const arr = state[field] as unknown[];
-      const idx = arr.indexOf(value);
+      // The DM may name it "Orange Key" when the inventory says "The Orange Key".
+      const idx = field === 'inventory' && typeof value === 'string'
+        ? arr.findIndex(i => typeof i === 'string' && sameItem(i, value))
+        : arr.indexOf(value);
       if (idx >= 0) arr.splice(idx, 1);
     }
     if (field === 'inventory' && typeof value === 'string') {

@@ -266,3 +266,41 @@ export function seedWithHostNouns(seed: WorldSeed, hostMessages: string[]): Worl
   };
   return JSON.stringify(out) === JSON.stringify(seed) ? seed : out;
 }
+
+/**
+ * The world as it may travel to a host who plays in it or asked for no
+ * spoilers: premise, places, people by name, description and disposition,
+ * items — what their card shows — and nothing else. Live (N7RQZ7) the card
+ * hid the plot hooks and NPC motives, but the world-seed-draft frame carried
+ * them ("Luma … burying the truth about the recent 'incidents' under a
+ * mountain of paperwork") for anyone who opened devtools. The full seed
+ * stays on the server for the DM; accept-world-seed puts the withheld
+ * fields back (withHiddenSeedFields).
+ */
+export function seedForHost(seed: WorldSeed, noSpoilers: boolean): WorldSeed {
+  if (!noSpoilers) return seed;
+  return {
+    ...seed,
+    npcs: seed.npcs.map(n => ({ ...n, motivation: null })),
+    plotHooks: [],
+  };
+}
+
+/**
+ * The seed a spoiler-free host accepts, with what seedForHost withheld from
+ * them put back from the stored draft: its plot hooks, and each NPC's
+ * motivation (matched by name). A field the host's copy does carry is theirs.
+ */
+export function withHiddenSeedFields(incoming: WorldSeed, stored: WorldSeed | null): WorldSeed {
+  if (!stored) return incoming;
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  return {
+    ...incoming,
+    plotHooks: incoming.plotHooks.length > 0 ? incoming.plotHooks : stored.plotHooks,
+    npcs: incoming.npcs.map(n => {
+      if (n.motivation?.trim()) return n;
+      const was = stored.npcs.find(s => same(s.name, n.name));
+      return was?.motivation ? { ...n, motivation: was.motivation } : n;
+    }),
+  };
+}

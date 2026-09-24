@@ -24,7 +24,7 @@
  *     Biz", "the boy Biz", "Biz, her son,") or it is "Liz's son" and Liz's
  *     only child in the party is Biz. "her kid Biz", "Liz's kid", "Biz".
  */
-import { kinAddressTerms, namesInNarration, quoteRuns } from './narrative-guards.js';
+import { changedSpan, kinAddressTerms, namesInNarration, quoteRuns } from './narrative-guards.js';
 import type { CharacterDefinition } from '../shared/types.js';
 
 export interface PronounMember {
@@ -384,7 +384,56 @@ export function repairGenderedNouns(text: string, members: PronounMember[], opts
       return r === null ? whole : `${before}${r}`;
     });
   }
-  if (out !== text) console.log(`[pronouns] gendered noun repaired: "${text.slice(0, 100)}" → "${out.slice(0, 100)}"`);
+  if (out !== text) console.log(`[pronouns] gendered noun repaired: ${changedSpan(text, out)}`);
+  return out;
+}
+
+/** Relation words that name a child without a gender: the word a speaker's sheet may record for them ("kid"). */
+const NEUTRAL_CHILD_WORD = /^(?:kid|child|kiddo|little one|youngster|stepchild|stepkid|baby|toddler|teen|teenager)$/i;
+
+/**
+ * The word `speaker` uses for `member` when speaking of them — their own
+ * sheet's relation word when it names a child without a gender ("kid",
+ * "child"), else "kid" — or null when the speaker's gendered noun fits
+ * `member` or nothing says otherwise.
+ */
+function ownWordFor(speaker: PronounMember, member: PronounMember, noun: string): string | null {
+  const info = KIN_NOUNS[noun.toLowerCase()];
+  if (!info) return null;
+  const tie = (speaker.relationships ?? []).find(r => firstName(r.to).toLowerCase() === firstName(member.name).toLowerCase());
+  const recorded = tie?.relation?.trim().toLowerCase().replace(/^(?:my|our)\s+/, '') ?? '';
+  const neutralRecorded = NEUTRAL_CHILD_WORD.test(recorded) ? recorded : null;
+  const key = keyOf(member.pronouns);
+  if (key === info.gender) return null;
+  if (key === 'she' || key === 'he') return info.counterpart;
+  if (key === 'they' || key === 'other') return neutralRecorded ?? 'kid';
+  // Pronouns not stated: only the speaker's own recorded word decides. A
+  // sheet that says "son" keeps "my son"; one that says "kid" says "my kid".
+  return neutralRecorded;
+}
+
+/**
+ * A character's OWN words — their action, what they say aloud, what they
+ * think — with "my son" / "my daughter" / "my boy" / "my girl" (and "our
+ * …", "my little …") that can only mean one companion replaced by the
+ * speaker's word for them. Live (N7RQZ7): Liz, whose sheet calls Biz her
+ * "kid" and whose Biz is they/them, said "Excuse me. My son is a minor…".
+ * The kin noun must be the speaker's, and the speaker must have exactly one
+ * child at the table and none elsewhere (see onlyChildInParty). Quoted
+ * speech is included: these are the speaker's words. Pronouns are never
+ * touched.
+ */
+export function ownKinNouns(text: string, speaker: PronounMember, members: PronounMember[]): string {
+  if (!text || !new RegExp(`\\b(?:my|our)\\b[^.!?]{0,30}\\b(?:${KIN})\\b`, 'i').test(text)) return text;
+  const party = members.some(m => firstName(m.name).toLowerCase() === firstName(speaker.name).toLowerCase()) ? members : [speaker, ...members];
+  const self = party.find(m => firstName(m.name).toLowerCase() === firstName(speaker.name).toLowerCase())!;
+  const child = onlyChildInParty({ ...self, relationships: speaker.relationships ?? self.relationships }, party);
+  if (!child) return text;
+  const out = text.replace(new RegExp(`\\b(my|our|My|Our)(\\s+(?:(?:little|young|youngest|eldest|oldest|only|dear|sweet|brave|clever|poor)\\s+){0,2})(${KIN})\\b`, 'gi'), (whole, pos: string, adjs: string, noun: string) => {
+    const r = ownWordFor(speaker, child, noun);
+    return r === null ? whole : `${pos}${adjs}${matchCase(noun, r)}`;
+  });
+  if (out !== text) console.log(`[pronouns] ${firstName(speaker.name)}'s own kin noun for ${firstName(child.name)}: ${changedSpan(text, out)}`);
   return out;
 }
 

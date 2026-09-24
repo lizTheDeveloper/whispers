@@ -19,7 +19,7 @@ import {
 import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
-  withoutSeedSpoilers, withoutSetupFieldDumps, seedWithHostNouns,
+  withoutSeedSpoilers, withoutSetupFieldDumps, seedWithHostNouns, seedForHost, withHiddenSeedFields,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
@@ -422,15 +422,18 @@ function validateWorldSeedShape(seed: import('../shared/types.js').WorldSeed): s
   return null;
 }
 
-function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Campaign): void {
+function sendDmSettings(ws: WebSocket, campaign: import('../shared/types.js').Campaign, setupChat: Array<{ role: string; content: string }> = []): void {
   const uploadToken = randomBytes(32).toString('hex');
   uploadTokens.set(uploadToken, { campaignId: campaign.id, expires: Date.now() + 4 * 60 * 60 * 1000 });
+  // The DM's drafted direction holds the story's secrets; a host who plays
+  // or asked for no spoilers is not sent it (the page never shows it).
+  const secretsHidden = spoilerFreeHost(campaign, setupChat);
   send(ws, {
     type: 'dm-settings',
     presetName: campaign.dmPreset,
     presetPrompt: loadPresetPrompt(campaign.dmPreset),
-    dmCustomPrompt: campaign.dmCustomPrompt,
-    dmInstructions: campaign.dmInstructions,
+    dmCustomPrompt: secretsHidden ? null : campaign.dmCustomPrompt,
+    dmInstructions: secretsHidden ? null : campaign.dmInstructions,
     materials: getCampaignMaterials(campaign.id),
     uploadToken,
   });
@@ -451,6 +454,20 @@ function currentReadiness(campaign: import('../shared/types.js').Campaign) {
     hostTableRole: campaign.hostTableRole,
     seedAccepted: isSeedAccepted(db, campaign.id),
   });
+}
+
+/**
+ * A host who plays in this game, or asked in the setup chat not to be
+ * spoiled. Such a host is sent the world without its secrets (seedForHost):
+ * hiding them on the card alone left them in the frame for devtools.
+ */
+function spoilerFreeHost(campaign: import('../shared/types.js').Campaign, setupChat: Array<{ role: string; content: string }>): boolean {
+  return campaign.hostTableRole === 'player' || wantsNoSpoilers(setupChat);
+}
+
+/** The world-seed-draft frame for this host: the full seed, or the spoiler-free one. */
+function seedDraftFor(campaign: import('../shared/types.js').Campaign, setupChat: Array<{ role: string; content: string }>, seed: import('../shared/types.js').WorldSeed, accepted: boolean): ServerMessage {
+  return { type: 'world-seed-draft', seed: seedForHost(seed, spoilerFreeHost(campaign, setupChat)), accepted };
 }
 
 function sendReadiness(ws: WebSocket, campaign: import('../shared/types.js').Campaign): void {
@@ -709,9 +726,9 @@ wss.on('connection', (ws) => {
 
       if (currentPlayer.isOwner) {
         currentPlayer.setupChat = loadSetupChat(db, campaign.id);
-        sendDmSettings(ws, campaign);
+        sendDmSettings(ws, campaign, currentPlayer.setupChat);
         const seed = getWorldSeed(db, campaign.id);
-        if (seed) send(ws, { type: 'world-seed-draft', seed, accepted: isSeedAccepted(db, campaign.id) });
+        if (seed) send(ws, seedDraftFor(campaign, currentPlayer.setupChat, seed, isSeedAccepted(db, campaign.id)));
         sendReadiness(ws, campaign);
         sendLobbyState(ws, campaign, msg.joinCode, true);
         // Anything submitted while the DM was away is waiting here.
@@ -1477,7 +1494,7 @@ wss.on('connection', (ws) => {
         // card). A host who plays, or asked for no spoilers, also never reads
         // the drafted world's plot hooks or NPC motives back, nor a secret of
         // the direction still being drafted (this reply's own dmCustomPrompt).
-        const noSpoilers = campaign.hostTableRole === 'player' || wantsNoSpoilers(currentPlayer.setupChat);
+        const noSpoilers = spoilerFreeHost(campaign, currentPlayer.setupChat);
         const movingOn = `I have the shape of it — the rest you will discover in play. ${nextSetupQuestion(before.detail).replace(/^Noted\.\s*/, '')}`;
         reply.reply = withoutSetupFieldDumps(reply.reply, { noSpoilers, fallback: movingOn });
         if (noSpoilers) {
@@ -1562,7 +1579,7 @@ wss.on('connection', (ws) => {
           if (!latest || latest.phase !== 'lobby') return;
           if (!setWorldSeedIfNotAccepted(db, after.id, seed)) return;
 
-          send(ws, { type: 'world-seed-draft', seed, accepted: false });
+          send(ws, seedDraftFor(latest, currentPlayer.setupChat, seed, false));
           sendReadiness(ws, joinRoom(db, currentJoinCode)!);
         } catch (e) {
           console.error('[dm-chat] draft failed:', e);
@@ -1578,6 +1595,10 @@ wss.on('connection', (ws) => {
 
       const parsed = WorldSeedSchema.safeParse(msg.seed);
       if (!parsed.success) { send(ws, { type: 'error', message: 'That world could not be read. Ask the DM to redraft it.' }); return; }
+      // A spoiler-free host was never sent the plot hooks or NPC motives
+      // (seedForHost), so what they accept comes back without them: the
+      // stored draft's are put back before anything is checked or written.
+      if (spoilerFreeHost(campaign, currentPlayer!.setupChat)) parsed.data = withHiddenSeedFields(parsed.data, getWorldSeed(db, campaign.id));
 
       const sizeError = validateWorldSeedShape(parsed.data);
       if (sizeError) { send(ws, { type: 'error', message: sizeError }); return; }
@@ -1613,7 +1634,7 @@ wss.on('connection', (ws) => {
           seedWorld(db, campaign.id, parsed.data);
           return advancePhaseIfLobby(db, campaign.id);
         })();
-        send(ws, { type: 'world-seed-draft', seed: parsed.data, accepted: true });
+        send(ws, seedDraftFor(campaign, currentPlayer!.setupChat, parsed.data, true));
         // The world bible is seeded here, at accept — not at game start. The
         // live playtests read this line to confirm the world loaded.
         console.log(`[server] Seeded scenario for room ${currentJoinCode}: ${parsed.data.locations.length} locations, ${parsed.data.npcs.length} NPCs, ${parsed.data.items.length} items`);
@@ -1680,7 +1701,7 @@ wss.on('connection', (ws) => {
           send(ws, { type: 'error', message: 'The world was already accepted while redrafting.' });
           return;
         }
-        send(ws, { type: 'world-seed-draft', seed, accepted: false });
+        send(ws, seedDraftFor(campaign, currentPlayer!.setupChat, seed, false));
         sendReadiness(ws, joinRoom(db, currentJoinCode)!);
       } catch (e) {
         console.error('[regenerate-world-seed] failed:', e);

@@ -111,7 +111,34 @@ function addressDirective(members: PartyMemberView[]): string {
   return ` When your spokenWords talk TO a companion, call them what you call them: ${terms.map(p => `${getFirstName(p.name)} is "${p.address!.trim()}" ("${p.address!.trim()}, can you…?")`).join('; ')} — never their first name, and never "${terms[0]!.address!.trim()} ${getFirstName(terms[0]!.name)}".`;
 }
 
-const ADDRESS_DIRECTIVE = 'address them the way your character naturally would — by the name, title or relation you use for them';
+const CHILD_WORD = /\b(?:kid|child|kiddo|son|daughter|boy|girl|stepchild|stepson|stepdaughter|baby|toddler|teen|teenager|little one|youngster)\b/i;
+const GENDERED_CHILD_WORD = /\b(?:son|daughter|boy|girl|stepson|stepdaughter)\b/i;
+
+/**
+ * The word this character uses for each companion when talking ABOUT them
+ * — the relation on their own sheet. Live (N7RQZ7): Liz's sheet calls Biz
+ * her "kid" and Biz is they/them, and Liz told the Postman "My son is a
+ * minor". For a companion who is the viewer's child and whose word (or
+ * pronouns) carries no gender, the gendered nouns are ruled out by name.
+ */
+export function kinWordDirective(members: PartyMemberView[]): string {
+  const lines = members.flatMap(p => {
+    const rel = p.relation?.trim().replace(/^(?:my|our)\s+/i, '');
+    if (!rel) return [];
+    const first = getFirstName(p.name);
+    const pron = companionPronouns(p);
+    // No stated he or she: they/them, another set, or nothing said.
+    const neutral = !pron || !/^(?:she|her|he|him)\b/i.test(pron);
+    if (neutral && CHILD_WORD.test(rel)) {
+      const word = GENDERED_CHILD_WORD.test(rel) ? 'kid' : rel;
+      return [`${first} is your ${word} — say "my ${word}", never "my son", "my daughter", "my boy" or "my girl"`];
+    }
+    return [`${first} is your ${rel} ("my ${rel}")`];
+  });
+  return lines.length > 0 ? ` When you speak ABOUT a companion to anyone else, use your own word for them: ${lines.join('; ')}.` : '';
+}
+
+const ADDRESS_DIRECTIVE ='address them the way your character naturally would — by the name, title or relation you use for them';
 
 export class CharacterAgent {
   private static SKILL_KEYWORDS: Record<string, string[]> = {
@@ -213,7 +240,7 @@ export class CharacterAgent {
       : [];
     const companionNames = (ctx.partyMembers ?? []).map(addressTermFor).join(', ');
     const pronounBlock = (ctx.partyMembers ?? []).length > 0
-      ? `\nWhen you mention a companion: ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.`
+      ? `\nWhen you mention a companion: ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.${kinWordDirective(ctx.partyMembers ?? [])}`
       : '';
     const companionBlock = companionActions.length > 0
       ? `\n\nYour companions JUST did: ${companionActions.join('; ')}. DO NOT duplicate their actions — complement them. At least one proposed action MUST engage them directly — ${ADDRESS_DIRECTIVE} (${companionNames}): "I tell ${companionNames} to cover me while I..." or "I ask ${companionNames} what they think about..." or "I grab ${companionNames}'s arm and pull them toward...". Characters who never interact feel like strangers.`
@@ -338,7 +365,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       `\n<task>`,
       `Choose your action now.`,
       `IMPORTANT: Your innerThought must be SPECIFIC — name people, places, items, or events. Never write vague thoughts like "Something feels off" or "I need to be careful." Instead: "Cassius was near the wine cellar when the poison was placed — I should confront him" or "My bruised ankle means I can't outrun the Phantom, so I'll use the narrow passage as a chokepoint." Reference your memories, your state, and the current situation.${whisper ? ' Your FIRST sentence must address the whisper directly — explain WHY you chose to follow, partially follow, or resist it. "The voice urges caution, and my bruised ribs agree — I cannot afford another fight" (followed). "The voice wants me to steal the key, but Mirra trusted me with her secret — I will not betray that" (ignored). "The whisper has a point about the passage, though I will approach my own way" (partially-followed). The player who whispered needs to understand your reasoning.' : ''}`,
-      `DIALOGUE: If your action involves talking, confronting, persuading, questioning, threatening, comforting, or arguing with ANYONE (NPC or companion), set "spokenWords" to your ACTUAL WORDS — not a description of speaking, but the words themselves. "Where did you hide the note, Cassius?" not "I ask Cassius about the note." If your action is purely physical (fighting, sneaking, searching), set spokenWords to null. Characters who speak feel alive; characters who only act feel like puppets.${addressDirective(ctx.partyMembers ?? [])}${(ctx.partyMembers ?? []).length > 0 ? ` Companions' pronouns — ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.` : ''}`,
+      `DIALOGUE: If your action involves talking, confronting, persuading, questioning, threatening, comforting, or arguing with ANYONE (NPC or companion), set "spokenWords" to your ACTUAL WORDS — not a description of speaking, but the words themselves. "Where did you hide the note, Cassius?" not "I ask Cassius about the note." If your action is purely physical (fighting, sneaking, searching), set spokenWords to null. Characters who speak feel alive; characters who only act feel like puppets.${addressDirective(ctx.partyMembers ?? [])}${(ctx.partyMembers ?? []).length > 0 ? ` Companions' pronouns — ${(ctx.partyMembers ?? []).map(pronounRule).join('; ')}.` : ''}${kinWordDirective(ctx.partyMembers ?? [])}`,
       `PUBLIC: "chosenAction" and "spokenWords" are seen by everyone at the table. The voice is private — never mention the whisper, the voice or its suggestion in them (not "ignoring the whisper", not "as the voice said"); just say what you do and say. Only "innerThought" may talk about the voice.`,
       `whisperedInfluence DEFINITIONS — pick the one that MATCHES your action:`,
       `- "followed": Your action DIRECTLY does what the whisper suggested (same target, same approach). The voice said "confront the merchant" and you confront the merchant.`,

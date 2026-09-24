@@ -134,6 +134,24 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? name;
 
 /**
+ * The part of `before` that changed in `after`, with a little context, for
+ * the guard logs: "…tears a sharp pain through…" → "…sends a sudden jolt
+ * through…". The first 80 characters of a long passage are usually the same
+ * on both sides, which made every guard log line read as a no-op.
+ */
+export function changedSpan(before: string, after: string, context = 24): string {
+  if (before === after) return `"${before.slice(0, 80)}" (unchanged)`;
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start++;
+  let endB = before.length;
+  let endA = after.length;
+  while (endB > start && endA > start && before[endB - 1] === after[endA - 1]) { endB--; endA--; }
+  const from = Math.max(0, start - context);
+  const cut = (t: string, end: number) => `${from > 0 ? '…' : ''}${t.slice(from, Math.min(t.length, end + context))}${end + context < t.length ? '…' : ''}`;
+  return `"${cut(before, endB)}" → "${cut(after, endA)}"`;
+}
+
+/**
  * Split into [text, isQuoted] runs so dialogue is never rewritten. Double
  * quotes (straight or curly) always open speech; a single quote does only
  * where it plainly opens and closes speech ('Mom, look!'), never as an
@@ -625,7 +643,7 @@ export function withoutWhisperMentions(text: string): string {
   let out = kept.join(' ').replace(/\s+/g, ' ').trim().replace(/[,;—–]\s*$/, '').trim();
   if (!out) return '';
   out = out + (end && !/[.!?…]$/.test(out) ? end : '');
-  if (out !== text.trim()) console.log(`[guard] whisper mention removed from a public action: "${text.slice(0, 80)}" → "${out.slice(0, 80)}"`);
+  if (out !== text.trim()) console.log(`[guard] whisper mention removed from a public action: ${changedSpan(text.trim(), out)}`);
   return out;
 }
 
@@ -670,37 +688,83 @@ export function withoutDmWhispers(text: string): string {
 
 // ─── Items change hands only in the ruling ─────────────────────────────────
 
-const ACQUIRE = /\b(?:take|takes|took|taking|snatch(?:es|ed|ing)?|grab(?:s|bed|bing)?|seiz(?:e|es|ed|ing)|pocket(?:s|ed|ing)?|pick(?:s|ed|ing)?\s+up|lift(?:s|ed|ing)?|scoop(?:s|ed|ing)?|wrest(?:s|ed|ing)?|pr(?:y|ies|ied|ying)|yank(?:s|ed|ing)?|pull(?:s|ed|ing)?|catch(?:es|ing)?|caught|collect(?:s|ed|ing)?|retriev(?:e|es|ed|ing)|find(?:s|ing)?|found|claim(?:s|ed)?\s+(?:it|the)\b[^.!?]*\b(?:from|off)|receiv(?:e|es|ed|ing)|accept(?:s|ed|ing)?|win(?:s|ning)?|won|steal(?:s|ing)?|stole|swipe(?:s|d)?|tuck(?:s|ed|ing)?|slip(?:s|ped|ping)?\s+(?:it|the)[^.!?]*\binto)\b/i;
+const ACQUIRE = /\b(?:take|takes|took|taking|snatch(?:es|ed|ing)?|grab(?:s|bed|bing)?|seiz(?:e|es|ed|ing)|pocket(?:s|ed|ing)?|pick(?:s|ed|ing)?\s+up|lift(?:s|ed|ing)?|scoop(?:s|ed|ing)?|wrest(?:s|ed|ing)?|pr(?:y|ies|ied|ying)|yank(?:s|ed|ing)?|pull(?:s|ed|ing)?|catch(?:es|ing)?|caught|collect(?:s|ed|ing)?|retriev(?:e|es|ed|ing)|find(?:s|ing)?|found|claim(?:s|ed)?\s+(?:it|the)\b[^.!?]*\b(?:from|off)|receiv(?:e|es|ed|ing)|accept(?:s|ed|ing)?|win(?:s|ning)?|won|steal(?:s|ing)?|stole|swipe(?:s|d)?|tuck(?:s|ed|ing)?|slip(?:s|ped|ping)?\s+(?:it|the)[^.!?]*\binto|clos(?:e|es|ed|ing)\s+(?:tight(?:ly)?\s+)?(?:around|over)|lock(?:s|ed)?\s+around)\b/i;
 const GIVE_TO = (name: string) => new RegExp(`\\b(?:hand(?:s|ed|ing)?|give(?:s|n)?|gave|giving|pass(?:es|ed|ing)?|toss(?:es|ed|ing)?|offer(?:s|ed|ing)?|slid(?:e|es|ing)?|press(?:es|ed|ing)?)\\b[^.!?]*\\b${name}\\b|\\b${name}\\b[^.!?]*\\b(?:is|was)\\s+(?:handed|given|passed|tossed)\\b|\\b(?:hand(?:s|ed)?|give(?:s|n)?|gave|pass(?:es|ed)?)\\s+${name}\\b`, 'i');
 const REFUSAL = /\b(?:refus(?:e|es|ed|ing)|won['’]t|wouldn['’]t|fails?\s+to|keeps?|kept|holds?\s+(?:it|onto)|withhold(?:s|ing)?|clutch(?:es)?\s+(?:it|her|his|their)|snatch(?:es|ed)?\s+(?:it\s+)?back|out\s+of\s+reach)\b/i;
 /** Verbs by which an item comes to someone — for a plain negation right before one ("does not hand", "never takes"). */
 const TRANSFER_VERB = String.raw`(?:take|takes|took|grab|grabs|snatch|snatches|pocket|pockets|pick|picks|hand|hands|give|gives|gave|pass|passes|press|presses|place|places|slip|slips|put|puts|tuck|tucks|drop|drops|receive|receives|accept|accepts|catch|catches|claim|claims|let\s+(?:her|him|them|\w+)\s+(?:have|take))`;
 const NEGATED_TRANSFER = new RegExp(String.raw`\b(?:not|never|no\s+longer|doesn['’]t|didn['’]t|can['’]t|cannot|won['’]t|wouldn['’]t)\s+(?:\w+\s+){0,2}?${TRANSFER_VERB}\b`, 'i');
 /**
- * A hand-off into someone's keeping: "pressing the brass key into her palm",
- * "slips the note into Liz's pocket", "places it in their hands". Group 1 is
- * the verb, group 2 the receiver ("her", "Liz's").
+ * Up to three describing words before a noun: "sticky, ink-stained", "own
+ * open", "small" — never a little word that starts a new phrase, so
+ * "catches sight of the key" is not "catches … the key".
  */
-const HANDOFF = /\b(press(?:es|ed|ing)?|plac(?:e|es|ed|ing)|slip(?:s|ped|ping)?|put(?:s|ting)?|tuck(?:s|ed|ing)?|drop(?:s|ped|ping)?|push(?:es|ed|ing)?|fold(?:s|ed|ing)?)\b[^.!?;]*?\b(?:into|in|onto)\s+(her|their|his|[A-Z][\w-]*['’]s)\s+(?:own\s+|open\s+|waiting\s+|outstretched\s+|small\s+|cupped\s+)?(?:palm|palms|hand|hands|pocket|pockets|grip|fingers|arms|keeping)\b/i;
+const ADJS = String.raw`(?:(?!(?:the|a|an|of|to|at|from|with|in|on|into|onto|for|and|but|or|toward|towards|by|near|over|under|through|as|while|when)\b)[\w'’-]+,?\s+){0,3}?`;
+/** Where a hand-off lands: a hand, a pocket, a grip. */
+const KEEPING = String.raw`(?:palm|palms|hand|hands|pocket|pockets|grip|fingers|fist|arms|keeping)`;
+/**
+ * A hand-off into someone's keeping: "pressing the brass key into her palm",
+ * "slips the note into Liz's pocket", "slips the glowing envelope into Biz's
+ * sticky, ink-stained hand". Group 1 is the verb, group 2 the receiver
+ * ("her", "Liz's").
+ */
+const HANDOFF = new RegExp(String.raw`\b(press(?:es|ed|ing)?|plac(?:e|es|ed|ing)|slip(?:s|ped|ping)?|put(?:s|ting)?|tuck(?:s|ed|ing)?|drop(?:s|ped|ping)?|push(?:es|ed|ing)?|fold(?:s|ed|ing)?|shov(?:e|es|ed|ing))\b[^.!?;]*?\b(?:into|in|onto)\s+(her|their|his|[A-Z][\w-]*['’]s)\s+${ADJS}${KEEPING}\b`, 'i');
+
+/**
+ * Words a story uses for the same kind of thing: the DM's "glowing
+ * envelope" is the item "The Letter of Truth", its "paper" the item "Form
+ * 9-B". Kept to a handful of paper things, where the live drift was.
+ */
+const ITEM_KIN: Record<string, string[]> = {
+  letter: ['envelope', 'note', 'missive'],
+  envelope: ['letter'],
+  note: ['letter', 'slip'],
+  form: ['paper', 'document'],
+  document: ['paper', 'form'],
+  paper: ['form', 'document'],
+  scroll: ['parchment'],
+};
+
+/** The noun an item's name is: "Orange Key" → key, "The Letter of Truth" → letter, "Form 9-B: Return to Source (Crumpled)" → form. */
+export function itemHead(name: string): string | null {
+  const core = name.split(/[:(]/)[0]!.replace(/\s+of\s+.*$/i, '');
+  // Whole words only: "9-B" is a label, not a noun.
+  const words = core.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z'’-]+$/, '')).filter(w => /^[a-z][a-z'’-]*$/.test(w) && !['the', 'a', 'an'].includes(w));
+  return words.length > 0 ? words[words.length - 1]! : null;
+}
+
+/** Words that name this item in prose: its head noun and that noun's kin. */
+function itemNouns(name: string): string[] {
+  const head = itemHead(name);
+  return head ? [head, ...(ITEM_KIN[head] ?? [])] : [];
+}
+
+/** An item's name for comparing: lower case, no leading article, no trailing parenthetical. */
+export function sameItem(a: string, b: string): boolean {
+  const norm = (s: string) => s.trim().toLowerCase().replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' ');
+  return norm(a) === norm(b);
+}
+
+const unquotedSentences = (text: string) => quoteRuns(text).filter(r => !r.quoted).map(r => r.text).join(' ').split(SENTENCES);
 
 /**
  * Does a ruling's narration show `actor` actually coming to hold `item` —
  * taking, picking up, being handed, having it pressed into their palm,
- * finding it — in a sentence that names the item (by any word of its name)
- * and is not a refusal? A claim in speech ("It is my property") is not:
- * live, Liz's claim put Lady Vex's Brass Ruler in Liz's inventory while Vex
- * went on tapping it. A negation counts only on the transfer itself: live,
- * "The Linen-Suited Man does not recoil; instead, he … [is] pressing the
- * brass key into her palm" was read as a refusal and the key was dropped.
+ * finding it — in a sentence that names the item (by any word of its name,
+ * or its head noun's kin: "envelope" for a letter) and is not a refusal? A
+ * claim in speech ("It is my property") is not: live, Liz's claim put Lady
+ * Vex's Brass Ruler in Liz's inventory while Vex went on tapping it. A
+ * negation counts only on the transfer itself: live, "The Linen-Suited Man
+ * does not recoil; instead, he … [is] pressing the brass key into her palm"
+ * was read as a refusal and the key was dropped.
  */
 export function narratesItemTransfer(narration: string, item: string, actor: string): boolean {
   if (!narration || !item) return false;
-  const itemWords = item.toLowerCase().match(/[a-z]+/g)?.filter(w => w.length >= 3 && !['the', 'and', 'of'].includes(w)) ?? [];
+  const itemWords = [...new Set([...(item.toLowerCase().match(/[a-z]+/g)?.filter(w => w.length >= 3 && !['the', 'and', 'of'].includes(w)) ?? []), ...itemNouns(item)])];
   if (itemWords.length === 0) return false;
   const first = firstName(actor);
   const name = esc(first);
-  const unquoted = quoteRuns(narration).filter(r => !r.quoted).map(r => r.text).join(' ');
-  for (const sentence of unquoted.split(SENTENCES)) {
+  for (const sentence of unquotedSentences(narration)) {
     const lower = sentence.toLowerCase();
     if (!itemWords.some(w => new RegExp(`\\b${w}s?\\b`).test(lower))) continue;
     if (REFUSAL.test(sentence) || NEGATED_TRANSFER.test(sentence)) continue;
@@ -712,6 +776,8 @@ export function narratesItemTransfer(narration: string, item: string, actor: str
       // "into Liz's palm" is Liz's; "into Odo's palm" is not.
       if (/^[A-Z]/.test(receiver) && !/^(?:Her|Their|His)$/.test(receiver)) {
         if (receiver.toLowerCase() === first.toLowerCase()) return true;
+        // Into someone else's hand: this sentence gives the item to them.
+        continue;
       } else if (actorHere && !new RegExp(`\\b${name}\\s+(?:\\w+ly\\s+)?${esc(handoff[1]!)}\\b`, 'i').test(sentence)) {
         // "her palm" in a sentence about the actor, who is not the one doing the pressing.
         return true;
@@ -720,6 +786,165 @@ export function narratesItemTransfer(narration: string, item: string, actor: str
     if (actorHere && ACQUIRE.test(sentence)) return true;
   }
   return false;
+}
+
+/**
+ * narratesItemTransfer over the current ruling OR the DM's last few beats
+ * (narration and rulings). Live (N7RQZ7): the Postman "slips the glowing
+ * envelope into Biz's sticky, ink-stained hand" in Liz's ruling; Biz's own
+ * ruling a turn later added "The Letter of Truth" to Biz, and it was dropped
+ * because that ruling never showed it changing hands — it already had.
+ */
+export function narratesItemTransferRecently(current: string, recent: string[], item: string, actor: string): boolean {
+  return [current, ...recent].some(t => narratesItemTransfer(t, item, actor));
+}
+
+export interface ItemHolder {
+  name: string;
+  inventory: string[];
+}
+
+export type ItemEvent =
+  | { kind: 'gain'; to: string; item: string; from: string | null }
+  | { kind: 'loss'; from: string; item: string };
+
+/** Subject verbs by which a named character takes something into their own keeping. */
+const SELF_TAKE = String.raw`(?:pocket|pockets|pocketed|pick(?:s|ed)?\s+up|scoop(?:s|ed)?\s+up|grab(?:s|bed)?|take|takes|took|snatch(?:es|ed)?|catch(?:es)?|caught|accept(?:s|ed)?|receiv(?:e|es|ed))`;
+/** Subject verbs that need a destination of the character's own ("into their pocket"). */
+const SELF_STOW = String.raw`(?:tuck(?:s|ed)?|slip(?:s|ped)?|stuff(?:s|ed)?|put(?:s)?|plac(?:e|es|ed)|shov(?:e|es|ed)|hid(?:e|es)|hid)`;
+const OWN_PLACE = String.raw`(?:pocket|pockets|bag|satchel|pouch|apron|coat|jacket|backpack|pack|purse|sleeve|belt|hand|hands|palm|fist)`;
+const DET = String.raw`(?:(?:the|a|an|this|that|its|her|his|their)\s+)?`;
+const HAND_CLOSE = String.raw`(?:hand|hands|fingers|fist|palm|grip)\s+(?:close|closes|closed|lock|locks|locked|curl|curls|curled|tighten|tightens|tightened|wrap|wraps|wrapped)\s+(?:tight(?:ly)?\s+)?(?:around|over|on)`;
+const GIVE_VERB = String.raw`(?:hands?|handed|gives?|gave|pass(?:es|ed)?|toss(?:es|ed)?|offers?|offered)`;
+const HANDOFF_VERB = String.raw`(?:press(?:es|ed)?|plac(?:e|es|ed)|slip(?:s|ped)?|put(?:s)?|tuck(?:s|ed)?|drop(?:s|ped)?|push(?:es|ed)?|shov(?:e|es|ed))`;
+
+/** A sentence that shows `member` coming to hold something named by `nouns` (see narratedItemEvents). */
+function showsGain(sentence: string, member: string, nouns: string[]): boolean {
+  const M = esc(firstName(member));
+  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const obj = `${DET}${ADJS}${N}\\b`;
+  const res = [
+    // "Biz tucks the key into their treasure pocket", "As Biz pockets the Orange Key"
+    new RegExp(`\\b${M}\\s+(?:\\w+ly\\s+)?${SELF_TAKE}\\s+${obj}`, 'i'),
+    new RegExp(`\\b${M}\\s+(?:\\w+ly\\s+)?${SELF_STOW}\\s+${obj}[^.!?;]{0,30}?\\b(?:into|in|inside|under)\\s+(?:(?:her|his|their|${M}['’]s)\\s+)(?:own\\s+)?${ADJS}${OWN_PLACE}\\b`, 'i'),
+    // "slips the glowing envelope into Biz's sticky, ink-stained hand"
+    new RegExp(`\\b${HANDOFF_VERB}\\s+${obj}[^.!?;]{0,40}?\\b(?:into|in|onto)\\s+${M}['’]s\\s+${ADJS}${KEEPING}\\b`, 'i'),
+    // "Liz's hand closes around the crumpled envelope"
+    new RegExp(`\\b${M}['’]s\\s+(?:[\\w-]+\\s+){0,2}?${HAND_CLOSE}\\s+${obj}`, 'i'),
+    // "hands the key to Liz", "hands Liz the key"
+    new RegExp(`\\b${GIVE_VERB}\\s+${obj}\\s+(?:back\\s+|over\\s+)?to\\s+${M}\\b`, 'i'),
+    new RegExp(`\\b${GIVE_VERB}\\s+${M}\\s+${obj}`, 'i'),
+  ];
+  return res.some(re => re.test(sentence));
+}
+
+/**
+ * Words that say a thing is gone for good: destroyed, eaten, swallowed,
+ * torn to uselessness, stolen, confiscated, lost. Completed forms only —
+ * "or the door will eat the key" is a threat, not a loss.
+ */
+const LOSS = new RegExp([
+  String.raw`\b(?:has|have|had|is|was|are|were|gets|got)\s+(?:just\s+|already\s+|now\s+|been\s+|completely\s+|utterly\s+)*(?:swallowed|eaten|devoured|gobbled(?:\s+up)?|destroyed|shredded|burned\s+up|burnt\s+up|stolen|confiscated|lost|ruined|torn\s+(?:apart|to\s+(?:shreds|pieces|bits)|in\s+(?:two|half)))`,
+  String.raw`\b(?:swallows|swallowed|devours|devoured|gobbles(?:\s+up)?|gobbled(?:\s+up)?|eats|ate|shreds|shredded|destroys|destroyed|steals|stole|confiscates|confiscated)\s+(?:up\s+)?(?:the|her|his|their|[A-Z][\w-]*['’]s)\b`,
+  String.raw`\b(?:tear|tears|tearing|tore|torn|rip|rips|ripping|ripped)\s+(?:it\s+|itself\s+)?(?:completely|apart|clean\s+through|to\s+(?:shreds|pieces|bits)|in\s+(?:two|half))`,
+  String.raw`\buseless\s+(?:smear|pulp|scrap|mess|lump|shreds)`,
+  String.raw`\b(?:crumbles?|crumbled|crumbling)\s+(?:in)?to\s+(?:dust|ash|ashes)`,
+].join('|'), 'i');
+/** Before a loss word: it has not happened (yet). */
+const UNREAL_BEFORE = /\b(?:not|never|almost|nearly|if|unless|would|could|might|may|will|shall|['’]ll|about\s+to|threatens?\s+to|tries\s+to|trying\s+to|wants?\s+to|before|or)\b[^.!?]{0,30}$/i;
+
+/**
+ * A sentence saying the item named by `nouns` is gone: a loss word with the
+ * item's noun close by — just before it ("The paper …, tearing completely")
+ * or just after ("has swallowed the key") — so "…swallowed the key, … a
+ * fear that tastes of old paper" loses the key, not a paper form.
+ */
+function showsLoss(sentence: string, nouns: string[]): boolean {
+  const N = new RegExp(`\\b(?:${nouns.map(esc).join('|')})s?\\b`, 'gi');
+  const at = [...sentence.matchAll(N)].map(m => m.index!);
+  if (at.length === 0) return false;
+  for (const m of sentence.matchAll(new RegExp(LOSS.source, 'gi'))) {
+    if (UNREAL_BEFORE.test(sentence.slice(0, m.index))) continue;
+    const start = m.index!;
+    const end = start + m[0].length;
+    if (at.some(i => (i < start && start - i <= 60) || (i >= start && i - end <= 30))) return true;
+  }
+  return false;
+}
+
+/** "Biz hands the key to the Postman": the item leaves the party (group 1: who took it). */
+function showsGivenAway(sentence: string, holder: string, nouns: string[], party: string[]): boolean {
+  const M = esc(firstName(holder));
+  const N = `(?:${nouns.map(esc).join('|')})s?`;
+  const re = new RegExp(`\\b${M}\\s+(?:\\w+ly\\s+)?(?:${GIVE_VERB}|${HANDOFF_VERB})\\s+${DET}${ADJS}${N}\\b[^.!?;]{0,30}?\\b(?:to|into|over\\s+to)\\s+(?:the\\s+)?([A-Z][\\w'’-]*)`, 'i');
+  const m = sentence.match(re);
+  if (!m) return false;
+  const who = m[1]!.replace(/['’]s$/, '').toLowerCase();
+  return !party.some(p => firstName(p).toLowerCase() === who) && !['her', 'his', 'their', 'him', 'them'].includes(who);
+}
+
+/**
+ * What DM prose (a ruling, a narration beat) says happened to the party's
+ * things, in order: an item coming to a party member (picked up, pocketed,
+ * handed or pressed into their hand, their hand closing around it), and an
+ * item a party member holds being destroyed, eaten, swallowed, torn to
+ * uselessness, stolen, lost or given away to someone outside the party.
+ * Deterministic and conservative:
+ *  - the item must be named in the sentence by its head noun (or that
+ *    noun's kin, see ITEM_KIN), and that noun must pick out ONE candidate;
+ *  - a gain needs the member NAMED as the one taking or receiving it —
+ *    never "she"; a claim in quoted speech is never a gain;
+ *  - a loss reads the whole sentence, quoted words included (live: the
+ *    Postman's "'The Alphabet has swallowed the key'"), but only completed
+ *    forms, never a threat or a near-miss.
+ * `candidates` are items that could be gained (the world's items); items
+ * the party holds are always candidates.
+ */
+export function narratedItemEvents(text: string, party: ItemHolder[], candidates: string[] = []): ItemEvent[] {
+  if (!text || party.length === 0) return [];
+  const events: ItemEvent[] = [];
+  const inv = new Map(party.map(p => [p.name, [...p.inventory]]));
+  const holderOf = (item: string) => [...inv].find(([, items]) => items.some(i => sameItem(i, item)))?.[0] ?? null;
+  const names = party.map(p => p.name);
+
+  for (const sentence of text.split(SENTENCES)) {
+    const unquoted = quoteRuns(sentence).filter(r => !r.quoted).map(r => r.text).join(' ');
+    const held = [...inv].flatMap(([owner, items]) => items.map(item => ({ owner, item })));
+    const all = [...held.map(h => h.item), ...candidates.filter(c => !held.some(h => sameItem(h.item, c)))];
+    const pool = all.filter((c, i) => all.findIndex(o => sameItem(o, c)) === i);
+    const byNoun = (item: string) => pool.filter(o => itemNouns(o).some(n => itemNouns(item).includes(n)));
+
+    // Gains: named receiver, unquoted narration, no refusal.
+    if (!REFUSAL.test(unquoted) && !NEGATED_TRANSFER.test(unquoted)) {
+      for (const item of pool) {
+        const nouns = itemNouns(item);
+        if (nouns.length === 0 || byNoun(item).length !== 1) continue;
+        for (const member of names) {
+          if (inv.get(member)!.some(i => sameItem(i, item))) continue;
+          if (!showsGain(unquoted, member, nouns)) continue;
+          const from = holderOf(item);
+          if (from) inv.set(from, inv.get(from)!.filter(i => !sameItem(i, item)));
+          inv.get(member)!.push(item);
+          events.push({ kind: 'gain', to: member, item, from });
+          break;
+        }
+      }
+    }
+
+    // Losses: an item the party holds, gone.
+    for (const { owner, item } of [...inv].flatMap(([o, items]) => items.map(i => ({ owner: o, item: i })))) {
+      const nouns = itemNouns(item);
+      if (nouns.length === 0) continue;
+      const heldLike = [...inv].flatMap(([o, items]) => items.filter(i => itemNouns(i).some(n => nouns.includes(n))).map(() => o));
+      // Two held keys: only a sentence naming the holder can say whose.
+      if (heldLike.length > 1 && !new RegExp(`\\b${esc(firstName(owner))}\\b`).test(sentence)) continue;
+      if (showsLoss(sentence, nouns) || showsGivenAway(unquoted, owner, nouns, names)) {
+        inv.set(owner, inv.get(owner)!.filter(i => i !== item));
+        events.push({ kind: 'loss', from: owner, item });
+      }
+    }
+  }
+  return events;
 }
 
 // ─── Repetition of a whole beat ─────────────────────────────────────────────
@@ -753,13 +978,20 @@ export function repeatsRecentBeat(text: string, recent: string[], threshold = 0.
 // ─── A table with a child ───────────────────────────────────────────────────
 
 /**
- * The handful of images that read as horror at a table with a ten-year-old,
- * softened in place. Seen live: "the clerk's bow tie tighten around their
- * neck like a noose", "a *click* that sounds like a bone cracking", "a
- * terrifying, static-filled warmth", "a gentle pressure that feels like a
- * brand". Peril stays; the prompt carries the rest.
+ * The handful of images that read as horror at a table with a ten-year-old
+ * (or a host who asked for gentle peril), softened in place. Seen live: "the
+ * clerk's bow tie tighten around their neck like a noose", "a *click* that
+ * sounds like a bone cracking", "a terrifying, static-filled warmth", "a
+ * gentle pressure that feels like a brand" (E9W9YT), and in N7RQZ7 "a sound
+ * like a jaw cracking open… rattles her teeth in her skull", "their bones
+ * feel like frozen sticks… tears a sharp pain through their shoulder",
+ * "echoing like a gunshot", "the crowd turning with hunting intent",
+ * "before the crowd eats us", "a tangle of rope tightening around their
+ * ankles". Peril stays; the prompt carries the rest.
  */
-const CHILD_SOFTENERS: Array<[RegExp, string]> = [
+const TUG: Record<string, string> = { tighten: 'tug at', tightens: 'tugs at', tightening: 'tugging at', tightened: 'tugged at', coil: 'tug at', coils: 'tugs at', coiling: 'tugging at', coiled: 'tugged at', squeeze: 'tug at', squeezes: 'tugs at', squeezing: 'tugging at', squeezed: 'tugged at' };
+const SWEEP: Record<string, string> = { eat: 'sweep', eats: 'sweeps', eating: 'sweeping', ate: 'swept', eaten: 'swept', devour: 'sweep', devours: 'sweeps', devouring: 'sweeping', devoured: 'swept', gobble: 'sweep', gobbles: 'sweeps', gobbling: 'sweeping', gobbled: 'swept' };
+const CHILD_SOFTENERS: Array<[RegExp, string | ((...args: string[]) => string)]> = [
   [/\bnooses\b/gi, 'tangles of rope'],
   [/\bnoose\b/gi, 'tangle of rope'],
   [/\b(a|the)\s+bones?\s+(?:cracking|snapping|breaking|splintering)\b/gi, '$1 twig snapping'],
@@ -767,6 +999,33 @@ const CHILD_SOFTENERS: Array<[RegExp, string]> = [
   [/\blike a brand\b/gi, 'like a warm coin'],
   [/\ba terrifying\b/gi, 'an unnerving'],
   [/\bterrifying\b/gi, 'unnerving'],
+  // "a sound like a jaw cracking open" → "a sound like a drawer creaking open"
+  [/\ba jaw (?:cracking|snapping|breaking|creaking)\b/gi, 'a drawer creaking'],
+  [/\bjaws? (?:cracking|snapping|breaking)\b/gi, 'drawer creaking'],
+  // "rattles her teeth in her skull" → "rattles her teeth"
+  [/\s+in\s+(?:her|his|their|its|my|your|our)\s+skulls?\b/gi, ''],
+  // "their bones feel like frozen sticks" → "their toes feel like ice cubes"
+  [/\bbones (feel|felt|feeling) like frozen sticks\b/gi, 'toes $1 like ice cubes'],
+  [/\bfrozen sticks\b/gi, 'ice cubes'],
+  // "tears a sharp pain through their shoulder" → "sends a sudden jolt through their shoulder"
+  [/\b(?:tears|rips|stabs|shoots|sends) a (?:sharp|searing|stabbing|hot) pain\b/gi, 'sends a sudden jolt'],
+  [/\b(?:tear|rip|stab|shoot|send) a (?:sharp|searing|stabbing|hot) pain\b/gi, 'send a sudden jolt'],
+  [/\b(?:sharp|searing|stabbing) pain\b/gi, 'sudden jolt'],
+  // "echoing like a gunshot" → "echoing like a slammed book"
+  [/\blike (?:a )?gunshots?\b/gi, 'like a slammed book'],
+  [/\bgunshots\b/gi, 'thunderclaps'],
+  [/\bgunshot\b/gi, 'thunderclap'],
+  // "the crowd turning with hunting intent" → "…with nosy curiosity"
+  [/\bhunting intent\b/gi, 'nosy curiosity'],
+  [/\blike (?:hunted )?prey\b/gi, 'like lost luggage'],
+  // "before the crowd eats us" → "before the crowd sweeps us away"
+  // People only, and only as the whole object: "eat them" (the cookies) and
+  // "eat her sandwich" are left alone.
+  [/\b(eat|eats|eating|ate|eaten|devour|devours|devouring|devoured|gobble|gobbles|gobbling|gobbled)(?:\s+up)?\s+(us|you|me|her|him)(?:\s+(?:alive|whole|up))?(?=\s*(?:[.,!?;:…"”’')—–]|$)|\s+(?:before|if|unless|and|or|too|first|next|now)\b)/gi,
+    (_m: string, verb: string, who: string) => `${SWEEP[verb.toLowerCase()] ?? 'sweep'} ${who} away`],
+  // "a tangle of rope tightening around their ankles" → "…tugging at their shoelaces"
+  [/\b(tangles? of rope|ropes?|cords?|chains?|vines?|tentacles?)\s+(tighten|tightens|tightening|tightened|coil|coils|coiling|coiled|squeeze|squeezes|squeezing|squeezed)\s+around\s+(her|his|their|my|your|its)\s+(?:ankles?|neck|throat|wrists?|chest|legs?)\b/gi,
+    (_m: string, thing: string, verb: string, pos: string) => `${thing} ${TUG[verb.toLowerCase()] ?? 'tugging at'} ${pos} shoelaces`],
 ];
 
 export function softenForChildren(text: string): string {
@@ -774,11 +1033,14 @@ export function softenForChildren(text: string): string {
   let out = text;
   for (const [re, to] of CHILD_SOFTENERS) {
     out = out.replace(re, (m: string, ...groups: unknown[]) => {
-      const rep = to.replace('$1', typeof groups[0] === 'string' ? groups[0] : '');
-      return /^[A-Z]/.test(m) ? rep[0]!.toUpperCase() + rep.slice(1) : rep;
+      // The capture groups, up to the match offset (a number) that follows them.
+      const end = groups.findIndex(g => typeof g === 'number');
+      const strs = groups.slice(0, end < 0 ? groups.length : end).map(g => (typeof g === 'string' ? g : ''));
+      const rep = typeof to === 'function' ? to(m, ...strs) : to.replace(/\$(\d)/g, (_x, d: string) => strs[Number(d) - 1] ?? '');
+      return /^[A-Z]/.test(m) && rep ? rep[0]!.toUpperCase() + rep.slice(1) : rep;
     });
   }
-  if (out !== text) console.log(`[guard] family table: softened "${text.slice(0, 80)}" → "${out.slice(0, 80)}"`);
+  if (out !== text) console.log(`[guard] family table: softened ${changedSpan(text, out)}`);
   return out;
 }
 

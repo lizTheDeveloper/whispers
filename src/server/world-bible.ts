@@ -443,6 +443,11 @@ export class WorldBible {
     return { items, places, openThreads };
   }
 
+  /** Every item the world knows of, by name — what DM prose can show someone picking up. */
+  getItemNames(campaignId: string): string[] {
+    return (this.db.prepare('SELECT name FROM items WHERE campaign_id = ?').all(campaignId) as Array<{ name: string }>).map(r => r.name);
+  }
+
   updateItemHolder(campaignId: string, itemName: string, holderId: string | null): void {
     // Changing hands happens in a narrated resolution — the party has seen it.
     this.db.prepare('UPDATE items SET holder_id = ?, known_to_party = 1 WHERE campaign_id = ? AND name = ? COLLATE NOCASE')
