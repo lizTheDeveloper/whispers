@@ -197,8 +197,12 @@ describe('the game loop paces its beats', () => {
     if (openingBeats.length > 0) {
       expect(sceneNarration.at - openingBeats[0]!.at).toBeGreaterThanOrEqual(openingBeats.length * D - SLACK);
     }
-    // The table reads the narration before anyone is asked to decide…
-    expect(prompt.at - sceneNarration.at).toBeGreaterThanOrEqual(D - SLACK);
+    // The table reads the narration before anyone is asked to decide — at
+    // least half of it: the tail (at most 4s) runs under the open whisper
+    // window, which is 30s long and leaves the narration on screen (round 7:
+    // ~16s of dead air between a ruling and the next window, live)…
+    expect(prompt.at - sceneNarration.at).toBeGreaterThanOrEqual(D / 2 - SLACK);
+    expect(prompt.at - sceneNarration.at).toBeLessThan(D);
     // …and the owner's private options hold no one: the prompt follows them at once.
     expect(prompt.at - proposals.at).toBeLessThan(D / 2);
     expect(thought.private).toBe(true);

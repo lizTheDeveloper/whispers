@@ -19,11 +19,12 @@ import {
 import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
+  withoutSeedSpoilers,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
 import { ingestText, ingestPdf } from './rag/ingest.js';
-import { DmAgent } from './agents/dm.js';
+import { DmAgent, wantsNoSpoilers } from './agents/dm.js';
 import { GameLoop } from './game-loop.js';
 import { guardInterviewReply } from './pronoun-consistency.js';
 import { NegotiationRoom } from './negotiation.js';
@@ -1450,6 +1451,11 @@ wss.on('connection', (ws) => {
           unmet: before.detail,
           hostTableRole: campaign.hostTableRole,
         });
+        // A host who plays, or asked for no spoilers, never reads the drafted
+        // world's plot hooks or NPC motives back in a chat reply.
+        if (campaign.hostTableRole === 'player' || wantsNoSpoilers(currentPlayer.setupChat)) {
+          reply.reply = withoutSeedSpoilers(reply.reply, getWorldSeed(db, campaign.id));
+        }
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 
         const influences = normalizeInfluences(reply.influences);

@@ -130,3 +130,36 @@ export function isSeedAccepted(db: Database.Database, campaignId: string): boole
   const row = db.prepare('SELECT seed_accepted_at FROM campaigns WHERE id = ?').get(campaignId) as any;
   return Boolean(row?.seed_accepted_at);
 }
+
+/**
+ * A setup-chat reply for a host who plays or asked for no spoilers, with
+ * every sentence dropped that repeats a plot hook or an NPC motivation from
+ * the drafted world — six words in a row of it, or all of a shorter one.
+ * The prompt asks for this; this is the net under it. Null seed: as written.
+ */
+export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null): string {
+  if (!reply || !seed) return reply;
+  const words = (t: string) => t.toLowerCase().match(/[a-z0-9'’]+/g) ?? [];
+  const secrets = [...seed.plotHooks, ...seed.npcs.map(n => n.motivation ?? '')].map(words).filter(w => w.length >= 3);
+  if (secrets.length === 0) return reply;
+  const runs = new Set<string>();
+  for (const w of secrets) {
+    const n = Math.min(6, w.length);
+    for (let i = 0; i + n <= w.length; i++) runs.add(w.slice(i, i + n).join(' '));
+  }
+  const spoils = (sentence: string) => {
+    const w = words(sentence);
+    for (let n = 3; n <= 6; n++) {
+      for (let i = 0; i + n <= w.length; i++) if (runs.has(w.slice(i, i + n).join(' '))) return true;
+    }
+    return false;
+  };
+  const kept = reply.split('\n').map(line => {
+    const sentences = line.split(/(?<=[.!?…]["”’']?)\s+/);
+    const ok = sentences.filter(s => !spoils(s));
+    if (ok.length !== sentences.length) console.log(`[dm-chat] dropped ${sentences.length - ok.length} spoiler sentence(s) for a spoiler-free host`);
+    return ok.join(' ');
+  });
+  const out = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return out || 'I have the shape of it — the rest you will discover in play. What tone do you want at the table?';
+}

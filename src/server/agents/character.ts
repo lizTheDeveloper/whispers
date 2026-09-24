@@ -421,7 +421,8 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
             if (p.stress !== undefined && p.stress >= 2) line += ` [WOUNDED — stress ${p.stress}/3]`;
             if (p.lastAction) line += ` | Just did: ${p.lastAction.replace(/^[^:]+:\s*/, '').slice(0, 60)}`;
             return line;
-          }).join('\n')}\nYou can cooperate with them, argue, protect them, or ask for their help. When you speak to them, ${ADDRESS_DIRECTIVE}. React to what they just did — support, question, or build on it.\n(In the events log, lines are labelled "Name: action". That label is bookkeeping, not how anyone speaks — never copy it as a form of address.)`
+          }).join('\n')}\nYou can cooperate with them, argue, protect them, or ask for their help. When you speak to them, ${ADDRESS_DIRECTIVE}. React to what they just did — support, question, or build on it.\n(In the events log, lines are labelled "Name: action". That label is bookkeeping, not how anyone speaks — never copy it as a form of address.)
+A companion's high concept, trouble and aspects describe them — they are traits, never beings, creatures, places or names: never follow, warn or talk to "the ${ctx.partyMembers[0]!.trouble}"; talk to ${getFirstName(ctx.partyMembers[0]!.name)}.`
         : '',
       `\nAlways respond with valid JSON matching the requested format.`,
     ].filter(Boolean).join('\n');

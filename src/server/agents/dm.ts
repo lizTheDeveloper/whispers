@@ -48,6 +48,11 @@ function clip(text: string, max: number): string {
 }
 
 /** The slice of a character sheet the DM needs to know who is actually playing. */
+/** Has the host asked, anywhere in the setup chat, not to be spoiled ("No spoilers for me please, I'm playing in it too")? */
+export function wantsNoSpoilers(history: Array<{ role: string; content: string }>): boolean {
+  return history.some(m => m.role === 'user' && /\bno spoilers?\b|\bdon['’]?t spoil|\bdo not spoil|\bwithout spoilers|\bspoiler[- ]free|\bnot spoil|\bi['’]?m (?:also )?playing\b|\bi am (?:also )?playing\b|\bplaying in it\b|\bdon['’]?t tell me\b|\bdo not tell me\b|\bsurprise me\b/i.test(m.content));
+}
+
 export interface PartyMember {
   name: string;
   highConcept: string;
@@ -59,6 +64,8 @@ export interface PartyMember {
   relationships?: CharacterRelationship[];
   /** Taken out (FATE): down and out of action until they recover. */
   takenOut?: boolean;
+  /** The trouble, only for the rule that a trait is never a being. */
+  trouble?: string;
 }
 
 const FEMININE_RELATIONS = /\b(mother|mom|mum|mama|sister|daughter|wife|aunt|grandmother|grandma|granny|niece|girlfriend|stepmother|stepdaughter|stepsister)\b/i;
@@ -248,9 +255,24 @@ export function describeParty(members: PartyMember[]): string {
     hasAges ? 'Characters act their stated ages — a child thinks, talks and is treated like a child.' : '',
     anyUnstated ? 'Never guess a gender this block does not state — not from a name, an age, or the other side of a relation (a mother\'s child is not therefore a son). Where it is not stated, use the character\'s name or "they", and gender-neutral words for them: kid, child, parent, sibling — never son, daughter, boy, girl, he or she.' : '',
     'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
+    'Do not give a character a chair, a seat, a posture or a prop the story has not set up — if you do not know whether someone is sitting, do not say.',
     `In narration, call each party member by their name, never by their high concept: the phrase after each name above describes them and is not something anyone is called${members[0] ? ` ("${members[0].name.trim().split(/\s+/)[0]} steps forward", never "the ${members[0].highConcept} steps forward")` : ''}.`,
+    traitRule(members),
     hasAddress ? `Address terms are personal to the relationship: a term like "Mom" is what one character calls another, never that person\'s name. Only that character uses it, and only in their own dialogue; NPCs and everyone else use the name. In narration, resolutions, scene summaries and the epilogue, characters are called by their NAMES${addressExample} — even when a character\'s own action uses the address term; an address term appears only inside that character\'s quoted speech.` : '',
   ].filter(Boolean).join('\n');
+}
+
+/**
+ * Troubles and aspects are traits. Live, Biz's trouble "Wanders Off After
+ * Anything Shiny" became "a shimmering paper sprite—Wanders Off After
+ * Anything Shiny—flits toward a glittering golden stamp".
+ */
+function traitRule(members: PartyMember[]): string {
+  const withTrouble = members.find(m => m.trouble?.trim());
+  const example = withTrouble
+    ? ` ("${withTrouble.name.trim().split(/\s+/)[0]}'s trouble, ${withTrouble.trouble!.trim()}, pulls at them" — never a creature, spirit or person called "${withTrouble.trouble!.trim()}")`
+    : '';
+  return `High concepts, troubles, aspects and stunts are character traits — never beings, creatures, objects or places, and never anyone's name. Never invent something that is called by one or embodies one${example}. A character may draw on their own aspect by name; that is the game's mechanic.`;
 }
 
 /** How to refer to a party member, as far as the sheets say: "she/her", the player's own words, or null (not stated). */
@@ -706,9 +728,15 @@ IMPORTANT: "tie" and "success-with-cost" create the most interesting stories. A 
     const playingHost = opts.hostTableRole === 'player'
       ? `\nThe host is PLAYING in this game, not running it. Everything in "reply" is read by a player. Keep every secret out of it without exception.`
       : `\nThe host may end up playing in this game rather than running it, so treat "reply" as something a player will read.`;
+    // Live: "No spoilers for me please, I'm playing in it too." — and the
+    // next replies laid out the NPCs and the plot hook anyway. For a host
+    // who plays or asked, the rule is spelled out for every reply.
+    const strict = opts.hostTableRole === 'player' || wantsNoSpoilers(opts.history)
+      ? `\n\nSPOILER-FREE HOST: this host ${opts.hostTableRole === 'player' ? 'is playing' : 'asked for no spoilers'}. This holds for EVERY reply in this conversation, not only the world you build. In "reply" you may ask about tone, themes, genre, content limits and influences, and confirm the premise in a sentence. You may NOT list or describe the NPCs you have in mind, their secrets or motives, the plot hooks, twists, or what will happen — not as a preview, a summary, a teaser or "here is what I'm thinking". If you have ideas for them, put them in dmCustomPrompt and say only that the rest will be discovered in play.`
+      : '';
     const spoilerBlock = `
 
-NO SPOILERS: You are building the DM's secrets, not sharing them. In "reply", never reveal a twist, a culprit, who is responsible for anything, a hidden motive, the answer to a mystery, or how the story will unfold. If the host asks a question the story itself should answer ("whose mistake brought us here?"), treat it as a hook you will plant, not a question to answer now: say it will be discovered in play. If the host says they do not want to know what will happen, honour that for the rest of the conversation. You MAY ask about tone, genre, content limits, influences, and what kind of mystery or danger they enjoy. Put the secret answers you invent in dmCustomPrompt only — that is never shown to players.${playingHost}`;
+NO SPOILERS: You are building the DM's secrets, not sharing them. In "reply", never reveal a twist, a culprit, who is responsible for anything, a hidden motive, the answer to a mystery, or how the story will unfold. If the host asks a question the story itself should answer ("whose mistake brought us here?"), treat it as a hook you will plant, not a question to answer now: say it will be discovered in play. If the host says they do not want to know what will happen, honour that for the rest of the conversation. You MAY ask about tone, genre, content limits, influences, and what kind of mystery or danger they enjoy. Put the secret answers you invent in dmCustomPrompt only — that is never shown to players.${playingHost}${strict}`;
 
     const systemPrompt = `You are a TTRPG Dungeon Master helping set up a new game. Your base personality is "${opts.preset}".
 

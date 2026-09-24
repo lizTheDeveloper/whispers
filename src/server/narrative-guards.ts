@@ -140,7 +140,7 @@ const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? name;
  * apostrophe (Mom's, it's). An unclosed quote runs to the end, as quoted:
  * when unsure, leave the text alone.
  */
-function quoteRuns(text: string): Array<{ text: string; quoted: boolean }> {
+export function quoteRuns(text: string): Array<{ text: string; quoted: boolean }> {
   const runs: Array<{ text: string; quoted: boolean }> = [];
   const re = /"[^"]*"?|“[^”]*”?|(?<=^|[\s:(\[—–-])['‘](?=[A-Za-z])[\s\S]*?(?:[^\s]['’](?![A-Za-z])|$)/g;
   let last = 0;
@@ -255,6 +255,15 @@ const NOT_A_NAME_BEFORE = /(?:\b(?:her|his|their|my|your|our|its|the|a|an|this|t
  * term two characters use for two different people, and anything inside
  * quotation marks are left alone.
  */
+/**
+ * Text before an address term that STATES it: "calls Liz ", "calls her ",
+ * "calls Liz 'Mom'", "known as ", "nicknamed ". A sentence saying what
+ * someone is called is left exactly as written — live, the interview's
+ * summary "…and calls her Mom, Liz" was cut to "…and calls Liz."
+ */
+const STATES_ADDRESS_BEFORE = /\b(?:call|calls|called|calling|nicknames?|nicknamed|nicknaming|names?|named|naming|knows?|knew|known)\s+(?:(?:[A-Z][\w'’-]*|her|him|them|you|me|us|it|each other|one another)\s+)?(?:as\s+)?(?:just\s+|simply\s+|only\s+|still\s+|always\s+)?["“‘']?$/;
+const statesAddress = (before: string) => STATES_ADDRESS_BEFORE.test(before.slice(-48));
+
 export function namesInNarration(text: string, terms: AddressTerm[]): string {
   if (!text) return text;
   // "their mom Liz" / "Mom, Liz," / "Mom (Liz)" in narration is just "Liz",
@@ -269,10 +278,14 @@ export function namesInNarration(text: string, terms: AddressTerm[]): string {
       const nameRe = `(?:${esc(term.name.trim())}|${esc(name)})`;
       out = out.replace(
         new RegExp(`(?:\\b(?:her|his|their|my|your|our)\\s+)?\\b(${esc(address)})(${STACKED_NAME(nameRe)})`, 'gi'),
-        (match: string, term: string, rest: string) =>
+        (match: string, term: string, rest: string, offset: number, whole: string) => {
+          // "calls her Mom, Liz": what she is called, stated — kept.
+          const termAt = offset + match.length - term.length - rest.length;
+          if (statesAddress(whole.slice(0, termAt)) || statesAddress(whole.slice(0, offset))) return match;
           // "their mother, Liz" is an appositive — the relation, then the
           // name — and good prose; "their mom Liz" and "Mom, Liz" are not.
-          /^[a-z]/.test(term) && !/^\s+[^\s(—–]/.test(rest) ? match : name,
+          return /^[a-z]/.test(term) && !/^\s+[^\s(—–]/.test(rest) ? match : name;
+        },
       );
     }
     return out;
@@ -293,9 +306,12 @@ export function namesInNarration(text: string, terms: AddressTerm[]): string {
     let t = stacked(run.text);
     for (const { address, name } of usable) {
       // "Mom Liz" in narration is just "Liz".
-      t = t.replace(new RegExp(`\\b${esc(address)}\\s+(${esc(name)})\\b`, 'g'), '$1');
+      t = t.replace(new RegExp(`\\b${esc(address)}\\s+(${esc(name)})\\b`, 'g'), (match: string, n: string, offset: number, whole: string) =>
+        statesAddress(whole.slice(0, offset)) ? match : n);
       t = t.replace(new RegExp(`\\b${esc(address)}\\b(?!-)`, 'g'), (match: string, offset: number, whole: string) => {
         if (NOT_A_NAME_BEFORE.test(whole.slice(Math.max(0, offset - 24), offset))) return match;
+        // "Biz calls Liz Mom": the term, stated — not Liz being called by it.
+        if (statesAddress(whole.slice(0, offset))) return match;
         // "Mom Voice": part of a longer capitalised name, not the person.
         if (/^\s+[A-Z][a-z]/.test(whole.slice(offset + match.length)) && !/^['’]s/.test(whole.slice(offset + match.length))) {
           const next = whole.slice(offset + match.length).match(/^\s+([A-Z][\w'’-]*)/)?.[1] ?? '';
@@ -309,22 +325,51 @@ export function namesInNarration(text: string, terms: AddressTerm[]): string {
 }
 
 /**
+ * The phrases on a character's sheet — high concept, trouble, aspects, and
+ * each stunt's name ("Mom Voice" of "Mom Voice: +2 to Provoke…") — that
+ * describe the character and are never anyone's name. Two words or more:
+ * a one-word aspect is too likely to be an ordinary word.
+ */
+export function sheetPhrases(def: { highConcept?: string | null; trouble?: string | null; aspects?: string[] | null; stunts?: string[] | null }): string[] {
+  const stuntNames = (def.stunts ?? []).map(st => st.split(/[:—–(]/)[0] ?? '').filter(n => n.trim().split(/\s+/).length <= 6);
+  return [...new Set([def.highConcept, def.trouble, ...(def.aspects ?? []), ...stuntNames]
+    .map(p => (p ?? '').trim().replace(/^["“'‘]+|["”'’.]+$/g, '').trim())
+    .filter(p => p.split(/\s+/).length >= 2))];
+}
+
+const normPhrase = (s: string) => s.trim().toLowerCase().replace(/^["“'‘]+|["”'’]+$/g, '').replace(/^(?:the|a|an)\s+/, '').replace(/\s+/g, ' ').trim();
+
+/**
+ * A name that is really a sheet phrase, whole ("the Wanders Off After
+ * Anything Shiny"; case, quotes and a leading article aside). Never a part
+ * of one: an aspect "Quillwick the Archivist Owes Me" must not retire the
+ * NPC Quillwick the Archivist.
+ */
+export function isSheetPhraseName(name: string, phrases: string[]): boolean {
+  const n = normPhrase(name);
+  return !!n && phrases.some(p => normPhrase(p) === n);
+}
+
+/**
  * Fact extraction reads the DM's prose, and it recorded the party
  * themselves as NPCs — "Liz", "Biz", and "Mom" (an address term) — which
  * then came back to the DM in the world summary as people in the world.
  * Party members are not NPCs: an extracted entity named as a party member,
- * or with a party address term as its name, is dropped.
+ * with a party address term as its name, or named after a phrase on a
+ * party sheet (a high concept, a trouble, an aspect, a stunt — live, Biz's
+ * trouble "Wanders Off After Anything Shiny" became a paper sprite) is
+ * dropped.
  */
-export function withoutPartyEntities<T extends { newEntities: Array<{ name: string }> }>(facts: T, partyNames: string[], addressTerms: string[], highConcepts: string[] = []): T {
+export function withoutPartyEntities<T extends { newEntities: Array<{ name: string }> }>(facts: T, partyNames: string[], addressTerms: string[], phrases: string[] = []): T {
   const taken = new Set([
     ...partyNames.flatMap(n => [n.trim(), firstName(n)]),
     ...addressTerms.map(a => a.trim()),
-    // "Curious Kid With a Sketchbook" is Biz, described — not an NPC.
-    ...highConcepts.map(h => h.trim()),
   ].filter(Boolean).map(n => n.toLowerCase()));
   const kept = facts.newEntities.filter(e => {
     const name = e.name.trim().toLowerCase();
-    return !taken.has(name) && !taken.has(name.replace(/^(?:the|a|an)\s+/, ''));
+    if (taken.has(name) || taken.has(name.replace(/^(?:the|a|an)\s+/, ''))) return false;
+    // "Curious Kid With a Sketchbook" is Biz, described — not an NPC.
+    return !isSheetPhraseName(e.name, phrases);
   });
   return kept.length === facts.newEntities.length ? facts : { ...facts, newEntities: kept };
 }
@@ -403,6 +448,107 @@ export function highConceptsToNames(text: string, party: Array<{ name: string; h
     }
     return t;
   }).join('');
+}
+
+// ─── Sheet phrases are traits, not beings ─────────────────────────────────
+
+export interface SheetOwner {
+  name: string;
+  /** Trouble, aspects, stunt names (see sheetPhrases). The high concept may be among them. */
+  phrases: string[];
+}
+
+/**
+ * Before a sheet phrase: using it as a trait, which is the game's own
+ * mechanic ("Liz draws on Office Manager Who Speaks Fluent Bureaucracy",
+ * "Biz's Wanders Off After Anything Shiny", "her trouble, …").
+ */
+const TRAIT_USE_BEFORE = new RegExp(String.raw`(?:\b(?:draws?|drawing|drew|calls?|called|calling|leans?|leaning|leaned|relies|rely|relying|relied)\s+(?:on|upon|into)|\b(?:invok\w*|channel\w*|embrac\w*|compel\w*|us(?:e|es|ed|ing)|tap(?:s|ped|ping)?\s+into|true\s+to|lives?\s+up\s+to|living\s+up\s+to)|\b(?:aspects?|troubles?|stunts?|concept|habit|trait|nature|flaw|knack|urge|tendency|streak|motto|words)|['’]s|\b(?:her|his|their|my|your|our|its))\s*[,:—–-]?\s*(?:(?:her|his|their|my|your|our|the)\s+(?:own\s+)?(?:aspect|trouble|stunt|high\s+concept)\s*[,:—–-]?\s*)?["“‘']?\s*$`, 'i');
+
+/** Words that make an article + adjectives before a quoted phrase part of a trait mention, not a creature: "the trouble "…"". */
+const TRAIT_NOUN = /\b(?:aspects?|troubles?|stunts?|concept|habit|trait|nature|flaw|knack|urge|tendency|streak|motto|words|phrase|label|name|old)\b/i;
+
+/** A phrase as a regex: whitespace-tolerant, quotes and case as written are handled by the caller. */
+const phraseRe = (p: string) => esc(p.trim()).replace(/\s+/g, '\\s+');
+
+/** Title-cased use: at least two capitalised words (so "wanders off after anything shiny", the verb, is left alone). */
+const titleCased = (m: string) => (m.match(/\b[A-Z][\w'’-]*/g) ?? []).length >= 2;
+
+/**
+ * DM prose that turns a party member's trouble or aspect into a being or a
+ * place — "a shimmering paper sprite—Wanders Off After Anything Shiny—flits
+ * toward a glittering golden stamp", "the wandering 'Wanders Off After
+ * Anything Shiny' hovers" — is repaired: an apposition of the phrase is
+ * dropped ("a shimmering paper sprite flits…"), and the phrase used as a
+ * noun ("the wandering 'Wanders Off…' hovers", "the Wanders Off") becomes
+ * the owner's name. Left alone: the phrase as a trait (an invocation, a
+ * possessive, "the trouble '…'"), beside the owner's name, in quoted
+ * speech, and in lower case ("Biz wanders off after anything shiny").
+ */
+export function sheetPhrasesToNames(text: string, party: SheetOwner[]): string {
+  if (!text) return text;
+  let out = text;
+  for (const p of party) {
+    const name = firstName(p.name);
+    const besideName = new RegExp(`\\b${esc(name)}\\s*[—–,:(-]\\s*["“‘']?$`);
+    for (const phrase of p.phrases) {
+      if (phrase.trim().split(/\s+/).length < 2) continue;
+      const P = phraseRe(phrase);
+      // 1. Quoted, after an article and up to two lower-case words: a being.
+      out = out.replace(new RegExp(`\\b(?:the|a|an)\\s+((?:[a-z][\\w-]*\\s+){0,2})["“‘']${P}["”’']`, 'gi'), (match: string, adjs: string, offset: number, whole: string) => {
+        if (/[A-Z]/.test(adjs) || TRAIT_NOUN.test(adjs) || TRAIT_USE_BEFORE.test(whole.slice(Math.max(0, offset - 40), offset))) return match;
+        return name;
+      });
+      // The rest is outside quoted speech only.
+      out = quoteRuns(out).map(run => {
+        if (run.quoted) return run.text;
+        let t = run.text;
+        // 2. Apposition: "sprite—Wanders Off After Anything Shiny—flits", "sprite, …, flits".
+        t = t.replace(new RegExp(`\\s*([—–]|--|,)\\s*(${P})\\s*(?:[—–]|--|,)\\s*`, 'gi'), (match: string, _dash: string, phr: string, offset: number, whole: string) => {
+          if (!titleCased(phr)) return match;
+          const before = whole.slice(Math.max(0, offset - name.length - 4), offset);
+          if (new RegExp(`\\b${esc(name)}\\s*$`).test(before)) return match; // "Biz — Wanders Off…, 10 years old"
+          return ' ';
+        });
+        // 3. The phrase (or its first 2+ words after "the") as a noun: the owner.
+        const words = phrase.trim().split(/\s+/);
+        const prefixes = words.slice(2).map((_, k) => words.slice(0, words.length - 1 - k).join(' ')).filter(x => x.split(' ').length >= 2);
+        const alts = [P, ...prefixes.map(phraseRe)];
+        t = t.replace(new RegExp(`(\\b(?:the|a|an)\\s+(?:[a-z][\\w-]*\\s+){0,2})?(${alts.join('|')})(?![\\w'’-])`, 'gi'), (match: string, lead: string | undefined, phr: string, offset: number, whole: string) => {
+          if (!titleCased(phr)) return match;
+          // Case-sensitive checks here: the regex is case-insensitive.
+          if (/^\s+[A-Z]/.test(whole.slice(offset + match.length))) return match; // part of a longer name
+          if (lead && /\s[A-Z]/.test(lead)) return match;
+          const isWhole = new RegExp(`^${P}$`, 'i').test(phr);
+          if (!isWhole && !lead) return match; // "Wanders Off" alone is too little to go on
+          if (lead && TRAIT_NOUN.test(lead)) return match;
+          const before = whole.slice(Math.max(0, offset - 40), offset);
+          if (TRAIT_USE_BEFORE.test(before) || besideName.test(before)) return match;
+          return name;
+        });
+        return t;
+      }).join('');
+    }
+  }
+  return out;
+}
+
+
+/**
+ * A character's options, with every other party member's sheet phrase used
+ * as a being replaced by that member's name ("warning the Wanders Off not to
+ * distract us" → "warning Biz not to distract us"), and — while at least two
+ * options remain — an option that treats the character's OWN trait as a
+ * being ("I follow Wanders Off After Anything Shiny toward the sealed
+ * shelf") dropped: there is no name that could stand in for it there.
+ */
+export function optionsWithoutSheetBeings<T extends { description: string }>(options: T[], owner: string, party: SheetOwner[]): T[] {
+  const same = (p: SheetOwner) => firstName(p.name).toLowerCase() === firstName(owner).toLowerCase();
+  const others = party.filter(p => !same(p));
+  const self = party.filter(same);
+  const fixed = options.map(o => ({ ...o, description: sheetPhrasesToNames(o.description, others) }));
+  const kept = fixed.filter(o => sheetPhrasesToNames(o.description, self) === o.description);
+  return kept.length >= 2 ? kept : fixed;
 }
 
 // ─── Templated lines about a character ─────────────────────────────────────

@@ -55,3 +55,28 @@ export function capitalize(word: string): string {
 export function agree(r: PronounSet, singular: string, plural: string): string {
   return r.plural ? plural : singular;
 }
+
+const IRREGULAR_PLURAL: Record<string, string> = {
+  is: 'are', was: 'were', has: 'have', does: 'do', goes: 'go',
+  "isn't": "aren't", "wasn't": "weren't", "hasn't": "haven't", "doesn't": "don't",
+  "isn’t": "aren’t", "wasn’t": "weren’t", "hasn’t": "haven’t", "doesn’t": "don’t",
+};
+
+/**
+ * The plural (they-form) of a present-tense verb written for he/she:
+ * "declares" → "declare", "watches" → "watch", "carries" → "carry",
+ * "is" → "are". A word that is not a third-person-singular verb form
+ * ("declared", "can", "must") is returned as written. For use with agree():
+ * agree(r, verb, pluralVerb(verb)).
+ */
+export function pluralVerb(verb: string): string {
+  const lower = verb.toLowerCase();
+  const irregular = IRREGULAR_PLURAL[lower];
+  let out: string;
+  if (irregular) out = irregular;
+  else if (/[^aeiou]ies$/.test(lower) && lower.length > 4) out = lower.slice(0, -3) + 'y';
+  else if (/(?:ss|sh|ch|x|z|o)es$/.test(lower)) out = lower.slice(0, -2);
+  else if (/[^su]s$/.test(lower) && lower.length > 2) out = lower.slice(0, -1);
+  else return verb;
+  return /^[A-Z]/.test(verb) ? capitalize(out) : out;
+}

@@ -28,6 +28,17 @@ export interface Pacing {
   maxMs: number;
 }
 
+/**
+ * How much of the last beat's reading time may run under an open whisper
+ * window: half of it, at most this. Measured live (two players): after a
+ * ruling, ~7.5s of reading while the next narration was written, then ~9s
+ * more — the narration's own reading time (8s cap) plus the tail of the
+ * next character's options call — before the whisper window opened: ~16s
+ * with nothing to do. The window is 30s long and the narration stays on
+ * screen, so the table can finish reading it while the window counts down.
+ */
+export const WINDOW_READ_OVERLAP_MAX_MS = 4000;
+
 function envNumber(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === '') return fallback;
   const n = Number(value);
@@ -93,12 +104,14 @@ export function beatDelayMs(msg: ServerMessage, p: Pacing): number {
 export class ReadingClock {
   private readyAt = 0;
   private heldMs: number | null = null;
+  private lastDelay = 0;
 
   constructor(readonly pacing: Pacing, private now: () => number = Date.now) {}
 
   mark(msg: ServerMessage): number {
     const delay = beatDelayMs(msg, this.pacing);
     if (delay <= 0) return 0;
+    this.lastDelay = delay;
     if (this.heldMs !== null) this.heldMs += delay;
     else this.readyAt = Math.max(this.now(), this.readyAt) + delay;
     return delay;
@@ -106,6 +119,17 @@ export class ReadingClock {
 
   remainingMs(): number {
     return this.heldMs ?? Math.max(0, this.readyAt - this.now());
+  }
+
+  /**
+   * The wait before a whisper window opens: what is left of the reading,
+   * less the part the window may overlap (half the last beat's reading
+   * time, at most WINDOW_READ_OVERLAP_MAX_MS). Held (paused): the full wait.
+   */
+  remainingBeforeWindowMs(): number {
+    if (this.heldMs !== null) return this.heldMs;
+    const overlap = Math.min(WINDOW_READ_OVERLAP_MAX_MS, this.lastDelay / 2);
+    return Math.max(0, Math.round(this.readyAt - overlap - this.now()));
   }
 
   hold(): void {

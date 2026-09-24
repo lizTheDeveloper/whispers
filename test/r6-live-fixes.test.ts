@@ -93,27 +93,30 @@ describe('2a. a party member who is clearly the subject for several sentences', 
 
 describe('2b. the rewrite may not touch NPCs', () => {
   it('keeps the NPC sentences as written even when the model rewrites them', async () => {
-    const text = 'Biz holds out the seal; it warms in his palm. Tilly Tink snatches it. "I need it," she chirps, her voice bright. Squeak-Ink shrugs. He holds up a glinting Stamp.';
-    const overEager = 'Biz holds out the seal; it warms in their palm. Tilly Tink snatches it. "I need it," they chirp, their voice bright. Squeak-Ink shrugs. They hold up a glinting Stamp.';
+    // An NPC in the sentence before Biz's: not the simple case, so the model is asked.
+    const text = 'Squeak-Ink shrugs. Biz holds out the seal; it warms in his palm. Tilly Tink snatches it. "I need it," she chirps, her voice bright. Squeak-Ink shrugs. He holds up a glinting Stamp.';
+    const overEager = 'Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink snatches it. "I need it," they chirp, their voice bright. Squeak-Ink shrugs. They hold up a glinting Stamp.';
     const prompts: string[] = [];
     const out = await withConsistentPronouns(text, MEMBERS, {
       npcNames: ['Tilly Tink', 'Squeak-Ink'],
       llm: async (m) => { prompts.push(m.map(x => x.content).join('\n')); return overEager; },
     });
-    expect(out).toBe('Biz holds out the seal; it warms in their palm. Tilly Tink snatches it. "I need it," she chirps, her voice bright. Squeak-Ink shrugs. He holds up a glinting Stamp.');
+    expect(out).toBe('Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink snatches it. "I need it," she chirps, her voice bright. Squeak-Ink shrugs. He holds up a glinting Stamp.');
     // The prompt limits the change to the listed members and names the others.
     expect(prompts[0]).toMatch(/only the listed party members/i);
     expect(prompts[0]).toContain('Tilly Tink');
     expect(prompts[0]).toContain('Squeak-Ink');
   });
 
-  it('rejects the whole rewrite when a sentence it should not touch changed beyond pronouns', async () => {
-    const text = 'Biz holds out the seal; it warms in his palm. Tilly Tink snatches it and runs.';
+  it('a sentence it should not touch keeps its original wording even when the model changed it beyond pronouns', async () => {
+    // Round 7: taken sentence by sentence — the flagged sentence's good repair
+    // is kept; the one the model rewrote beyond pronouns stays as written.
+    const text = 'Squeak-Ink shrugs. Biz holds out the seal; it warms in his palm. Tilly Tink snatches it and runs.';
     const out = await withConsistentPronouns(text, MEMBERS, {
-      npcNames: ['Tilly Tink'],
-      llm: async () => 'Biz holds out the seal; it warms in their palm. Tilly Tink, the thief, grabs the seal and flees the hall.',
+      npcNames: ['Tilly Tink', 'Squeak-Ink'],
+      llm: async () => 'Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink grabs the seal and bolts.',
     });
-    expect(out).toBe(text);
+    expect(out).toBe('Squeak-Ink shrugs. Biz holds out the seal; it warms in their palm. Tilly Tink snatches it and runs.');
   });
 });
 

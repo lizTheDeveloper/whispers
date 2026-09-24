@@ -644,7 +644,9 @@ describe('DM prose in play passes the pronoun check', () => {
       expect(resolutions.join('\n')).not.toMatch(/\bhis\b/);
       const ep = broadcasts.find(m => m.type === 'narration' && m.isEpilogue) as Extract<ServerMessage, { type: 'narration' }>;
       expect(ep.text).toBe(fixedEpilogue);
-      expect(calls.filter(c => c.includes('You correct how people are referred to')).length).toBeGreaterThanOrEqual(2);
+      // The resolution's run needs the model; the one-sentence epilogue that
+      // names only Biz is the simple case and is repaired in code (round 7).
+      expect(calls.filter(c => c.includes('You correct how people are referred to')).length).toBeGreaterThanOrEqual(1);
     } finally {
       canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
       canned.epilogue = 'The queue closed behind them, and the Bureau went quiet.';
