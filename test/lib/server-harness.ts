@@ -63,6 +63,21 @@ export const LLM_STUB_REPLIES = {
     dmInstructions: null,
     dmCustomPrompt: null,
   },
+  // Round 15 (RZBU7G), a gentle-peril host: the danger the setup chat offered.
+  setupDrawerForever: {
+    reply: 'Let’s talk about the "gentle peril" you mentioned. In this bureaucratic city, what does danger look like? Is it the risk of being filed away in a drawer forever? Getting lost in a maze of filing cabinets?',
+    done: false,
+    influences: [],
+    dmInstructions: null,
+    dmCustomPrompt: null,
+  },
+  setupGentleDanger: {
+    reply: 'Let’s talk about the "gentle peril" you mentioned. What does trouble look like here — a form that keeps wandering off, a queue with opinions, a stamp nobody can find?',
+    done: false,
+    influences: [],
+    dmInstructions: null,
+    dmCustomPrompt: null,
+  },
   // Reproduces the live bug behind "[llm-client] JSON parsed but Zod
   // rejected: done: Required" — the model omits `done` from the JSON
   // entirely rather than sending `done: false`. `done` is intentionally
@@ -321,6 +336,17 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
         if (slowToken) consumedSlowTokens.add(slowToken);
         if (slow) {
           text = JSON.stringify(LLM_STUB_REPLIES.slowDecision);
+        } else if (body.includes('TONE JUDGE for a family tabletop game')) {
+          // The gentle-table tone judge (tone-gate.ts): the one live line the
+          // round-15 setup-chat test offers is flagged; anything else is ok.
+          text = body.includes('filed away in a drawer forever')
+            ? JSON.stringify({ verdict: 'flag', phrases: ['being filed away in a drawer forever'] })
+            : JSON.stringify({ verdict: 'ok', phrases: [] });
+        } else if (body.includes('helping set up a new game') && body.includes('GENTLE_DRAWER_TRIGGER')) {
+          // Round 15 (RZBU7G): at a gentle-peril table the setup chat offered
+          // "the risk of being filed away in a drawer forever". Asked again
+          // with the judge's feedback, it offers something gentle.
+          text = JSON.stringify(body.includes('<tone_feedback>') ? LLM_STUB_REPLIES.setupGentleDanger : LLM_STUB_REPLIES.setupDrawerForever);
         } else if (body.includes('You are a world builder for a TTRPG')) {
           text = JSON.stringify(LLM_STUB_REPLIES.worldSeed);
         } else if (body.includes('introducing a player to a world')) {

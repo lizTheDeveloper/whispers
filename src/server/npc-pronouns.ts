@@ -98,6 +98,26 @@ export function castPronounLine(party: Array<{ name: string; pronouns?: string |
   return parts.join(' ');
 }
 
+/**
+ * Who is who in the party, from the ties on each sheet ("relation" is what
+ * that person is TO the sheet's owner): "Biz is Liz's kid; Liz is Biz's
+ * mother." For the memory writers — live (RZBU7G) Biz stored "revealing
+ * that Liz is a child who worries about me too much". '' with no ties.
+ */
+export function partyRolesLine(members: Array<{ name: string; relationships?: Array<{ to: string; relation: string }> | null }>): string {
+  const parts: string[] = [];
+  for (const m of members) {
+    for (const r of m.relationships ?? []) {
+      const to = r?.to?.trim();
+      const relation = r?.relation?.trim();
+      if (!to || !relation || !m.name?.trim()) continue;
+      const line = `${to} is ${m.name.trim()}'s ${relation}`;
+      if (!parts.includes(line)) parts.push(line);
+    }
+  }
+  return parts.length > 0 ? `Who is who: ${parts.join('; ')}. Never swap these roles.` : '';
+}
+
 // ─── The one deterministic correction ──────────────────────────────────────
 
 /** Role and title words that come before a name and are not what narration calls someone by. */

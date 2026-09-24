@@ -74,6 +74,8 @@ const MemoryExtractionSchema = z.object({
 export interface MemoryWritingOptions {
   /** Everyone's pronouns — party and NPCs (castPronounLine). */
   pronounNote?: string;
+  /** Who is who in the party (partyRolesLine): "Liz is Biz's mother". */
+  rolesNote?: string;
   /** The deterministic text guards (NPC pronouns, the family-table softener), applied before a memory is stored. */
   repair?: (text: string) => string;
 }
@@ -93,7 +95,7 @@ export class CharacterMemoryStore {
     opts: MemoryWritingOptions = {},
   ): Promise<CharacterMemory[]> {
     const whisperCtx = whisper ? `\nA voice whispered: "${whisper}"` : '';
-    const pronounNote = opts.pronounNote ? ` ${opts.pronounNote} Use exactly these pronouns for everyone the memory mentions.` : '';
+    const pronounNote = (opts.pronounNote ? ` ${opts.pronounNote} Use exactly these pronouns for everyone the memory mentions.` : '') + (opts.rolesNote ? ` ${opts.rolesNote}` : '');
 
     let memories: Array<{ type: MemoryType; content: string; emotionalValence: number; importance: number }>;
     try {
@@ -247,7 +249,7 @@ export class CharacterMemoryStore {
     opts: MemoryWritingOptions = {},
   ): Promise<void> {
     let content: string;
-    const pronounNote = opts.pronounNote ? ` ${opts.pronounNote}` : '';
+    const pronounNote = (opts.pronounNote ? ` ${opts.pronounNote}` : '') + (opts.rolesNote ? ` ${opts.rolesNote}` : '');
     try {
       const text = await callLlm({
         messages: [

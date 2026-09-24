@@ -573,6 +573,66 @@ export function sheetWithNeutralNouns<T extends Partial<SheetText>>(sheet: T, me
   return changed ? { ...sheet, ...out } : sheet;
 }
 
+/** The object pronoun a relation word gives someone ("mom" → her), when their own pronouns are not known yet. */
+const RELATION_OBJECT: Array<[RegExp, 'her' | 'him']> = [
+  [/\b(?:mother|mom|mum|mama|mommy|mummy|ma|sister|daughter|wife|aunt|auntie|grandmother|grandma|granny|gran|nana|niece|stepmother|stepdaughter|stepsister)\b/i, 'her'],
+  [/\b(?:father|dad|daddy|papa|pa|brother|son|husband|uncle|grandfather|grandpa|gramps|nephew|stepfather|stepson|stepbrother)\b/i, 'him'],
+];
+/** "afraid of losing them", "lose track of them", "lost sight of them". */
+const LOSE_THEM = /\b(lose|loses|losing|lost)((?:\s+(?:track|sight)\s+of)?)\s+them\b/i;
+
+/**
+ * "…deeply attached to Mom and afraid of losing them." — Biz's (they/them)
+ * generated sheet, where "them" is Mom Liz (she/her); round 15, RZBU7G. The
+ * interview prompt carries the rule; this is the narrow floor under it: in a
+ * sentence of the personality, backstory, trouble, high concept, aspects or
+ * stunts that names exactly one person this character is tied to (by name or
+ * by what they call them), and whose pronouns are known — stated at the
+ * table, or else given by the relation word ("mom" → her) — "losing them"
+ * becomes "losing her". "their" is never touched: "losing their way" is the
+ * character's own. Two people named, a they/them companion or nobody named:
+ * left as written.
+ */
+export function sheetWithCompanionPronouns<T extends Partial<SheetText> & { relationships?: Array<{ to: string; relation: string; address?: string }> | null }>(
+  sheet: T,
+  table: Array<{ name: string; pronouns?: string | null }>,
+): T {
+  const ties = (sheet.relationships ?? []).filter(r => r?.to?.trim());
+  if (ties.length === 0) return sheet;
+  const tied = ties.map(r => {
+    const stated = table.find(t => t.name.trim().toLowerCase() === r.to.trim().toLowerCase())?.pronouns;
+    const key = keyOf(stated);
+    const object = key === 'she' ? 'her' : key === 'he' ? 'him' : key ? null : (RELATION_OBJECT.find(([re]) => re.test(r.relation ?? ''))?.[1] ?? null);
+    const words = [...new Set([r.to.trim(), firstName(r.to), r.address?.trim()].filter((w): w is string => !!w && w.length > 1))];
+    return { name: r.to.trim(), object, words };
+  });
+  // Anyone else at the table the sentence names is a candidate too.
+  const others = table
+    .filter(t => t.name.trim() && !tied.some(p => p.name.toLowerCase() === t.name.trim().toLowerCase()) && t.name.trim().toLowerCase() !== (sheet as { name?: string }).name?.trim().toLowerCase())
+    .map(t => ({ name: t.name.trim(), object: null as 'her' | 'him' | null, words: [...new Set([t.name.trim(), firstName(t.name)])] }));
+  const people = [...tied, ...others];
+  const fix = (text: string) => text.replace(/[^.!?]+(?:[.!?]+|$)/g, sentence => {
+    if (!LOSE_THEM.test(sentence)) return sentence;
+    const named = people.filter(p => p.words.some(w => new RegExp(`(?<![\\p{L}\\p{N}])${esc(w)}(?![\\p{L}\\p{N}])`, 'u').test(sentence)));
+    if (named.length !== 1 || !named[0]!.object) return sentence;
+    const who = named[0]!.object;
+    return sentence.replace(new RegExp(LOSE_THEM.source, 'gi'), (_m, verb: string, of: string) => `${verb}${of} ${who}`);
+  });
+  let changed = false;
+  const out: Partial<SheetText> = {};
+  for (const k of ['highConcept', 'trouble', 'personality', 'backstory'] as const) {
+    const v = sheet[k];
+    if (typeof v === 'string') { const f = fix(v); if (f !== v) { out[k] = f; changed = true; } }
+  }
+  for (const k of ['aspects', 'stunts'] as const) {
+    const v = sheet[k];
+    if (Array.isArray(v)) { const f = v.map(s => (typeof s === 'string' ? fix(s) : s)); if (f.some((s, i) => s !== v[i])) { out[k] = f; changed = true; } }
+  }
+  if (!changed) return sheet;
+  console.log(`[pronouns] sheet: a companion's pronoun restored (${Object.entries(out).map(([k, v]) => `${k}: "${String(v).slice(0, 80)}"`).join('; ')})`);
+  return { ...sheet, ...out };
+}
+
 const GENDERED = new Set([...FORMS.he, ...FORMS.she]);
 
 /**

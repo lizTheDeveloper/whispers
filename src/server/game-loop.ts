@@ -18,7 +18,7 @@ import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
 import { LineRotation, invokeLines, compelLines, appendBeat } from './template-lines.js';
 import { gateGentleTone, type ToneJudge, type ToneKind } from './tone-gate.js';
-import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet } from './npc-pronouns.js';
+import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet, partyRolesLine } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
 import { PLAIN_PROSE_STYLE } from './agents/style.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
@@ -30,7 +30,7 @@ import {
   repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
-  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, spokenOrNull, withoutInventedPcSurnames,
+  withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -641,6 +641,8 @@ export class GameLoop {
       fixed = this.fixNpcPronouns(fixed);
       // A table with a child: the few images that read as horror, softened.
       if (this.familyTable()) fixed = softenForChildren(fixed);
+      // Quotes the model left unbalanced (`in ink!', The air`, `"taxation.'`).
+      fixed = tidyQuotes(fixed);
       return fixed;
     } catch (e) {
       console.error('[guard] narration name guard failed, text left as written:', e);
@@ -2387,7 +2389,7 @@ export class GameLoop {
       characterId, this.campaignId, character.definition.name,
       decision.chosenAction, resolution.narration, whisper,
       this.state.currentScene, this.state.currentTurn,
-      { pronounNote: this.castPronouns(), repair: this.memoryRepair },
+      { pronounNote: this.castPronouns(), rolesNote: partyRolesLine(this.pronounMembers()), repair: this.memoryRepair },
     ).then(stored => {
       if (stored.length > 0) console.log(`[memory] ${character.definition.name}: stored ${stored.length} memories (${stored.map(m => m.type).join(', ')})`);
     }).catch(e => console.error('[memory] extraction failed:', e));
@@ -2400,7 +2402,7 @@ export class GameLoop {
         this.state.currentScene, this.state.currentTurn,
         // What the actor calls this observer ("Mom" for Liz): "my hand" in Liz's own memory.
         this.addressTermsOf(characterId).filter(t => this.namesMatch(t.name, observer.definition.name)).map(t => t.address),
-        { pronounNote: this.castPronouns(), repair: this.memoryRepair },
+        { pronounNote: this.castPronouns(), rolesNote: partyRolesLine(this.pronounMembers()), repair: this.memoryRepair },
       ).catch(e => console.error(`[memory] observer extraction failed for ${observer.definition.name}:`, e));
     }
 
@@ -2652,7 +2654,13 @@ export class GameLoop {
       if (gentle && epilogue.trim()) {
         epilogue = await this.toneGated('epilogue', epilogue, t => t,
           feedback => write([baseMessages[0]!, { ...baseMessages[1]!, content: `${baseMessages[1]!.content}\n\n${feedback}` }]),
-          { extraFlags: t => (bleakEnding(t) ? [closingWords(t)] : []) });
+          {
+            extraFlags: t => (bleakEnding(t) ? [closingWords(t)] : []),
+            // Round 15 (RZBU7G): both drafts flagged, and the kept one still
+            // ended "…remains open for another day, but for now…". The
+            // threads left hanging at the end go, or the warm close is added.
+            soften: t => closeOpenEnding(t, Array.from(this.characters.values()).map(c => getFirstName(c.definition.name))),
+          });
       }
       // Public text: no whisper or voice, and at a gentle table an ending
       // that lands safe (see publicEnding).
