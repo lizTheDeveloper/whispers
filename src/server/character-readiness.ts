@@ -1,4 +1,5 @@
 import type { CharacterReadiness, CharacterReadinessItem } from '../shared/types.js';
+import { agree, capitalize, pronounSet, referTo } from '../shared/pronouns.js';
 
 export const MIN_ASPECTS = 2;
 export const MIN_SKILLS = 1;
@@ -31,9 +32,18 @@ export function checkCharacterReadiness(def: unknown): CharacterReadiness {
   const detail: string[] = [];
   const d = (def && typeof def === 'object' && !Array.isArray(def)) ? def as Record<string, unknown> : {};
 
+  // In the character's own pronouns once they are stated — live, the hint
+  // read "They need at least 1 stunt" while building she/her Liz — else
+  // their name, else "they" (nobody has said yet).
+  const name = isNonEmptyString(d.name) ? d.name.trim().split(/\s+/)[0]! : '';
+  const set = pronounSet(isNonEmptyString(d.pronouns) ? d.pronouns : null);
+  const r = set ?? (name ? referTo(name, null) : pronounSet('they')!);
+  const Subj = capitalize(r.subject);
+  const needs = agree(r, 'needs', 'need');
+
   if (!isNonEmptyString(d.name)) {
     unmet.push('name');
-    detail.push('They still need a name.');
+    detail.push(`${set ? Subj : 'They'} still ${set ? agree(set, 'needs', 'need') : 'need'} a name.`);
   }
   if (!isNonEmptyString(d.highConcept)) {
     unmet.push('highConcept');
@@ -41,19 +51,19 @@ export function checkCharacterReadiness(def: unknown): CharacterReadiness {
   }
   if (!isNonEmptyString(d.trouble)) {
     unmet.push('trouble');
-    detail.push('What complicates their life? A trouble that creates real dilemmas.');
+    detail.push(`What complicates ${r.possessive} life? A trouble that creates real dilemmas.`);
   }
   if (countNonEmptyStrings(d.aspects) < MIN_ASPECTS) {
     unmet.push('aspects');
-    detail.push(`They need at least ${MIN_ASPECTS} aspects — things that are true about them and can be leaned on.`);
+    detail.push(`${Subj} ${needs} at least ${MIN_ASPECTS} aspects — things that are true about ${r.object} and can be leaned on.`);
   }
   if (countNumericSkills(d.skills) < MIN_SKILLS) {
     unmet.push('skills');
-    detail.push(`They need at least ${MIN_SKILLS} skill with a rating.`);
+    detail.push(`${Subj} ${needs} at least ${MIN_SKILLS} skill with a rating.`);
   }
   if (countNonEmptyStrings(d.stunts) < MIN_STUNTS) {
     unmet.push('stunts');
-    detail.push(`They need at least ${MIN_STUNTS} stunt — something they can do that others cannot.`);
+    detail.push(`${Subj} ${needs} at least ${MIN_STUNTS} stunt — something ${r.subject} can do that others cannot.`);
   }
 
   return { ready: unmet.length === 0, unmet, detail };

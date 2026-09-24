@@ -153,7 +153,7 @@ export type GamePhase = 'lobby' | 'character-creation' | 'playing' | 'ended';
 export type TableRole = 'dm' | 'player';
 
 export interface WorldSeedLocation { name: string; description: string; terrain: string | null }
-export interface WorldSeedNpc { name: string; description: string; disposition: string | null; motivation: string | null }
+export interface WorldSeedNpc { name: string; description: string; disposition: string | null; motivation: string | null; pronouns?: string }
 export interface WorldSeedItem { name: string; description: string }
 
 export interface WorldSeed {

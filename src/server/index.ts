@@ -19,7 +19,7 @@ import {
 import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
-  withoutSeedSpoilers, withoutSetupFieldDumps, seedWithHostNouns, seedForHost, withHiddenSeedFields,
+  withoutSeedSpoilers, withoutSetupFieldDumps, withoutFalseDraftClaim, setupUnmetForModel, seedWithHostNouns, seedForHost, withHiddenSeedFields,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
 import { WorldSeedSchema } from './agents/schemas.js';
@@ -31,7 +31,7 @@ import { NegotiationRoom } from './negotiation.js';
 import { hasDmAuthority, isWorldAuthor, effectiveTableRole, type TableRole } from './seat.js';
 import {
   getOrCreateInterview, appendInterviewTurn, setInterviewDefinition, setInterviewDraft, setInterviewStatus, getInterviewBySession, listTableCharacters,
-  interviewSheet, mergeCharacterDraft, statedAddressTerms, withStatedAddressTerms,
+  interviewSheet, mergeCharacterDraft, statedAddressTerms, withStatedAddressTerms, withStatedStuntDescriptions,
   type InterviewTurn,
 } from './character-interview.js';
 import { checkCharacterReadiness, checkInterviewReadiness } from './character-readiness.js';
@@ -411,6 +411,7 @@ function validateWorldSeedShape(seed: import('../shared/types.js').WorldSeed): s
     if (!isValidLongField(npc.description)) return `NPC descriptions must be at most ${MAX_LONG_FIELD} characters.`;
     if (!isValidNullableBoundedString(npc.disposition, MAX_SHORT_FIELD)) return `NPC disposition must be at most ${MAX_SHORT_FIELD} characters.`;
     if (!isValidNullableBoundedString(npc.motivation, MAX_LONG_FIELD)) return `NPC motivation must be at most ${MAX_LONG_FIELD} characters.`;
+    if (npc.pronouns != null && !isValidNullableBoundedString(npc.pronouns, MAX_SHORT_FIELD)) return `NPC pronouns must be at most ${MAX_SHORT_FIELD} characters.`;
   }
   if (seed.plotHooks.length > MAX_LIST_ITEMS) return `At most ${MAX_LIST_ITEMS} plot hooks are allowed.`;
   if (!seed.plotHooks.every(h => isValidLongField(h))) return `Plot hooks must be at most ${MAX_LONG_FIELD} characters each.`;
@@ -1385,7 +1386,7 @@ wss.on('connection', (ws) => {
           // "She and her ten-year-old son Biz" (copied from the world seed)
           // while Biz's pronouns are unknown or they/them: "kid".
           const self: PronounMember = { name: sheet.name ?? '', pronouns: sheet.pronouns ?? null, relationships: sheet.relationships ?? [] };
-          return sheetWithNeutralNouns(withStatedAddressTerms(sheet, terms), [...(self.name ? [self] : []), ...tableMembers]);
+          return sheetWithNeutralNouns(withStatedStuntDescriptions(withStatedAddressTerms(sheet, terms), playerLines), [...(self.name ? [self] : []), ...tableMembers]);
         };
         const sheetAsOfReply = withStated(reply.definition ? mergeCharacterDraft(interviewSheet(interview), reply.definition) : interviewSheet(interview));
         reply.reply = guardInterviewReply(reply.reply, sheetAsOfReply, tableMembers);
@@ -1484,7 +1485,7 @@ wss.on('connection', (ws) => {
           preset: campaign.dmPreset,
           systemId: campaign.systemId,
           history: currentPlayer.setupChat,
-          unmet: before.detail,
+          unmet: setupUnmetForModel(before),
           hostTableRole: campaign.hostTableRole,
         });
         // The chat reply is conversation only. Live (E9W9YT) the model wrote
@@ -1505,6 +1506,16 @@ wss.on('connection', (ws) => {
         reply.reply = neutralSetupNouns(reply.reply, hostLines);
         if (reply.dmInstructions) reply.dmInstructions = neutralSetupNouns(reply.dmInstructions, hostLines);
         if (reply.dmCustomPrompt) reply.dmCustomPrompt = neutralSetupNouns(reply.dmCustomPrompt, hostLines);
+        // "I've drafted a starting world… review the world card" when no
+        // draft will follow this reply (the same test the draft step below
+        // uses): the claim comes out and the next question goes in.
+        {
+          const named = normalizeInfluences(reply.influences);
+          const influenceCount = named.length > 0 ? named.length : getInfluences(db, campaign.id).length;
+          const direction = (reply.done && reply.dmInstructions) || campaign.dmInstructions;
+          const draftComing = Boolean(getWorldSeed(db, campaign.id)) || (influenceCount >= MIN_INFLUENCES && Boolean(direction));
+          reply.reply = withoutFalseDraftClaim(reply.reply, { draftComing, fallback: nextSetupQuestion(before.detail) });
+        }
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 
         const influences = normalizeInfluences(reply.influences);

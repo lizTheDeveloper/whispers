@@ -380,7 +380,14 @@ export function wantsGentlePeril(texts: Array<string | null | undefined>): boole
 }
 
 /** How a gentle-peril table is run: what tension is made of, and what it never is. */
-const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, silliness, lost things, bureaucratic obstacles, ticking clocks, puzzles and near-misses — real stakes, told the way a good children\'s book tells them. Never describe bodily harm or pain (no bones, skulls, jaws, teeth rattling in heads, sharp pain, wounds, blood or gore), no weapons or weapon sounds (no guns, gunshots, blades), nobody is ever hunted, stalked, preyed on or eaten — not by crowds, doors, monsters or anything else — and nothing tightens around anyone\'s body (no ropes, nooses or chains). Threats are grumpy, silly, bureaucratic or mysterious, never predatory.';
+const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, silliness, lost things, bureaucratic obstacles, ticking clocks, puzzles and near-misses — real stakes, told the way a good children\'s book tells them. Never describe bodily harm or pain (no bones, skulls, jaws, teeth rattling in heads, sharp pain, wounds, blood or gore), no weapons or weapon sounds (no guns, gunshots, blades), nobody is ever hunted, stalked, preyed on or eaten — not by crowds, doors, monsters or anything else — and nothing tightens around anyone\'s body (no ropes, nooses or chains). Threats are grumpy, silly, bureaucratic or mysterious, never predatory — and never permanent: nobody is threatened with being trapped, lost or archived forever, filed away as a permanent fixture, or left with only one terrifying way out, and storms, rooms and paperwork never eat anyone or anything. Do not repeat the same threat beat after beat.';
+
+/**
+ * How a gentle table's story ends. Live (Z9JKG2, gentle peril, a
+ * ten-year-old): the epilogue opened "Liz and Biz stood frozen as the storm
+ * sealed the exit" and Liz's last thought was "holding nothing but my fear".
+ */
+const GENTLE_ENDING = 'ENDING at a gentle table: the epilogue and every character\'s final words land somewhere safe and hopeful — the party together, safe or safely on their way, an unsolved problem left as a door open for next time, never a doom. Nobody ends trapped, frozen, sealed in, lost or alone, and nobody\'s last word is fear or despair. Warm, a little funny, like the last page of a good children\'s book.';
 
 /**
  * The one tone rule a table with a child gets — or a table whose host asked
@@ -390,14 +397,15 @@ const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, 
  * in her skull", "the crowd turning with hunting intent", "echoing like a
  * gunshot". Stakes stay; the harm, the weapons and the hunting go.
  */
-export function childToneRule(party: PartyMember[], opts: { gentlePeril?: boolean } = {}): string {
+export function childToneRule(party: PartyMember[], opts: { gentlePeril?: boolean; ending?: boolean } = {}): string {
   const kids = childrenInParty(party);
+  const ending = opts.ending ? ` ${GENTLE_ENDING}` : '';
   if (kids.length === 0) {
-    return opts.gentlePeril ? `GENTLE PERIL: the host asked for gentle peril. Run every scene in the ${GENTLE_PERIL_REGISTER}` : '';
+    return opts.gentlePeril ? `GENTLE PERIL: the host asked for gentle peril. Run every scene in the ${GENTLE_PERIL_REGISTER}${ending}` : '';
   }
   const who = kids.length === 1 ? `${kids[0]} is a child` : `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]} are children`;
   const asked = opts.gentlePeril ? ' The host asked for gentle peril too.' : '';
-  return `FAMILY TABLE: ${who}, playing at this table.${asked} Peril and stakes are fine, in the ${GENTLE_PERIL_REGISTER} Never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die. Keep the imagery a ten-year-old can read, for EVERYONE in the scene, NPCs included: no nooses or hanging, no bones cracking or breaking, no blood, wounds or gore, no death imagery (corpses, skulls, "dying" light, graves), no branding or burning skin, nothing "terrifying" or "horrifying".`;
+  return `FAMILY TABLE: ${who}, playing at this table.${asked} Peril and stakes are fine, in the ${GENTLE_PERIL_REGISTER} Never frame a child's death or loss morbidly: no epitaphs, graves, funerals, "never came back", or musing on whether they will die. Keep the imagery a ten-year-old can read, for EVERYONE in the scene, NPCs included: no nooses or hanging, no bones cracking or breaking, no blood, wounds or gore, no death imagery (corpses, skulls, "dying" light, graves), no branding or burning skin, nothing "terrifying" or "horrifying".${ending}`;
 }
 
 const PLAYER_REFERENCE = /\b(players?|player[- ]characters?|PCs?|protagonists?|the party|party members?)\b/i;
@@ -869,7 +877,7 @@ Be conversational and enthusiastic. Ask one or two questions at a time, never a 
 Accumulate every influence the host names into "influences" — return the full list every time, not just new ones.
 When you have enough to build a world, set "done": true and fill in dmInstructions (a summary of how they want this run) and dmCustomPrompt (your tailored direction for running it).
 Until then, set "done": false and leave dmInstructions/dmCustomPrompt null.
-"reply" is only what you SAY to the host, in plain conversation. Never copy dmInstructions or dmCustomPrompt into it, and never lay out a field-by-field draft there (no "Plot Hook:", "Key NPCs:", "Current Situation:", "Secrets:" or "Twist:" headings) — the host sees the drafted world on its own card.
+"reply" is only what you SAY to the host, in plain conversation. Never copy dmInstructions or dmCustomPrompt into it, and never lay out a field-by-field draft there (no "Plot Hook:", "Key NPCs:", "Current Situation:", "Secrets:" or "Twist:" headings) — the host sees the drafted world on its own card. You do not draft that card in this chat and cannot make it appear by saying so: the server drafts it after a reply with "done": true and dmInstructions, once three influences are recorded, and the host sees it arrive. Never say you have drafted a world or ask the host to review a world card.
 PLAYER CHARACTERS: never give the host's player characters a gender the host has not stated — not in "reply", dmInstructions, dmCustomPrompt or anywhere else. Use the host's own relation words: if the host says "my kid Biz", write "her kid Biz" or "Biz", never "son", "daughter", "boy" or "girl"; if the host gave no pronouns for a character, use their name.${spoilerBlock}
 ${ruleContext ? `\nRules reference for their chosen system:\n${ruleContext}\n` : ''}${unmetBlock}
 
@@ -963,7 +971,7 @@ Stylistic influences to honour (these shape VOICE and texture, not plot): ${opts
 Requirements:
 - premise: one or two sentences naming the situation the players arrive into
 - locations: at least 3, each with a name, a concrete description, and a terrain word
-- npcs: at least 3, each with a name, a description, a disposition, and a motivation that could put them in someone's way
+- npcs: at least 3, each with a name, a description, a disposition, and a motivation that could put them in someone's way; and "pronouns" — how the story refers to them ("she/her", "he/him", "they/them", "it/its"), used for the whole game. The description uses those same pronouns.
 - plotHooks: at least 3 unresolved situations, phrased as things that are already happening
 - items: 0 or more notable objects
 
@@ -973,7 +981,7 @@ PLAYER CHARACTERS: never give the host's player characters a gender the host has
 
 NO SPOILERS: The host reads every field of this world on a card before play — the premise, the location and NPC descriptions, dispositions and motivations, the plotHooks and the items — and the host may be playing. None of it may reveal or hint at a twist, a culprit, who is responsible for anything, who is behind anything, a hidden motive, or the answer to a mystery. Not even obliquely: no "rumors hint at a deliberate cover-up", no "someone wants the truth buried", no "it was no accident". Motivations say what an NPC openly wants; plotHooks say what is happening on the surface, as open questions. If the conversation asks something the story should answer ("whose mistake brought us here?"), leave it an open question — the answers belong to the DM's private direction, never to this world.
 
-Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
+Return ONLY: {"premise":"...","locations":[{"name":"...","description":"...","terrain":"..."}],"npcs":[{"name":"...","description":"...","disposition":"...","motivation":"...","pronouns":"..."}],"plotHooks":["..."],"items":[{"name":"...","description":"..."}]}`;
 
     return callLlm({
       messages: [
@@ -1091,6 +1099,7 @@ CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no
 Every reply carries the sheet as it stands so far, finished or not: {"reply": "your next question, or what you understand about them in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."],"age":null,"pronouns":null,"relationships":[]}}
 Fill in every field the player has stated or you have inferred and reflected back; leave the rest empty ("", [], {}). When the player states something outright — a name, what they are, what trouble dogs them, something they can do — record it in the sheet at once, in their words lightly tidied, and do not ask for it again. Include everything from earlier turns too, not just what changed. Only when you know nothing yet may "definition" be null.
 
+Each stunt is its name AND what it does, in one string ("Tiny and Quick — can squeeze through gaps grown-ups cannot fit through"), keeping the description the player gave — never just the name.
 "age" is a number or short phrase if you know it, else null. "pronouns" is how this character is referred to ("she/her", "he/him", "they/them", or the player's own words) — fill it only with what the player told you when asked, or said outright about pronouns; otherwise null. Do not work it out from a gendered word ("mom", "boy") — ask instead. Never assume a gender from a name, an age, a role or anything else, and until "pronouns" is filled, no field of the sheet (high concept, trouble, aspects, stunts, personality, backstory) may call the character he, him, his, she or her — write "Fast on their feet", not "Fast on his feet". "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a kid whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Use the player's own relation word: "my kid Biz" is "kid", not "son" — never assume a gender. Fill it from what the player told you — including anything the backstory states, such as "her kid Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
 
     const messages = [{ role: 'system', content: systemPrompt }, ...opts.history];

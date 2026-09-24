@@ -199,6 +199,10 @@ export const WorldSeedSchema = z.object({
     description: z.string().default(''),
     disposition: z.string().nullable().default(null),
     motivation: z.string().nullable().default(null),
+    // How the story refers to them ("she/her", "they/them", "it/its"). Fixed
+    // for the whole game once set — see npc-pronouns.ts.
+    pronouns: z.string().nullish().catch(undefined)
+      .transform(v => (v && v.trim() ? v.trim() : undefined)),
   })).default([]),
   plotHooks: z.array(z.string().min(1)).default([]),
   items: z.array(z.object({

@@ -276,6 +276,43 @@ export function statedAddressTerms(text: string, ctx: { characterName: string; p
 }
 
 /** The sheet with each stated address term on its tie — or on a new tie, when the term itself says what the tie is ("Mom"). Never a term that describes the character themself. */
+/** "My stunt: Tiny and Quick — I can squeeze…", "Liz's stunt: Found It! — once per scene…". */
+const STATED_STUNT = /\bstunts?\s*(?::|—|–|\bis\b|\bcalled\b)\s*["“]?([^"”\n:—–]{2,60}?)["”]?\s+(?:—|–|-|:)\s+([^\n]+)/gi;
+
+const stuntKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Stunts the player described in their own words, put back where the sheet
+ * kept only the name. Live (Z9JKG2): "My stunt: Tiny and Quick — I can
+ * squeeze through small gaps and under counters where grown-ups can't fit."
+ * was saved as "Tiny and Quick". A stunt the sheet already describes, or one
+ * the player never described, is left as it is. The description runs to the
+ * end of its sentence.
+ */
+export function withStatedStuntDescriptions<T extends Partial<CharacterDefinition>>(sheet: T, playerLines: string[]): T {
+  const stunts = sheet.stunts ?? [];
+  if (stunts.length === 0) return sheet;
+  const stated = new Map<string, string>();
+  for (const line of playerLines) {
+    for (const m of line.matchAll(STATED_STUNT)) {
+      const name = m[1]!.trim();
+      const desc = (m[2]!.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? m[2]!).trim();
+      if (name && desc.split(/\s+/).length >= 3) stated.set(stuntKey(name), `${name} — ${desc}`);
+    }
+  }
+  if (stated.size === 0) return sheet;
+  let changed = false;
+  const next = stunts.map(s => {
+    const full = stated.get(stuntKey(s));
+    if (!full || stuntKey(s) === stuntKey(full)) return s;
+    changed = true;
+    return full;
+  });
+  if (!changed) return sheet;
+  console.log(`[char-chat] stunt description restored from the player's words: ${next.filter((s, i) => s !== stunts[i]).join('; ')}`);
+  return { ...sheet, stunts: next };
+}
+
 export function withStatedAddressTerms<T extends Partial<CharacterDefinition>>(sheet: T, terms: Array<{ to: string; address: string }>): T {
   const rels: Relationship[] = withoutSelfAddress([...(sheet.relationships ?? [])]);
   let changed = rels.some((r, i) => r !== sheet.relationships?.[i]);

@@ -2,6 +2,38 @@ import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { callLlm } from './agents/llm-client.js';
 import { z } from 'zod';
+import { quoteRuns } from './narrative-guards.js';
+
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Words after which a person is the object: "to Mom", "hugged Mom". */
+const OBJECT_BEFORE = /\b(?:to|at|with|from|for|beside|behind|toward|towards|near|by|of|past|around|onto|into|against|hug|hugs|hugged|hugging|grab|grabs|grabbed|pull|pulls|pulled|tell|tells|told|ask|asks|asked|show|shows|showed|call|calls|called|follow|follows|followed|watch|watches|watched|help|helps|helped|squeeze|squeezes|squeezed|nudge|nudges|nudged|tug|tugs|tugged)\s+$/i;
+
+/**
+ * An observer's memory of a companion, in the observer's own words. The
+ * observation is written from the actor's action, which calls the observer
+ * what the actor calls them — live (Z9JKG2), Liz's own memory read "I
+ * watched Biz squeeze Mom's hand" (Liz is Mom). In the observer's memory
+ * "Mom's" / "Liz's" is "my", "Mom" after a verb or preposition is "me",
+ * and any other "Mom" is the observer's name. Quoted speech is the actor's
+ * and is left alone.
+ */
+export function observerOwnWords(content: string, observerName: string, aliases: string[]): string {
+  if (!content) return content;
+  const first = observerName.trim().split(/\s+/)[0] ?? observerName;
+  const names = [...new Set([first, ...aliases].map(n => n.trim()).filter(Boolean))];
+  if (names.length === 0) return content;
+  const alt = names.map(escRe).join('|');
+  const possessive = new RegExp(`(?<![\\w'’-])(?:${alt})['’]s\\b`, 'g');
+  const bare = new RegExp(`(?<![\\w'’-])(${aliases.map(a => escRe(a.trim())).filter(Boolean).join('|') || '(?!)'})(?![\\w'’-])`, 'g');
+  const out = quoteRuns(content).map(r => {
+    if (r.quoted) return r.text;
+    let t = r.text.replace(possessive, (m, offset: number, whole: string) => (/(?:^|[.!?]\s+)$/.test(whole.slice(0, offset)) ? 'My' : 'my'));
+    t = t.replace(bare, (m, _a: string, offset: number, whole: string) => (OBJECT_BEFORE.test(whole.slice(0, offset)) ? 'me' : first));
+    return t;
+  }).join('');
+  if (out !== content) console.log(`[memory] ${first}'s own memory in ${first}'s words: "${out.slice(0, 80)}"`);
+  return out;
+}
 
 export type MemoryType = 'action' | 'outcome' | 'social' | 'whisper' | 'discovery' | 'emotional';
 
@@ -193,12 +225,14 @@ export class CharacterMemoryStore {
     outcome: string,
     sceneNumber: number,
     turnNumber: number,
+    /** What the actor calls the observer ("Mom"): in the observer's own memory that is "me"/"my". */
+    observerAliases: string[] = [],
   ): Promise<void> {
     let content: string;
     try {
       const text = await callLlm({
         messages: [
-          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Attribute possessions and pockets exactly as narrated: "their pocket" in ${actorName}'s own action is ${actorName}'s own pocket, and a thing goes to someone else only when the outcome says so. Plain text only — no asterisks, no quotes, no JSON.` },
+          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Attribute possessions and pockets exactly as narrated: "their pocket" in ${actorName}'s own action is ${actorName}'s own pocket, and a thing goes to someone else only when the outcome says so.${observerAliases.length > 0 ? ` When ${actorName} says ${observerAliases.map(a => `"${a}"`).join(' or ')}, that is you: write "me" and "my" ("my hand", never "${observerAliases[0]}'s hand").` : ''} Plain text only — no asterisks, no quotes, no JSON.` },
           { role: 'user', content: `${actorName}: "${action}"\nOutcome: "${outcome}"` },
         ],
         temperature: 0.3,
@@ -214,6 +248,7 @@ export class CharacterMemoryStore {
     } catch {
       content = this.fallbackObservation(actorName, action);
     }
+    content = observerOwnWords(content, observerName, observerAliases);
 
     this.db.prepare(
       `INSERT INTO character_memories (id, character_id, campaign_id, scene_number, turn_number, type, content, emotional_valence, importance, decay_rate)
