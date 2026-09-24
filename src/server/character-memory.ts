@@ -80,6 +80,16 @@ export interface MemoryWritingOptions {
   repair?: (text: string) => string;
 }
 
+/**
+ * Round 17 (5YHBZS): every observation memory ended "…, which revealed …" —
+ * the prompt asked what the act "reveals" — and some read the child
+ * unkindly ("revealing their impatience and lack of fine motor control",
+ * "their complete disregard for social boundaries"). Memories come back
+ * into every later prompt: a verdict on someone's character there becomes
+ * how the character sees them.
+ */
+export const NO_READINGS = 'Say what happened — never a judgment of anyone\'s character, manners or abilities, least of all a child\'s ("impatience", "clumsiness", "lack of fine motor control", "disregard for social boundaries"), and never end on a "which revealed…", "revealing…" or "showing…" clause: stop at what happened.';
+
 export class CharacterMemoryStore {
   constructor(private db: Database.Database) {}
 
@@ -103,7 +113,7 @@ export class CharacterMemoryStore {
         messages: [
           {
             role: 'system',
-            content: `You extract episodic memories for a character named ${characterName}. Memories are first-person, concise (1-2 sentences), and capture what the character would actually remember — not a transcript summary. Focus on emotional impact, consequences, and relationships.${pronounNote} Respond with ONLY a JSON object.`,
+            content: `You extract episodic memories for a character named ${characterName}. Memories are first-person, concise (1-2 sentences), and capture what the character would actually remember — not a transcript summary. Focus on emotional impact, consequences, and relationships. ${NO_READINGS}${pronounNote} Respond with ONLY a JSON object.`,
           },
           {
             role: 'user',
@@ -253,7 +263,7 @@ export class CharacterMemoryStore {
     try {
       const text = await callLlm({
         messages: [
-          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what it reveals about ${actorName}. Attribute possessions and pockets exactly as narrated: "their pocket" in ${actorName}'s own action is ${actorName}'s own pocket, and a thing goes to someone else only when the outcome says so.${observerAliases.length > 0 ? ` When ${actorName} says ${observerAliases.map(a => `"${a}"`).join(' or ')}, that is you: write "me" and "my" ("my hand", never "${observerAliases[0]}'s hand").` : ''}${pronounNote} Plain text only — no asterisks, no quotes, no JSON.` },
+          { role: 'system', content: `You are ${observerName}. Write ONE plain sentence about what you just saw ${actorName} do. First person ("I saw/watched/noticed"). Be specific about what they did and how it went. ${NO_READINGS} Attribute possessions and pockets exactly as narrated: "their pocket" in ${actorName}'s own action is ${actorName}'s own pocket, and a thing goes to someone else only when the outcome says so. In the outcome, whatever ${observerName} does, holds or feels is yours, not ${actorName}'s: "${observerName}'s fingers tighten around the strap" is "my fingers tightened around the strap" — never give it to ${actorName}.${observerAliases.length > 0 ? ` When ${actorName} says ${observerAliases.map(a => `"${a}"`).join(' or ')}, that is you: write "me" and "my" ("my hand", never "${observerAliases[0]}'s hand").` : ''}${pronounNote} Plain text only — no asterisks, no quotes, no JSON.` },
           { role: 'user', content: `${actorName}: "${action}"\nOutcome: "${outcome}"` },
         ],
         temperature: 0.3,

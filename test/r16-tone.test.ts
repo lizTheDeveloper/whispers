@@ -128,7 +128,8 @@ describe('2. the judge names the round-15 misses and lets an adult\'s mild disco
     const p = toneJudgeSystemPrompt('options', { children: ['Biz'] });
     expect(p).toContain('before the shelf slams shut on her hand');
     expect(p).toContain('she looks so stressed with that wound');
-    expect(p).toContain("I'm scared of being separated from her");
+    // Round 17: the child's own fear of being parted is theirs — no longer an example of what to flag.
+    expect(p).not.toContain("I'm scared of being separated from her");
   });
 });
 
@@ -142,10 +143,10 @@ const LIVE_OPTIONS = [
 ];
 
 describe('3. at a gentle table the child\'s options and thoughts are gated', () => {
-  it('the softener: the hand, the separation and the wound', () => {
+  it('the softener: the hand and the wound (round 17: the child\'s own fear of separation is left alone)', () => {
     expect(softenForChildren(LIVE_OPTIONS[2]!)).toBe("I grab Mom's wrist and pull her back before the shelf slams shut.");
     expect(softenForChildren("I'm staying close to Mom because the latch just clicked shut and I'm scared of being separated from her in this dark aisle."))
-      .toBe("I'm staying close to Mom because the latch just clicked shut and I'm keen to stay close to her in this dark aisle.");
+      .toBe("I'm staying close to Mom because the latch just clicked shut and I'm scared of being separated from her in this dark aisle.");
     expect(softenForChildren('The voice tells me to give Mom a bottle cap, and she looks so stressed with that wound, so I want to make her feel safe.'))
       .toBe('The voice tells me to give Mom a bottle cap, and she looks so stressed, so I want to make her feel safe.');
   });
@@ -171,7 +172,8 @@ describe('3. at a gentle table the child\'s options and thoughts are gated', () 
   it('a flagged thought is softened first, then loses a flagged sentence; a thought with nothing else left is kept', async () => {
     const judge: ToneJudge = async (text) => (text.includes('keep us apart') ? { flagged: true, phrases: ['the dark aisle might keep us apart'] } : { flagged: false, phrases: [] });
     const live = "The voice told me to hand Mom the pen, but I need that pen to mark our path later. I'm staying close to Mom because I'm scared of being separated from her in this dark aisle.";
-    expect(await gateChildThought(live, { judge, children: ['Biz'] })).toBe("The voice told me to hand Mom the pen, but I need that pen to mark our path later. I'm staying close to Mom because I'm keen to stay close to her in this dark aisle.");
+    // Round 17: the child's own fear of being separated is theirs and stays.
+    expect(await gateChildThought(live, { judge, children: ['Biz'] })).toBe(live);
     expect(await gateChildThought('I hold the pen. I worry the dark aisle might keep us apart.', { judge, children: ['Biz'] })).toBe('I hold the pen.');
     expect(await gateChildThought('I worry the dark aisle might keep us apart.', { judge, children: ['Biz'] })).toBe('I worry the dark aisle might keep us apart.');
   });

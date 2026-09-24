@@ -71,7 +71,8 @@ describe('1a. the gate: judge, regenerate once with the phrases, keep the better
     });
     const soften = vi.fn((t: string) => `${t} [softened]`);
     const r = await gateGentleTone({ kind: 'ruling', first: MENACE, textOf: t => t, regenerate: async () => second, soften, judge });
-    expect(r.value).toBe('She smooths her feathers. [softened]');
+    // Round 17: "She" lost its person with the removed sentence; it gets the name back.
+    expect(r.value).toBe('Mama Pigeon smooths her feathers. [softened]');
     expect(r.stillFlagged).toBe(true);
     expect(soften).toHaveBeenCalledTimes(1);
   });
@@ -275,7 +276,8 @@ describe('3. no stock line or stock phrase comes round again, for either charact
     expect(new Set(shapes).size).toBe(shapes.length);
     // Round 15 retired this one: it read as a template (test/r15-tone.test.ts, 6).
     expect(said.filter(l => l.includes('fate is generous to those it tests'))).toHaveLength(0);
-    expect(said.filter(l => l.includes('the pull of old habits'))).toHaveLength(1);
+    // Round 17 retired "the pull of old habits … a small mercy" (test/r17-tone.test.ts, 6b).
+    expect(said.filter(l => l.includes('the pull of old habits'))).toHaveLength(0);
     expect(said.filter(l => l.includes('rears its head'))).toHaveLength(1);
   });
 

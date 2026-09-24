@@ -2053,10 +2053,31 @@ const CHILD_SOFTENERS: Array<[RegExp, string | ((...args: string[]) => string)]>
   // Round 16 (NUMMRL), the child's own option: "pull her back before the
   // shelf slams shut on her hand" → "…before the shelf slams shut".
   [/\b((?:slams?|slammed|slamming|snaps?|snapped|snapping|shuts?|shutting|clos(?:e|es|ed|ing)|crash(?:es|ed|ing)?|comes?\s+down|came\s+down|falls?|fell|drops?|dropped)(?:\s+(?:shut|down|closed))?)\s+(?:on|onto)\s+(?:her|his|their|my|your|our|[\p{Lu}][\p{L}'’-]*['’]s)\s+(?:hands?|fingers?|feet|foot|toes?|arms?|legs?|heads?|nose|tail|paws?)\b/giu, '$1'],
-  // …and the child's thoughts: "I'm scared of being separated from her" →
-  // "I'm keen to stay close to her"; "she looks so stressed with that wound"
-  // → "she looks so stressed".
-  [/\b(?:scared|afraid|frightened|terrified|worried|nervous)\s+(?:of|about)\s+(?:being|getting)\s+(?:separated|split\s+up|parted|pulled\s+apart|taken\s+away)\s+from\b/gi, 'keen to stay close to'],
+  // Round 17 (5YHBZS): the WORLD parting the child from their grown-up —
+  // "or the queue will separate you from your mother" → "…will keep you
+  // waiting a moment". The child's own worry about it ("I'm scared of being
+  // separated from her", round 16's rule) is theirs and is left alone.
+  [/\b(will|shall|['’]ll|could|might|may|must|going\s+to|about\s+to|threaten(?:s|ed|ing)?\s+to|tr(?:y|ies|ied|ying)\s+to)\s+(?:separate|part|split\s+up|pull\s+apart)\s+(you|them|you\s+two|the\s+two\s+of\s+you|the\s+pair|us)(?:\s+from\s+(?:each\s+other|one\s+another|(?:your|their|our)\s+[\p{L}'’-]+))?/giu, '$1 keep $2 waiting a moment'],
+  // …"vibrates through the floorboards and into their bones" → "…through the floorboards".
+  // Only a sound or a shake going into them: "the realization settles into her bones" stays.
+  [/(\b(?:vibrat|hum|thrum|rumbl|buzz|shiver|shudder|trembl|puls|rattl|seep|echo|throb)\w*\b[^.!?]{0,60}?),?\s+(?:and\s+)?(?:right\s+)?into\s+(?:their|his|her|my|your|our|[\p{Lu}][\p{L}'’-]*['’]s)\s+(?:very\s+)?bones\b/giu, '$1'],
+  // …"with the intensity of a hawk spotting a mouse" → "with sharp interest".
+  [/\s+(?:with\s+the\s+(?:intensity|focus|stare|look|eyes)\s+of|like)\s+an?\s+(?:hawk|owl|cat|fox|wolf|eagle|snake|predator|falcon|vulture|shark|hunter)\s+(?:spotting|eyeing|stalking|watching|sighting|fixing\s+on|spying|circling|hunting)\s+(?:a|an|its|some)\s+(?:mouse|mice|prey|rabbit|vole|sparrow|meal|dinner|lunch)\b/gi, ' with sharp interest'],
+  // …"trapping the pair in a shrinking pocket of dry air" → "leaving the pair in a small pocket…".
+  // (People only: "the trap door in the hall" stays.)
+  [/\b[Tt]rap(s|ped|ping)?\s+((?:the\s+)?(?:pair|two|party|family|child|children|kids?|them|us|you|him|her|me|\p{Lu}[\p{L}'’-]*)(?:\s+(?:and|&)\s+\p{Lu}[\p{L}'’-]*)?)\s+(in|inside)\b/gu,
+    (_m: string, end: string, who: string, prep: string) => `${({ '': 'leave', s: 'leaves', ped: 'left', ping: 'leaving' } as Record<string, string>)[(end ?? '').toLowerCase()] ?? 'leave'} ${who} ${prep}`],
+  [/\bshrinking\s+(pocket|space|room|circle|gap|bubble|corner|patch|nook)\b/gi, 'small $1'],
+  // …"We are trapped here with the paperwork" (Biz's own words) → "We are stuck here for a moment…".
+  [/\b(am|is|are|was|were|be|been|being|['’]re|['’]m|feel|feels|felt|get|gets|got)\s+trapped\s+(here|in\s+here)\b/gi, '$1 stuck $2 for a moment'],
+  [/\b(am|is|are|was|were|be|been|being|['’]re|['’]m|feel|feels|felt|get|gets|got)\s+trapped\b/gi, '$1 stuck'],
+  // …"safe from whatever grows in the shadows" → "safe from the muddle".
+  [/\bwhatever\s+(?:grows|lurks|hides|waits|creeps|moves|lives|stirs|watches)\s+in\s+the\s+(?:shadows|dark|darkness|gloom)\b/gi, 'the muddle'],
+  // …"The shadow beneath the ribbon stretches unnaturally long, twisting toward the center of the room" → "…stretches long across the room".
+  [/\b(stretch(?:es|ed|ing)?|grow(?:s|ing)?|grew|lengthen(?:s|ed|ing)?|bend(?:s|ing)?|bent)\s+unnaturally\b/gi, '$1'],
+  [/(\bshadows?\b[^.!?]*?),\s+(?:twisting|creeping|crawling|slithering|snaking|inching|reaching|curling)\s+(?:right\s+)?(?:toward|towards)\s+(?:the\s+(?:center|centre|middle)\s+of\s+)?(the\s+[\p{L}'’-]+|us|them|you|me)/giu,
+    (_m: string, pre: string, target: string) => (/^the\s/i.test(target) ? `${pre} across ${target}` : pre)],
+  // "she looks so stressed with that wound" → "she looks so stressed" (round 16).
   [/\s+(?:with|from|because\s+of|over)\s+(?:that|her|his|their|my|your|the|this)\s+(?:wounds?|injur(?:y|ies)|gash(?:es)?|bleeding|bruises?)\b/gi, ''],
 ];
 
@@ -2268,6 +2289,55 @@ const MECHANIC = /\bfate\s+points?\b|\bFP\b|\b(?:whisper|voice)\s+trust\b|\btrus
 /** "my trust is too low to let…" says a feeling, as a stat: "I'm not ready to let…". */
 const LOW_TRUST_TO = /\b(?:my|our)\s+trust(?:\s+in\s+(?:the|this|that)\s+(?:voice|whisper))?\s+is\s+(?:too|so|very|far\s+too|still\s+too)\s+low\s+(?:for\s+me\s+)?to\b/gi;
 
+/** A character's sheet, as far as its words can name it: skills, aspects, stunts. */
+export interface MechanicSheet {
+  skills?: string[];
+  aspects?: string[];
+  stunts?: string[];
+}
+
+/** The names on a sheet a character could use as a game term: each skill, aspect and stunt name ("Fine Print - once per scene…" → "Fine Print"). */
+export function mechanicTerms(sheet: MechanicSheet): { skills: string[]; aspects: string[]; stunts: string[] } {
+  const clean = (xs: string[] | undefined) => [...new Set((xs ?? []).map(x => (x ?? '').trim().replace(/^["“'‘]+|["”'’.]+$/g, '').trim()).filter(x => x.length >= 3))];
+  return {
+    skills: clean(sheet.skills),
+    aspects: clean(sheet.aspects),
+    stunts: clean((sheet.stunts ?? []).map(st => (st ?? '').split(/\s+[-—–]\s+|[:(]/)[0] ?? '').filter(n => n.trim().split(/\s+/).length <= 6)),
+  };
+}
+
+/** A sheet name as a pattern: a one-word skill exactly as written ("Will", never "will"); a longer name with either case at its start. */
+const sheetNameRe = (n: string) => (/\s/.test(n) ? `[${n[0]!.toUpperCase()}${n[0]!.toLowerCase()}]${esc(n.slice(1))}` : esc(n));
+
+/** Mechanics named without a sheet: an aspect as a game term, a roll of the dice. */
+const MECHANIC_MORE = /\b(?:my|our|an|the|this|that|her|his|their)\s+(?:["“'‘][^"”'’]+["”'’]\s+)?aspects?\b(?!\s+of\b)|\b(?:a|my|the|good|bad|high|low|lucky|unlucky|great|terrible|dice|skill)\s+rolls?\b(?!\s+of\b)|\broll(?:s|ed|ing)?\s+(?:the\s+|my\s+)?dice\b|\broll(?:s|ed|ing)?\s+(?:a|an)\s+\d|\bskill\s+(?:checks?|rolls?)\b/i;
+
+function sheetPatterns(sheet?: MechanicSheet): { names: string; mention: RegExp | null } {
+  if (!sheet) return { names: '', mention: null };
+  const t = mechanicTerms(sheet);
+  const all = [...t.skills, ...t.stunts, ...t.aspects].sort((a, b) => b.length - a.length).map(sheetNameRe);
+  if (all.length === 0) return { names: '', mention: null };
+  const names = `["“'‘]?(?:${all.join('|')})["”'’]?`;
+  return {
+    names,
+    mention: new RegExp(`\\b(?:[Mm]y|[Oo]ur)\\s+${names}\\s+(?:skills?|stunts?|checks?|rolls?)\\b|\\b[Uu]s(?:e|es|ed|ing)\\s+(?:[Mm]y\\s+|[Oo]ur\\s+)${names}(?![\\p{L}])|\\b(?:[Rr]oll(?:s|ed|ing)?|[Cc]heck(?:s|ed|ing)?)\\s+(?:for\\s+|on\\s+|with\\s+)?(?:my\\s+)?${names}(?![\\p{L}])|(?<![\\p{L}])${names}\\s+(?:checks?|rolls?)\\b`, 'u'),
+  };
+}
+
+/**
+ * "I will use my Rapport to establish…" → "I will establish…"; "I read it
+ * with my Investigate skill" → "I read it" (round 17, 5YHBZS: "I will use my
+ * Rapport to establish a line of communication", "I use my Notice skill to
+ * recall the date").
+ */
+function withoutSheetUse(text: string, names: string): string {
+  if (!names) return text;
+  let out = text.replace(new RegExp(`\\b((?:will|shall|can|could|should|must|['’]ll|going\\s+to|want\\s+to|need\\s+to|have\\s+to|try\\s+to)\\s+)?([Uu])se\\s+(?:my|our)\\s+${names}(?:\\s+(?:skills?|stunts?|aspects?))?\\s+to\\s+([\\p{L}])`, 'gu'),
+    (_m: string, modal: string | undefined, u: string, first: string) => `${modal ?? ''}${!modal && u === 'U' ? first.toUpperCase() : first}`);
+  out = out.replace(new RegExp(`\\s+(?:with|using|through|by\\s+using|thanks\\s+to)\\s+(?:my|our)\\s+${names}(?:\\s+(?:skills?|stunts?|aspects?))?(?=[\\s,.;!?…]|$)`, 'gu'), '');
+  return out;
+}
+
 /**
  * A character's thought or words without the game's mechanics. Round 16
  * (NUMMRL), Liz's thoughts: "Biz just earned a fate point", "my trust is too
@@ -2276,19 +2346,21 @@ const LOW_TRUST_TO = /\b(?:my|our)\s+trust(?:\s+in\s+(?:the|this|that)\s+(?:voic
  * with the rest of its sentence (its whole sentence when it is the first
  * clause). Returns '' when nothing is left.
  */
-export function withoutMechanics(text: string): string {
+export function withoutMechanics(text: string, sheet?: MechanicSheet): string {
   if (!text) return text;
-  let out = text.replace(LOW_TRUST_TO, "I'm not ready to");
-  if (!MECHANIC.test(out)) {
+  const { names, mention } = sheetPatterns(sheet);
+  const isMechanic = (s: string) => MECHANIC.test(s) || MECHANIC_MORE.test(s) || (mention?.test(s) ?? false);
+  let out = withoutSheetUse(text.replace(LOW_TRUST_TO, "I'm not ready to"), names);
+  if (!isMechanic(out)) {
     if (out !== text) console.log(`[guard] game mechanics out of a character's words: ${changedSpan(text, out)}`);
     return out;
   }
   const sentences = out.split(SENTENCE_SPLIT);
   const kept: string[] = [];
   for (const sentence of sentences) {
-    if (!MECHANIC.test(sentence)) { kept.push(sentence); continue; }
+    if (!isMechanic(sentence)) { kept.push(sentence); continue; }
     const clauses = sentence.split(/(?<=[,;—–])\s+|\s+(?=(?:but|so|because|while|though|although|since)\s)/);
-    const first = clauses.findIndex(c => MECHANIC.test(c));
+    const first = clauses.findIndex(c => isMechanic(c));
     if (first <= 0) continue;
     let head = clauses.slice(0, first).join(' ').trim().replace(/[\s,;:—–-]+$/u, '');
     if (!/[.!?…]["”’']?$/.test(head)) head = `${head}.`;
@@ -2297,6 +2369,41 @@ export function withoutMechanics(text: string): string {
   const result = kept.join(' ').replace(/\s+/g, ' ').trim();
   console.log(`[guard] game mechanics out of a character's words: ${changedSpan(text, result || '(nothing left)')}`);
   return result;
+}
+
+/** Kin words a model can drop into an action's verb slot. */
+const KIN_WORD = /(?:Mom|Mum|Mommy|Mummy|Mama|Ma|Dad|Daddy|Papa|Pa|Grandma|Grandpa|Granny|Nana|Gran|Auntie|Aunt|Uncle)/;
+const KIN_AS_VERB = new RegExp(`^(\\s*)(I\\s+)?${KIN_WORD.source}\\s+(?=(?:a|an|the|one|two|three|another|my|our|your|his|her|their|this|that|these|those|some)\\s+[^,.;!?]{1,40}?\\s+(?:to|into|over\\s+to)\\s)`);
+
+/**
+ * A kin word in the verb slot of an action: "Dad a bottle cap to Mom and
+ * watch the fern grow" (round 17, 5YHBZS — Biz's chosen action; Liz is
+ * Mom, and nobody at the table is Dad) is "Hand a bottle cap to Mom…". No
+ * guard wrote it: no substitution produces "Dad" without a father at the
+ * table (KIN_ADDRESS needs one on a sheet), and none logged a change that
+ * turn; it came back from the model that way. Only at the start of the
+ * action (or after "I "), and only before a thing given "to" someone.
+ */
+export function repairKinWordAsVerb(action: string): string {
+  if (!action) return action;
+  const out = action.replace(KIN_AS_VERB, (_m: string, lead: string, i: string | undefined) => `${lead}${i ? `${i}hand` : 'Hand'} `);
+  if (out !== action) console.log(`[guard] kin word in the verb slot of an action: ${changedSpan(action, out)}`);
+  return out;
+}
+
+/**
+ * A memory without the reading of someone's character tacked on at the end:
+ * "…, revealing their impatience and lack of fine motor control", "…, which
+ * revealed their complete disregard for social boundaries" (round 17,
+ * 5YHBZS — every observation memory ended that way, and some were unkind
+ * about the child). What they did stays; "the drawer slid open, revealing a
+ * tiny brass key" is a plain verb and stays too.
+ */
+export function withoutCharacterReading(text: string): string {
+  if (!text) return text;
+  const out = text.replace(/,\s*(?:which\s+)?(?:revealed|reveals|revealing|showed|shows|showing|proved|proves|proving|suggested|suggests|suggesting|demonstrated|demonstrates|demonstrating|highlighted|highlights|highlighting|betrayed|betrays|betraying|told\s+me|telling\s+me)\s+(?:to\s+me\s+|me\s+)?(?:(?:that|how|just\s+how|their|her|his|its|my|our|your|them|they|she|he|I|we|you)\b|(?<=me\s))[^.!?]*/gi, '');
+  if (out !== text) console.log(`[memory] character reading dropped: ${changedSpan(text, out)}`);
+  return out;
 }
 
 /**
