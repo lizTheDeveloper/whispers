@@ -6,6 +6,7 @@
  * cuts only at a word boundary (with an ellipsis) where it must, and only
  * ever changes the case of its first letter.
  */
+import { SENTENCE_BREAK, SENTENCE_SPLIT } from './sentences.js';
 
 export const SUGGESTION_MAX_CHARS = 60;
 
@@ -34,7 +35,7 @@ export function shortenSuggestion(action: string, max = SUGGESTION_MAX_CHARS): s
     .replace(/^\s*I\s+/i, '')
     .replace(/^(try|attempt|decide|choose|want) to\s+/i, '')
     .trim();
-  s = (s.split(/(?<=[.!?])\s+/)[0] ?? s).replace(/[.!?]+$/, '').trim();
+  s = (s.split(SENTENCE_SPLIT)[0] ?? s).replace(/[.!?]+$/, '').trim();
   if (s.length <= max) return s;
 
   const clauses = s.split(/\s*[,;:]\s+|\s+[—–]\s+|\s+-\s+/).map(c => c.trim()).filter(Boolean);
@@ -90,7 +91,7 @@ export function npcPronounInNarration(name: string, narration: string, partyName
   const named = new RegExp(`(?<![\\w'’-])${esc(first)}(?![\\w-])`);
   const party = partyNames.map(n => n.trim().split(/\s+/)[0] ?? n).filter(Boolean).map(n => new RegExp(`\\b${esc(n)}\\b`));
   const counts = { he: 0, she: 0, it: 0, they: 0 };
-  const sentences = narration.split(/(?<=[.!?…]["”’']?)\s+|\n+/);
+  const sentences = narration.split(SENTENCE_BREAK);
   sentences.forEach((s, i) => {
     if (!named.test(s)) return;
     // The sentence naming them, and the next one if it names no one else.

@@ -5,11 +5,13 @@ import type { DmNarration, DmResolution, CharacterValidation, DmSetupReply, Char
 import { searchRules, type RuleChunk } from '../rag/search.js';
 import { PLAIN_PROSE_STYLE } from './style.js';
 import { repetitionNotes } from '../narrative-guards.js';
-import { npcPronounBlock, seedNpcPronouns } from '../npc-pronouns.js';
+import { npcPronounBlock, seedNpcPronouns, neutralPronouns, neutralNounRule, partyPronounLine } from '../npc-pronouns.js';
 import { repairGenderedNouns } from '../pronoun-consistency.js';
 import { influenceKey } from '../world-readiness.js';
 import { wantsNoSpoilers } from '../../shared/spoilers.js';
 import { safeDataFile } from '../data-paths.js';
+import { SENTENCE_SPLIT } from '../sentences.js';
+import { publicDisposition } from '../world-seed.js';
 import type Database from 'better-sqlite3';
 import type { CharacterDefinition, CharacterRelationship, TranscriptMessage, DiceResult, WorldSeed, TableRole } from '../../shared/types.js';
 
@@ -318,10 +320,17 @@ export function describeParty(members: PartyMember[]): string {
     .filter(r => r.address?.trim() && !sameFirstName(r.address, r.to) && r.address.trim().toLowerCase() !== r.to.trim().toLowerCase())
     .map(r => ({ speaker: m.name.trim().split(/\s+/)[0]!, to: r.to.trim().split(/\s+/)[0]!, term: r.address!.trim() })))[0];
   const addressExample = example ? ` ("${example.speaker} steadies ${example.to}", never "${example.speaker} steadies ${example.term}")` : '';
+  // Live (WXKC2C): Biz, they/them and ten, was "her son", "the boy" and "its gaze".
+  const pronounLine = partyPronounLine(members.map(m => ({ name: m.name, pronouns: pronounsFor(m, members) })));
+  const nounRule = pronounLine ? `${pronounLine} Use them in narration and in everyone's speech, NPCs included.` : '';
+  const first = members[0]?.name.trim().split(/\s+/)[0];
   return [
     'THE PARTY — the player characters actually at this table (authoritative). Any other player-character names that came up while setting the game up were placeholders: those people are not in this game and must never appear as party members.',
     ...lines,
     hasAges ? 'Characters act their stated ages — a child thinks, talks and is treated like a child.' : '',
+    nounRule,
+    // Live (WXKC2C): the clerk called Liz "Mrs. Miller" for the whole game.
+    `Never give a party member a surname, title or honorific their sheet does not state: NPCs call them by the name above${first ? ` ("${first}" — never "Mrs. Something" or "Mr. Something")` : ''}.`,
     anyUnstated ? 'Never guess a gender this block does not state — not from a name, an age, or the other side of a relation (a mother\'s child is not therefore a son). Where it is not stated, use the character\'s name or "they", and gender-neutral words for them: kid, child, parent, sibling — never son, daughter, boy, girl, he or she.' : '',
     'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
     'Do not give a character a chair, a seat, a posture or a prop the story has not set up — if you do not know whether someone is sitting, do not say.',
@@ -381,7 +390,7 @@ export function wantsGentlePeril(texts: Array<string | null | undefined>): boole
 }
 
 /** How a gentle-peril table is run: what tension is made of, and what it never is. */
-const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, silliness, lost things, bureaucratic obstacles, muddles, puzzles and things that go wrong — real stakes, told the way a good children\'s book tells them. Nothing comes close to hurting anyone: no near-misses to the body (nothing slams down "missing their ear by a whisker", nothing whizzes past a head), and nothing bites, snaps or nips at anyone — not animals, paperwork or furniture ("the paperwork might bite back" is out). No punishment or countdown threats aimed at the child: nobody threatens detention, arrest, confiscation or being kept behind, and no NPC gives anyone a number of minutes before something bad happens ("you have four minutes before the queue resets", "a five-minute detention") — a queue can move and a clock can tick in the background, but it never counts down at the kid. Nothing is "terrifying" or "horrifying": a goose waddles with great determination, not terrifying determination. Never describe bodily harm or pain (no bones, skulls, jaws, teeth rattling in heads, sharp pain, wounds, blood or gore), no weapons or weapon sounds (no guns, gunshots, blades), nobody is ever hunted, stalked, preyed on or eaten — not by crowds, doors, monsters or anything else — and nothing tightens around anyone\'s body (no ropes, nooses or chains). Threats are grumpy, silly, bureaucratic or mysterious, never predatory — and never permanent: nobody is threatened with being trapped, lost or archived forever, filed away as a permanent fixture, or left with only one terrifying way out, and storms, rooms and paperwork never eat anyone or anything. Do not repeat the same threat beat after beat.';
+const GENTLE_PERIL_REGISTER = 'GENTLE PERIL register: stakes come from mishaps, silliness, lost things, bureaucratic obstacles, muddles, puzzles and things that go wrong — real stakes, told the way a good children\'s book tells them. Nothing comes close to hurting anyone: no near-misses to the body (nothing slams down "missing their ear by a whisker", nothing whizzes past a head), and nothing bites, snaps or nips at anyone — not animals, paperwork or furniture ("the paperwork might bite back" is out). No punishment or countdown threats aimed at the child: nobody threatens detention, arrest, confiscation or being kept behind, and no NPC gives anyone a number of minutes before something bad happens ("you have four minutes before the queue resets", "a five-minute detention") — a queue can move and a clock can tick in the background, but it never counts down at the kid. Nothing is "terrifying" or "horrifying": a goose waddles with great determination, not terrifying determination. Never describe bodily harm or pain (no bones, skulls, jaws, teeth rattling in heads, sharp pain, wounds, blood or gore), no weapons or weapon sounds (no guns, gunshots, blades), nobody is ever hunted, stalked, preyed on or eaten — not by crowds, doors, monsters or anything else — and nothing tightens around anyone\'s body (no ropes, nooses or chains). Threats are grumpy, silly, bureaucratic or mysterious, never predatory — and never permanent: nobody is threatened with being trapped, lost or archived forever, filed away as a permanent fixture, or left with only one terrifying way out, and storms, rooms and paperwork never eat anyone or anything. A person is never the thing being processed: nobody — least of all the child — is threatened with being erased, filed, processed, catalogued, stamped, shredded, alphabetized or swallowed (whole or otherwise), called clutter or an unregistered asset to be put in a drawer, or told the system will forget they exist; the paperwork, the stamps and the queue are the obstacle, never the kid. Never separate the child from their grown-up: no partition, wall, door or gap seals them apart, and no NPC threatens to take either one away; the two of them face every obstacle side by side. And never dismiss the kid\'s feelings: no NPC calls their worry, tears or a hug an "emotional outburst", "noted" as a delay, or a filing error. Do not repeat the same threat beat after beat.';
 
 /**
  * How a gentle table's story ends. Live (Z9JKG2, gentle peril, a
@@ -426,7 +435,7 @@ const NON_NAME_WORDS = new Set(['The', 'They', 'Their', 'A', 'An', 'And', 'But',
 export function withoutPlaceholderParty(text: string | null, partyNames: string[]): string | null {
   if (!text || partyNames.length === 0) return text;
   const partyTokens = new Set(partyNames.flatMap(n => n.split(/\s+/)).map(t => t.replace(/[^A-Za-z'-]/g, '').toLowerCase()).filter(Boolean));
-  const sentences = text.split(/(?<=[.!?])\s+/);
+  const sentences = text.split(SENTENCE_SPLIT);
   const kept = sentences.filter(sentence => {
     if (!PLAYER_REFERENCE.test(sentence)) return true;
     const names = (sentence.match(/\b[A-Z][a-z]+(?:'[a-z]+)?\b/g) ?? [])
@@ -1117,10 +1126,10 @@ ${people}${pronounRule ? `\n\n${pronounRule}` : ''}${toneRule}`;
     // backstory, and from there in the character agent's prompt every turn.
     const tableCharacters = (opts.tableCharacters ?? []).filter(c => c.name.trim());
     const tableBlock = tableCharacters.length > 0
-      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). Use the relation word the player used ("kid" stays "kid").\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
+      ? `\nAlready at this table (other players' characters):\n${tableCharacters.map(c => `- ${c.name}${c.highConcept ? `: ${c.highConcept}` : ''} — ${c.pronouns?.trim() ? `pronouns ${c.pronouns.trim()}${neutralPronouns(c.pronouns) ? ` — ${neutralNounRule(c.name, c.pronouns)}` : ''}` : `pronouns NOT known to you: call ${c.name} by name, never he/him/his or she/her, and never "son", "daughter", "boy" or "girl"`}`).join('\n')}\nWhen you talk about one of these people, use only the pronouns listed for them; where none are listed, use their name every time ("Biz is your kid, and Biz calls you Mom" — never "she calls you Mom"). Use the relation word the player used ("kid" stays "kid").\nThis character will be playing alongside them. Once you know who this character is, ask — as one of your questions, in plain words — whether they know any of these people and how: family, friends, rivals, strangers? And what do they call each other ("Mom", a nickname, a title, a first name)? Strangers are a fine answer; do not push a connection the player does not want. When your reply mentions one of these people, call them by their name ("Liz") — never a relation word stacked on the name ("Mom Liz", "traveling with Mom Liz"): an address term like "Mom" is only what this character says to them, inside their own words.\n`
       : '';
     const worldBlock = opts.seed
-      ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => { const p = seedNpcPronouns([n])[0]?.pronouns; return `${n.name} (${[p, n.disposition ?? 'unknown'].filter(Boolean).join(', ')})`; }).join(', ')}\n${npcPronounBlock(seedNpcPronouns(opts.seed.npcs.slice(0, 5)))}\n`
+      ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => { const p = seedNpcPronouns([n])[0]?.pronouns; return `${n.name} (${[p, publicDisposition(n.disposition) ?? 'unknown'].filter(Boolean).join(', ')})`; }).join(', ')}\n${npcPronounBlock(seedNpcPronouns(opts.seed.npcs.slice(0, 5)))}\n`
       : '';
     const unmetBlock = opts.unmet.length > 0
       ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nEvery reply asks about at least one of these — the way a person would, one or two at a time.\n`
@@ -1196,7 +1205,8 @@ Each stunt is its name AND what it does, in one string ("Tiny and Quick — can 
     });
   }
 
-  async summarizeScene(transcript: TranscriptMessage[], characterNames?: string[], worldState?: string): Promise<string> {
+  /** `pronounNote`: everyone's pronouns (castPronounLine) — a summary is read back into every later prompt. */
+  async summarizeScene(transcript: TranscriptMessage[], characterNames?: string[], worldState?: string, pronounNote?: string): Promise<string> {
     const text = transcript.map(m => `[${m.role}] ${m.content}`).join('\n');
     const charHint = characterNames && characterNames.length > 0
       ? ` For each character (${characterNames.join(', ')}), note their last action and current situation.`
@@ -1211,7 +1221,7 @@ Each stunt is its name AND what it does, in one string ("Tiny and Quick — can 
 
     const whisperHint = this.buildWhisperSummaryHint(transcript);
 
-    const namesRule = ' Call every character by their name. A word one character calls another ("Mom", a nickname) belongs only inside that character\'s quoted speech, never in your own sentences.';
+    const namesRule = ` Call every character by their name. A word one character calls another ("Mom", a nickname) belongs only inside that character's quoted speech, never in your own sentences.${pronounNote ? ` ${pronounNote}` : ''}`;
     try {
       const result = await callLlm({
         messages: [

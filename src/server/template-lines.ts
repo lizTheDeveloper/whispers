@@ -13,9 +13,19 @@
  * used in, for every speaker, and hands out the one used longest ago (never
  * used first). A variant whose text is already in `recent` is passed over too
  * (a resumed game has an empty rotation but still has its transcript).
+ *
+ * Round 13 (WXKC2C): "Liz feels the pull of old habits — "I worry about Biz
+ * too much" — and the universe grants a small mercy in return." was read
+ * twice, word for word. Nineteen compels in one game went round the eight
+ * compel lines, shared by two speakers, and the least-recently-used variant
+ * came back to Liz. The rotation now also remembers every exact line it has
+ * handed out this game and never repeats one while an unsaid variant is
+ * left, and each family has twelve variants — enough for a long game with
+ * two characters before any exact line could come round again.
  */
 export class LineRotation {
   private lastUse = new Map<string, Map<number, number>>();
+  private said = new Set<string>();
   private clock = 0;
 
   pick(family: string, variants: string[], recent = ''): string {
@@ -23,8 +33,10 @@ export class LineRotation {
     const uses = this.lastUse.get(family) ?? new Map<number, number>();
     this.lastUse.set(family, uses);
     const order = variants.map((_, i) => i).sort((a, b) => (uses.get(a) ?? -1) - (uses.get(b) ?? -1));
-    const fresh = order.find(i => !recent || !recent.includes(variants[i]!)) ?? order[0]!;
+    const unread = (i: number) => !recent || !recent.includes(variants[i]!);
+    const fresh = order.find(i => !this.said.has(variants[i]!) && unread(i)) ?? order.find(unread) ?? order[0]!;
     uses.set(fresh, this.clock++);
+    this.said.add(variants[fresh]!);
     return variants[fresh]!;
   }
 }
@@ -39,6 +51,11 @@ export function invokeLines(name: string, aspect: string): string[] {
     `${name} leans on "${aspect}", and the moment gives way.`,
     `It takes every bit of "${aspect}", but ${name} makes it count.`,
     `That is "${aspect}" at work — ${name} comes through.`,
+    `When it counts, ${name} is every inch "${aspect}" — and it shows.`,
+    `"${aspect}" — ${name} plays to it, and the odds give a little.`,
+    `${name} digs into "${aspect}", and something clicks into place.`,
+    `Pure "${aspect}": ${name} finds the angle nobody else saw.`,
+    `${name} trusts "${aspect}" one more time, and it pays off.`,
   ];
 }
 
@@ -57,5 +74,9 @@ export function compelLines(name: string, trouble: string): string[] {
     `Of course — "${trouble}". ${name} cannot help it, and fate quietly takes note.`,
     `"${trouble}" tugs at ${name} again; the story bends around it, and ${name} earns a little luck for later.`,
     `There it is again: "${trouble}". It costs ${name} now, but fate keeps count.`,
+    `"${trouble}" wins this round — ${name} pockets a fate point for the trouble.`,
+    `${name} and "${trouble}", together again; the story takes the detour, and ${name} earns a little luck.`,
+    `Right on cue, "${trouble}" gets in ${name}'s way — and fate slips ${name} a point for it.`,
+    `"${trouble}" is part of who ${name} is, and today it shows; a fate point for the trouble.`,
   ];
 }

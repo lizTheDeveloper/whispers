@@ -4,6 +4,7 @@ import { ActionProposalSchema, ActionDecisionSchema } from './schemas.js';
 import type { ActionProposal, ActionDecision } from './schemas.js';
 import type { CharacterDefinition, CharacterState, TranscriptMessage } from '../../shared/types.js';
 import type { CharacterMemory } from '../character-memory.js';
+import { neutralPronouns, neutralNounRule } from '../npc-pronouns.js';
 
 const NAME_TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'king', 'queen', 'duke', 'duchess', 'count', 'countess', 'baron', 'baroness', 'master', 'captain', 'elder', 'chief', 'sister', 'brother', 'father', 'mother', 'doctor', 'professor']);
 function getFirstName(fullName: string): string {
@@ -75,7 +76,7 @@ export function companionPronouns(p: PartyMemberView): string | null {
 export function pronounRule(p: PartyMemberView): string {
   const pron = companionPronouns(p);
   return pron
-    ? `${p.name}: ${pron}`
+    ? `${p.name}: ${pron}${neutralPronouns(pron) ? ` — ${neutralNounRule(getFirstName(p.name), pron)}` : ''}`
     : `${p.name}: pronouns not stated — say "${getFirstName(p.name)}" or "they", never he/him/his or she/her`;
 }
 

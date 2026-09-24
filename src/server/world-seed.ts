@@ -6,6 +6,7 @@ import { WorldSeedSchema } from './agents/schemas.js';
 import type { WorldSeed } from '../shared/types.js';
 import { neutralSetupNouns } from './pronoun-consistency.js';
 import { pronounsInDescription } from './npc-pronouns.js';
+import { SENTENCE_SPLIT } from './sentences.js';
 
 /**
  * Write a seed into the world bible.
@@ -191,6 +192,35 @@ export function withoutSetupFieldDumps(reply: string, opts: { noSpoilers?: boole
   return out || opts.fallback || 'I have the shape of it — the rest you will discover in play. What tone do you want at the table?';
 }
 
+/**
+ * A sentence about the setup's own machinery: the "done" flag, the world card
+ * being generated, the JSON fields. Live (WXKC2C): "I am setting this to
+ * 'done' so the world card can be generated for you to see."
+ */
+const SETUP_MECHANICS = [
+  /\b(?:set|sets|setting|mark|marks|marking|flag|flags|flagging|switch|switching|toggle|toggling)\b[^.!?]{0,30}\b(?:to|as)\s+["'‘“]?done\b/i,
+  /["'‘“]done["'’”]\s*(?::|=|to\s+true|flag)|\bdone\s*(?::|=)\s*true\b/i,
+  /\bworld\s+card\s+(?:can|will|could|should|may|is\s+(?:being|going\s+to\s+be)|gets?)\s+(?:be\s+)?generat/i,
+  /\bgenerat\w*\s+(?:the|your|a)\s+world\s+card\b/i,
+  /\b(?:dm[ _]?instructions|dm[ _]?custom[ _]?prompt|json|schema)\b/i,
+];
+
+/** A setup reply without its sentences about the setup's own machinery (SETUP_MECHANICS); `fallback` when nothing is left. */
+export function withoutSetupMechanics(reply: string, fallback: string): string {
+  if (!reply || !SETUP_MECHANICS.some(re => re.test(reply))) return reply;
+  let dropped = 0;
+  const out = reply.split(/(\n+)/).map(p => {
+    if (/^\n+$/.test(p)) return p;
+    return p.split(SENTENCE_SPLIT).filter(sn => {
+      const bad = SETUP_MECHANICS.some(re => re.test(sn));
+      if (bad) dropped++;
+      return !bad;
+    }).join(' ');
+  }).join('').replace(/\n{3,}/g, '\n\n').trim();
+  if (dropped > 0) console.log(`[dm-chat] dropped ${dropped} sentence(s) about the setup's own mechanics`);
+  return out || fallback;
+}
+
 /** "I've drafted a starting world…", "Please review the world card I've drafted." */
 const DRAFT_CLAIM = /\b(?:I|we)(?:['’]ve|\s+have|['’]ll\s+have|\s+just)?\s+(?:\w+\s+){0,2}?(?:drafted|built|created|prepared|put\s+together|sketched(?:\s+out)?|written\s+up|made)\b[^.!?]*\b(?:world|card|draft|seed)\b|\b(?:review|check|look\s+over|see|accept)\b[^.!?]*\b(?:world\s+card|the\s+card|the\s+draft|(?:the|this|that)\s+(?:starting\s+)?world\s+(?:I|we)(?:['’]ve|\s+have)?\s+(?:drafted|built|made))\b|\b(?:world\s+card|draft)\s+(?:is|should\s+be)\s+(?:ready|up|below|above|waiting)\b/i;
 /** A sentence that only makes sense after one: "If it looks good, just let me know!" */
@@ -213,7 +243,7 @@ export function withoutFalseDraftClaim(reply: string, opts: { draftComing: boole
   const out = reply.split(/(\n+)/).map(p => {
     if (/^\n+$/.test(p)) return p;
     const kept: string[] = [];
-    for (const sentence of p.split(/(?<=[.!?…]["”’']?)\s+/)) {
+    for (const sentence of p.split(SENTENCE_SPLIT)) {
       if (DRAFT_CLAIM.test(sentence) || (dropped > 0 && DRAFT_FOLLOW_UP.test(sentence))) { dropped++; continue; }
       kept.push(sentence);
     }
@@ -249,7 +279,7 @@ export function directionSecrets(direction: string | null | undefined): string[]
     if (atStart.test(line)) { inBlock = true; out.push(line); continue; }
     if (inBlock && (line.trim() === '' || /^\s*(?:\*\*|__)[^*_]+(?:\*\*|__)\s*:?/.test(line) && !/^\s*\d/.test(line))) inBlock = false;
     if (inBlock) { out.push(line); continue; }
-    for (const sentence of line.split(/(?<=[.!?…]["”’']?)\s+/)) {
+    for (const sentence of line.split(SENTENCE_SPLIT)) {
       if (/\b(?:secret\w*|hidden|hides?|hiding|actually|truly|really|twist\w*|behind|responsible|culprit|motive\w*|betray\w*|plans?\s+to|wants?\s+to|scheme\w*|vanish\w*|disappear\w*)\b/i.test(sentence)) out.push(sentence);
     }
   }
@@ -288,7 +318,7 @@ export function withoutSeedSpoilers(reply: string, seed: WorldSeed | null, fallb
     return false;
   };
   const kept = reply.split('\n').map(line => {
-    const sentences = line.split(/(?<=[.!?…]["”’']?)\s+/);
+    const sentences = line.split(SENTENCE_SPLIT);
     const ok = sentences.filter(s => !spoils(s));
     if (ok.length !== sentences.length) console.log(`[dm-chat] dropped ${sentences.length - ok.length} spoiler sentence(s) for a spoiler-free host`);
     return ok.join(' ');
@@ -333,9 +363,24 @@ export function seedForHost(seed: WorldSeed, noSpoilers: boolean): WorldSeed {
   if (!noSpoilers) return seed;
   return {
     ...seed,
-    npcs: seed.npcs.map(n => ({ ...n, motivation: null })),
+    npcs: seed.npcs.map(n => ({ ...n, motivation: null, disposition: publicDisposition(n.disposition) })),
     plotHooks: [],
   };
+}
+
+/** A clause that tells what an NPC hides: "secretly frightened by chaos", "privately a spy". */
+const HIDDEN_TRAIT = /(?:^|\s*[,;]\s*|\s+)(?:(?:and|but|yet)\s+)?(?:secretly|privately|deep\s+down|inwardly|in\s+secret|covertly|underneath(?:\s+it\s+all)?|behind\s+(?:it|the\s+\w+)\s+all|who\s+(?:is\s+)?secretly)\b[^,;]*/gi;
+
+/**
+ * An NPC's disposition with its hidden traits taken out, for a host who
+ * plays or asked for no spoilers. Live (WXKC2C): the world card showed Ms.
+ * Hark as "Formally polite, secretly frightened by chaos". Null when all of
+ * it was hidden.
+ */
+export function publicDisposition(disposition: string | null | undefined): string | null {
+  if (!disposition) return disposition ?? null;
+  const out = disposition.replace(HIDDEN_TRAIT, '').replace(/^[\s,;]+|[\s,;]+$/g, '').replace(/\s{2,}/g, ' ');
+  return out || null;
 }
 
 /**
@@ -350,9 +395,13 @@ export function withHiddenSeedFields(incoming: WorldSeed, stored: WorldSeed | nu
     ...incoming,
     plotHooks: incoming.plotHooks.length > 0 ? incoming.plotHooks : stored.plotHooks,
     npcs: incoming.npcs.map(n => {
-      if (n.motivation?.trim()) return n;
       const was = stored.npcs.find(s => same(s.name, n.name));
-      return was?.motivation ? { ...n, motivation: was.motivation } : n;
+      if (!was) return n;
+      // A disposition the host was shown with its secret taken out gets the
+      // secret back; one the host rewrote is theirs.
+      const disposition = (n.disposition ?? null) === publicDisposition(was.disposition) ? was.disposition : n.disposition;
+      const motivation = n.motivation?.trim() ? n.motivation : (was.motivation ?? n.motivation);
+      return { ...n, motivation, disposition };
     }),
   };
 }

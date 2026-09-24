@@ -19,6 +19,7 @@
  * character's stated pronouns via src/shared/pronouns.ts.
  */
 import { agree, capitalize, referTo } from '../shared/pronouns.js';
+import { SENTENCE_SPLIT } from './sentences.js';
 
 // ─── Arrival ───────────────────────────────────────────────────────────────
 
@@ -256,6 +257,9 @@ export function repairAddress(text: string, terms: AddressTerm[], opts: { vocati
     out = out.replace(new RegExp(`(\\b${VOCATIVE_LEAD},?\\s+)${name}(?=\\s*[,.!?…]|$)`, 'gi'), `$1${address}`);
     // Trailing vocative: "…help me, Liz?" / "…, Liz."
     out = out.replace(new RegExp(`(,\\s*)${name}(?=\\s*[.!?…]|\\s*$)`, 'g'), `$1${address}`);
+    // Mid-sentence vocative: "We are still in the queue, Liz, because…" —
+    // not a list ("Barnaby, Liz, and Ms. Hark": a name before, or "and" after).
+    out = out.replace(new RegExp(`(?<![A-Z][\\w'’.-]*)(,\\s*)${name}(,)(?!\\s*(?:(?:and|or|nor)\\b|&|[A-Z]))`, 'g'), `$1${address}$2`);
   }
   return out;
 }
@@ -670,7 +674,7 @@ const DM_WHISPER = [
   /\bthe\s+(?:mysterious\s+|familiar\s+|guiding\s+|quiet\s+|strange\s+)?(?:voice|whisper)\b(?!\s+(?:of|from|behind|on|at|through|in the))[^.!?]*?\b(?:urges|says|tells|hisses|insists|commands|warns|murmurs|whispers|suggests)\b/i,
 ];
 
-const SENTENCES = /(?<=[.!?…]["”’']?)\s+/;
+const SENTENCES = SENTENCE_SPLIT;
 
 /** DM prose without any sentence that narrates a whisper or a voice speaking to a character. */
 export function withoutDmWhispers(text: string): string {
@@ -1213,7 +1217,7 @@ export function repeatsRecentBeat(text: string, recent: string[], threshold = 0.
  * joined back ("'The file is open. The key is sticky,' it says." is one).
  */
 function storyUnits(text: string): string[] {
-  const pieces = text.split(/(?<=[.!?…]["”’']?)\s+/);
+  const pieces = text.split(SENTENCE_SPLIT);
   const units: string[] = [];
   let open = '';
   const unbalanced = (s: string) => {
@@ -1336,7 +1340,9 @@ export function withoutRepeatedSentences(text: string, recent: string[], opts: {
  * ankles". Peril stays; the prompt carries the rest.
  */
 const TUG: Record<string, string> = { tighten: 'tug at', tightens: 'tugs at', tightening: 'tugging at', tightened: 'tugged at', coil: 'tug at', coils: 'tugs at', coiling: 'tugging at', coiled: 'tugged at', squeeze: 'tug at', squeezes: 'tugs at', squeezing: 'tugging at', squeezed: 'tugged at' };
-const SWEEP: Record<string, string> = { eat: 'sweep', eats: 'sweeps', eating: 'sweeping', ate: 'swept', eaten: 'swept', devour: 'sweep', devours: 'sweeps', devouring: 'sweeping', devoured: 'swept', gobble: 'sweep', gobbles: 'sweeps', gobbling: 'sweeping', gobbled: 'swept' };
+const SWEEP: Record<string, string> = { eat: 'sweep', eats: 'sweeps', eating: 'sweeping', ate: 'swept', eaten: 'swept', devour: 'sweep', devours: 'sweeps', devouring: 'sweeping', devoured: 'swept', gobble: 'sweep', gobbles: 'sweeps', gobbling: 'sweeping', gobbled: 'swept', swallow: 'sweep', swallows: 'sweeps', swallowing: 'sweeping', swallowed: 'swept' };
+const MISPLACE: Record<string, string> = { forget: 'misplace', forgets: 'misplaces', forgot: 'misplaced', forgotten: 'misplaced', forgetting: 'misplacing', erase: 'misplace', erases: 'misplaces', erased: 'misplaced', erasing: 'misplacing', delete: 'misplace', deletes: 'misplaces', deleted: 'misplaced', deleting: 'misplacing' };
+const POSSESSIVE: Record<string, string> = { you: 'your', they: 'their', them: 'their', we: 'our', us: 'our', he: 'his', him: 'his', she: 'her', her: 'her', i: 'my', me: 'my' };
 const GRUMBLE: Record<string, string> = { bite: 'grumble', bites: 'grumbles', biting: 'grumbling', bit: 'grumbled' };
 const CHILD_SOFTENERS: Array<[RegExp, string | ((...args: string[]) => string)]> = [
   [/\bnooses\b/gi, 'tangles of rope'],
@@ -1373,11 +1379,19 @@ const CHILD_SOFTENERS: Array<[RegExp, string | ((...args: string[]) => string)]>
   // "the crowd turning with hunting intent" → "…with nosy curiosity"
   [/\bhunting intent\b/gi, 'nosy curiosity'],
   [/\blike (?:hunted )?prey\b/gi, 'like lost luggage'],
-  // "before the crowd eats us" → "before the crowd sweeps us away"
+  // "before the crowd eats us" → "before the crowd sweeps us away"; round 13
+  // (WXKC2C), Biz's own thought: "before Unit 7-G swallows us whole".
   // People only, and only as the whole object: "eat them" (the cookies) and
   // "eat her sandwich" are left alone.
-  [/\b(eat|eats|eating|ate|eaten|devour|devours|devouring|devoured|gobble|gobbles|gobbling|gobbled)(?:\s+up)?\s+(us|you|me|her|him)(?:\s+(?:alive|whole|up))?(?=\s*(?:[.,!?;:…"”’')—–]|$)|\s+(?:before|if|unless|and|or|too|first|next|now)\b)/gi,
+  [/\b(eat|eats|eating|ate|eaten|devour|devours|devouring|devoured|gobble|gobbles|gobbling|gobbled|swallow|swallows|swallowing|swallowed)(?:\s+up)?\s+(us|you|me|her|him)(?:\s+(?:alive|whole|up))?(?=\s*(?:[.,!?;:…"”’')—–]|$)|\s+(?:before|if|unless|and|or|too|first|next|now)\b)/gi,
     (_m: string, verb: string, who: string) => `${SWEEP[verb.toLowerCase()] ?? 'sweep'} ${who} away`],
+  // Round 13 (WXKC2C), at the kid: "or the filing system will simply...
+  // forget you exist!" → "…misplace your paperwork!"; "erase you from
+  // existence" likewise. Forgetting a stamp, or a name, is left alone.
+  [/\b(forget|forgets|forgot|forgotten|forgetting)\s+(?:that\s+)?(you|they|we|he|she|I)\s+(?:ever\s+)?(?:exist|exists|existed)\b/gi,
+    (_m: string, verb: string, who: string) => `${MISPLACE[verb.toLowerCase()] ?? 'misplace'} ${POSSESSIVE[who.toLowerCase()] ?? 'their'} paperwork`],
+  [/\b(erase|erases|erased|erasing|delete|deletes|deleted|deleting)\s+(you|them|us|me|him|her)\s+(?:from\s+(?:existence|the\s+records?)|completely|entirely|forever)\b/gi,
+    (_m: string, verb: string, who: string) => `${MISPLACE[verb.toLowerCase()] ?? 'misplace'} ${POSSESSIVE[who.toLowerCase()] ?? 'their'} paperwork`],
   // "a tangle of rope tightening around their ankles" → "…tugging at their shoelaces"
   [/\b(tangles? of rope|ropes?|cords?|chains?|vines?|tentacles?)\s+(tighten|tightens|tightening|tightened|coil|coils|coiling|coiled|squeeze|squeezes|squeezing|squeezed)\s+around\s+(her|his|their|my|your|its)\s+(?:ankles?|neck|throat|wrists?|chest|legs?)\b/gi,
     (_m: string, thing: string, verb: string, pos: string) => `${thing} ${TUG[verb.toLowerCase()] ?? 'tugging at'} ${pos} shoelaces`],
@@ -1431,6 +1445,10 @@ const ENDING_SOFTENERS: Array<[RegExp, string]> = [
   [/\b(?:sealed|blocked|swallowed)\s+by\s+(the\s+)?(storms?|fog|mist|wind|snow|flood|darkness|shadows?)\b/gi, 'hidden by $1$2 for now'],
   // "…, holding nothing but my fear that it was my fault." — the clause goes.
   [/,?\s*\b(?:holding|clutching|carrying|left\s+with|with)\s+nothing\s+but\s+(?:my|our|her|his|their)\s+(?:fear|dread|terror|despair|panic)\b[^,.;!?]*/gi, ''],
+  // Round 13 (WXKC2C): Liz's last thought was "even if we are stuck here
+  // until the violet puddle dries" → "…we are waiting here until…".
+  [/\b(am|is|are|was|were|be|being|been|remain|remains|remained|stay|stays|stayed)\s+stuck\s+(here|there|in\s+(?:the|this|that|her|his|their|our)\b)/gi, '$1 waiting $2'],
+  [/\b(?:we|they)['’]re\s+stuck\s+(here|there)\b/gi, "we're waiting $1"],
 ];
 
 export function softenEnding(text: string): string {
@@ -1444,9 +1462,23 @@ export function softenEnding(text: string): string {
 
 /** An ending that lands on fear, entrapment or loss — at a gentle table, asked for again. */
 const BLEAK = /\b(?:fear|afraid|terrified|terror|dread|despair|hopeless(?:ly|ness)?|trapped|sealed|frozen|doomed|all alone|lost forever|forever lost|gone forever|never came back|no way out|cannot escape|can['’]t escape|abandoned|nothing but)\b/i;
+/**
+ * An ending that leaves the party in limbo — the round-13 (WXKC2C) gentle
+ * ending: "leaving them technically in Ms. Hark's queue until the ink
+ * dries", "even if we are stuck here until the violet puddle dries", "We
+ * are still in the queue". Unresolved is fine ("still open for next time");
+ * the party left stuck, waiting in line or unable to leave is not.
+ */
+const LIMBO = [
+  /\bstuck\b/i,
+  /\bstill\s+(?:trapped|stranded|waiting|stuck|pending|unprocessed|unfiled)\b/i,
+  /\b(?:still|technically|forever|left|leaving\s+(?:them|us|her|him|me)(?:\s+technically)?)\s+(?:\w+\s+){0,2}?in\s+(?:[\w.’']+\s+){0,3}?(?:queue|line|limbo|waiting\s+room|pending\s+tray|in-?tray)\b/i,
+  /\b(?:can['’]t|cannot|can\s+not|couldn['’]t|could\s+not|won['’]t|will\s+not|never)\s+(?:ever\s+)?(?:leave|get\s+out|go\s+home|get\s+home|escape)\b/i,
+  /\b(?:no\s+way\s+home|in\s+limbo|stranded)\b/i,
+];
 
 export function bleakEnding(text: string): boolean {
-  return !!text && BLEAK.test(text);
+  return !!text && (BLEAK.test(text) || LIMBO.some(re => re.test(text)));
 }
 
 // ─── Repetition ─────────────────────────────────────────────────────────────
@@ -1548,5 +1580,68 @@ export function recentPhrases(dmLines: string[], opts: { minBeats?: number; max?
     out.push(p);
     if (out.length >= max) break;
   }
+  return out;
+}
+
+// ─── Spoken lines and names ─────────────────────────────────────────────────
+
+/**
+ * A character's spoken words, or null when there are none: "" or “” or a
+ * lone "..." is no line. Live (WXKC2C): Biz handing Mom the pen came with
+ * spokenWords `""`, and the table read an empty pair of quotes.
+ */
+export function spokenOrNull(words: string | null | undefined): string | null {
+  if (!words) return null;
+  return /[\p{L}\p{N}]/u.test(words) ? words : null;
+}
+
+const TITLE_KEY: Record<string, 'she' | 'he' | 'they'> = { mrs: 'she', ms: 'she', miss: 'she', mr: 'he', mister: 'he', mx: 'they' };
+
+/**
+ * A surname the DM made up for a player character, in an NPC's mouth. Live
+ * (WXKC2C): the clerk called Liz "Mrs. Miller" five times — "Hold your
+ * horses, Mrs. Miller!", "You are a saint, Mrs. Miller, truly" — and Liz's
+ * sheet has no surname. "Mrs./Ms./Miss/Mr./Mx. <Surname>" becomes the
+ * character's name, only when:
+ *  - it is inside quoted speech, used to address someone (punctuation or
+ *    the closing quote right after it);
+ *  - the surname is on no sheet, and no NPC, place or item has it;
+ *  - the passage never narrates that person outside quotes ("Mrs. Miller
+ *    waves from the tea cart" is someone new);
+ *  - exactly one party member's stated pronouns fit the title (Mrs./Ms./
+ *    Miss: she/her; Mr.: he/him; Mx.: they/them), and their sheet does not
+ *    give that surname.
+ */
+export function withoutInventedPcSurnames(text: string, party: Array<{ name: string; pronouns?: string | null }>, knownNames: string[]): string {
+  if (!text || party.length === 0 || !/\b(?:Mrs|Ms|Miss|Mr|Mister|Mx)\.?\s+[A-Z]/.test(text)) return text;
+  const known = new Set([...knownNames, ...party.map(p => p.name)].flatMap(n => n.split(/[\s()]+/)).map(w => w.replace(/['’]s$/, '').replace(/[^\p{L}'’-]/gu, '').toLowerCase()).filter(Boolean));
+  const keyOf = (p: string | null | undefined) => {
+    const w = p?.trim().toLowerCase().split(/[\s/,]+/)[0] ?? '';
+    return w === 'she' || w === 'her' ? 'she' : w === 'he' || w === 'him' ? 'he' : w === 'they' || w === 'them' ? 'they' : null;
+  };
+  const TITLED = /\b(Mrs|Ms|Miss|Mr|Mister|Mx)(\.?)\s+([A-Z][\p{L}'’-]+)(?![\p{L}'’-]|\s+[A-Z])/gu;
+  const runs = quoteRuns(text);
+  // Surnames narrated outside quotes: a real person in the scene.
+  const narrated = new Set(runs.filter(r => !r.quoted).flatMap(r => [...r.text.matchAll(TITLED)].map(m => m[3]!.toLowerCase())));
+  let changed = false;
+  const out = runs.map(run => {
+    if (!run.quoted) return run.text;
+    return run.text.replace(TITLED, (whole, title: string, _dot: string, surname: string, offset: number, all: string) => {
+      const after = all.slice(offset + whole.length);
+      if (!/^\s*(?:[,.!?;:…—–]|["”’']\s*$|$)/.test(after)) return whole;
+      const s = surname.toLowerCase();
+      if (known.has(s) || narrated.has(s)) return whole;
+      const want = TITLE_KEY[title.toLowerCase()];
+      const fits = party.filter(p => keyOf(p.pronouns) === want);
+      if (fits.length !== 1) return whole;
+      const pc = fits[0]!;
+      const words = pc.name.trim().split(/\s+/);
+      if (words.slice(1).some(w => w.toLowerCase() === s)) return whole;
+      changed = true;
+      return words[0]!;
+    });
+  }).join('');
+  if (!changed) return text;
+  console.log(`[guard] invented surname for a player character: ${changedSpan(text, out)}`);
   return out;
 }

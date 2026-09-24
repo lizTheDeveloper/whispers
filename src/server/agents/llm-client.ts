@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { z } from 'zod';
+import { endsInTitle } from '../sentences.js';
 
 const LLM_PROXY_URL = process.env.LLM_PROXY_URL ?? 'http://localhost:4242';
 const DEFAULT_TIMEOUT = 60_000;
@@ -172,8 +173,9 @@ function lastSentenceEnd(text: string): number {
   let end = 0;
   for (const m of text.matchAll(SENTENCE_END)) {
     const after = m.index! + m[0].length;
-    // Only a real boundary: end of text, or whitespace next ("3.5" is not one).
-    if (after === text.length || /\s/.test(text[after]!)) end = after;
+    // Only a real boundary: end of text, or whitespace next ("3.5" is not
+    // one), and never a title's full stop ("…while Ms." is not a sentence).
+    if ((after === text.length || /\s/.test(text[after]!)) && !endsInTitle(text.slice(0, after))) end = after;
   }
   return end;
 }

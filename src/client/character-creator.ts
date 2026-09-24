@@ -1,5 +1,5 @@
 import type { WsClient } from './ws-client.js';
-import type { CharacterDefinition } from '../shared/types.js';
+import type { CharacterDefinition, CharacterReadiness, TableRole } from '../shared/types.js';
 import { parseOneCharacter, parseCharacters } from '../shared/markdown-parser.js';
 import { renderNegotiationChat } from './negotiation-chat.js';
 import { appendMarkdown } from './markdown.js';
@@ -55,7 +55,11 @@ function readSkillPyramid(container: HTMLElement): Record<string, number> {
   return skills;
 }
 
-export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string, isWorldAuthor: boolean): void {
+export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode: string, isWorldAuthor: boolean, tableRole: TableRole | null = null): void {
+  // Live (WXKC2C): the host had chosen to play, and read "You're running this world".
+  const startHint = tableRole === 'player'
+    ? "You're playing in this one — start whenever everyone's characters are in. You can keep shaping your own character after."
+    : "You're running this world — start whenever you're ready. You can keep building your own character after.";
   root.innerHTML = `
     <div class="character-creator">
       <h2>Create Your Character</h2>
@@ -64,7 +68,7 @@ export function renderCharacterCreator(root: HTMLElement, ws: WsClient, joinCode
       ${isWorldAuthor ? `
       <div id="host-start-panel" class="host-start-panel">
         <button id="start-game-btn">Start Game</button>
-        <p class="paste-hint" id="start-game-hint">You're running this world — start whenever you're ready. You can keep building your own character after.</p>
+        <p class="paste-hint" id="start-game-hint"></p>
       </div>` : ''}
 
       <div id="world-intro" class="world-introduction hidden">
@@ -171,6 +175,8 @@ Quick Fingers: +2 to Stealth when picking locks
   // rather than interpolated into the innerHTML template above, so nothing
   // about its safety depends on the server's current join-code charset.
   (root.querySelector('#creator-join-code') as HTMLElement).textContent = joinCode;
+  const startHintEl = root.querySelector('#start-game-hint') as HTMLElement | null;
+  if (startHintEl) startHintEl.textContent = startHint;
 
   // A host who chose "I'm playing in it" lands here — the character creator
   // is the ONLY screen they ever see once world setup finishes (main.ts
@@ -322,11 +328,14 @@ Quick Fingers: +2 to Stealth when picking locks
    * confirmed does the submit affordance appear — confirming is the real
    * gate, this screen never lets the player edit the sheet afterward.
    */
-  function showPreview(def: CharacterDefinition, confirmed: boolean) {
+  function showPreview(def: CharacterDefinition, confirmed: boolean, readiness?: CharacterReadiness) {
     chatDefinition = def;
     renderPreviewSheet(def);
     previewPanel.classList.remove('hidden');
-    readinessPanel.classList.add('hidden');
+    // Every update refreshes the checklist from what the server says now —
+    // live (WXKC2C) it kept listing "a high concept, a skill, a stunt" after
+    // the preview came back complete. Empty (and hidden) when nothing is left.
+    renderReadiness(readiness?.detail ?? []);
 
     if (confirmed) {
       previewConfirmBtn.classList.add('hidden');
@@ -365,7 +374,7 @@ Quick Fingers: +2 to Stealth when picking locks
     if (msg.type !== 'character-preview') return;
     const confirmed = awaitingConfirmAck;
     awaitingConfirmAck = false;
-    showPreview(msg.definition, confirmed);
+    showPreview(msg.definition, confirmed, msg.readiness);
   });
 
   ws.on('character-readiness', (msg) => {
