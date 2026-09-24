@@ -104,6 +104,25 @@ export const LLM_STUB_REPLIES = {
       backstory: 'Thirty years at the lamp and one night she did not climb the stair.',
       skills: { Will: 3, Notice: 2, Lore: 1 },
       stunts: ['Steady Hand: +2 to Will against fear.'],
+      // The interview asks for pronouns; a finished interview sheet has them.
+      pronouns: 'she/her',
+    },
+  },
+  // A sheet that is finished in every other way, proposed before anyone said
+  // how the character is referred to — and it guesses: "Fast on his feet"
+  // (the live Biz bug). Selected by UNSTATED_PRONOUNS_TRIGGER.
+  charInterviewGuessedGender: {
+    reply: 'Here is Biz as I understand them.',
+    definition: {
+      name: 'Biz',
+      highConcept: 'Ten-Year-Old Who Asks Why',
+      trouble: 'Wanders off when something glows',
+      aspects: ['Fast on his feet', 'Pocket full of bottle caps'],
+      personality: 'Curious and restless.',
+      backstory: 'Ten years old; collects bottle caps and questions.',
+      skills: { Notice: 3, Athletics: 2 },
+      stunts: ['Small and Quick: +2 to Stealth in tight spaces.'],
+      pronouns: null,
     },
   },
   // A thin-but-non-null definition — the model believes it is done (it is
@@ -288,7 +307,9 @@ function startLlmStub(): Promise<{ server: Server; url: string; receivedBodies: 
           // fixture regardless of turn count, so a test can trigger it
           // deterministically without disturbing the two-turn "done" flow
           // every other interview test relies on.
-          if (body.includes('THIN_SHEET_TRIGGER')) {
+          if (body.includes('UNSTATED_PRONOUNS_TRIGGER')) {
+            text = JSON.stringify(LLM_STUB_REPLIES.charInterviewGuessedGender);
+          } else if (body.includes('THIN_SHEET_TRIGGER')) {
             text = JSON.stringify(LLM_STUB_REPLIES.charInterviewThin);
           } else if (body.includes('NULL_DEFINITION_TRIGGER')) {
             // Forces definition: null regardless of turn count. The ordinary
