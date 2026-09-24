@@ -63,15 +63,15 @@ describe('1a. the gate: judge, regenerate once with the phrases, keep the better
     expect(feedback).not.toContain('Please present the signed Form 88-B');
   });
 
-  it('both drafts flagged: the one with fewer phrases is kept, and the softener runs over it', async () => {
-    const second = 'Mama Pigeon warns that mistakes must be filed.';
+  it('both drafts flagged: the one with fewer phrases is kept, the softener runs over it, and (round 16) the flagged sentence goes', async () => {
+    const second = 'Mama Pigeon warns that mistakes must be filed. She smooths her feathers.';
     const judge = mockJudge({
       'Unresolved Naps': { flagged: true, phrases: ['re-file your entire identity', 'Unresolved Naps'] },
       'mistakes must be filed': { flagged: true, phrases: ['mistakes must be filed'] },
     });
     const soften = vi.fn((t: string) => `${t} [softened]`);
     const r = await gateGentleTone({ kind: 'ruling', first: MENACE, textOf: t => t, regenerate: async () => second, soften, judge });
-    expect(r.value).toBe(`${second} [softened]`);
+    expect(r.value).toBe('She smooths her feathers. [softened]');
     expect(r.stillFlagged).toBe(true);
     expect(soften).toHaveBeenCalledTimes(1);
   });

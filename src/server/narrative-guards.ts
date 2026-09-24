@@ -1856,7 +1856,7 @@ export function repeatsRecentBeat(text: string, recent: string[], threshold = 0.
  * Sentences, with a quotation kept whole: a split inside open quotes is
  * joined back ("'The file is open. The key is sticky,' it says." is one).
  */
-function storyUnits(text: string): string[] {
+export function storyUnits(text: string): string[] {
   const pieces = text.split(SENTENCE_SPLIT);
   const units: string[] = [];
   let open = '';
@@ -2050,6 +2050,14 @@ const CHILD_SOFTENERS: Array<[RegExp, string | ((...args: string[]) => string)]>
   [/\bpermanent fixtures?\b/gi, 'temporary exhibit'],
   // "…or the Recall Form will be lost forever!"
   [/\b(lost|trapped|stuck|archived|filed|sealed in|frozen) forever\b/gi, '$1 for a good long while'],
+  // Round 16 (NUMMRL), the child's own option: "pull her back before the
+  // shelf slams shut on her hand" → "…before the shelf slams shut".
+  [/\b((?:slams?|slammed|slamming|snaps?|snapped|snapping|shuts?|shutting|clos(?:e|es|ed|ing)|crash(?:es|ed|ing)?|comes?\s+down|came\s+down|falls?|fell|drops?|dropped)(?:\s+(?:shut|down|closed))?)\s+(?:on|onto)\s+(?:her|his|their|my|your|our|[\p{Lu}][\p{L}'’-]*['’]s)\s+(?:hands?|fingers?|feet|foot|toes?|arms?|legs?|heads?|nose|tail|paws?)\b/giu, '$1'],
+  // …and the child's thoughts: "I'm scared of being separated from her" →
+  // "I'm keen to stay close to her"; "she looks so stressed with that wound"
+  // → "she looks so stressed".
+  [/\b(?:scared|afraid|frightened|terrified|worried|nervous)\s+(?:of|about)\s+(?:being|getting)\s+(?:separated|split\s+up|parted|pulled\s+apart|taken\s+away)\s+from\b/gi, 'keen to stay close to'],
+  [/\s+(?:with|from|because\s+of|over)\s+(?:that|her|his|their|my|your|the|this)\s+(?:wounds?|injur(?:y|ies)|gash(?:es)?|bleeding|bruises?)\b/gi, ''],
 ];
 
 const ROLL: Record<string, string> = { eat: 'roll', eats: 'rolls', eating: 'rolling', ate: 'rolled', eaten: 'rolled', devour: 'roll', devours: 'rolls', devouring: 'rolling', devoured: 'rolled', swallow: 'roll', swallows: 'rolls', swallowing: 'rolling', swallowed: 'rolled', gobble: 'roll', gobbles: 'rolls', gobbling: 'rolling', gobbled: 'rolled' };
@@ -2125,6 +2133,11 @@ export function bleakEnding(text: string): boolean {
 const OPEN_THREAD = /\b(?:remains?|remained|stays?|stayed|is|are|was|were|still)\s+(?:open|unanswered|unsolved|unresolved|a\s+mystery)\b|\bfor\s+another\s+day\b|\bunanswered\b|\bstill\s+waiting\b|\bleft\s+(?:open|hanging)\b/i;
 /** A sentence that lands warm: the party safe, together, at home, smiling. */
 const WARM = /\b(?:warm(?:th|ly)?|safe(?:ly)?|together|home|hand\s+in\s+hand|smil(?:e|es|ed|ing)|hug(?:s|ged|ging)?|laugh(?:s|ed|ing|ter)?|giggl\w*|grin(?:s|ned|ning)?|cozy|cosy|glow(?:s|ed|ing)?|content(?:ed)?|peace(?:ful)?|relie(?:f|ved)|calm)\b/i;
+/** A sentence (or clause) that lands warm: the party safe, together, at home, smiling. */
+export function isWarm(text: string): boolean {
+  return WARM.test(text);
+}
+
 /** Where an open thread can turn warm inside one sentence: ", but for now, …", "; …", " — …". */
 const TURN = /,\s*(?:but|yet)\s+|;\s+|\s+[—–]\s+/g;
 
@@ -2137,6 +2150,22 @@ export function warmClose(names: string[]): string {
 }
 
 /**
+ * A clause that leaves the world waiting on something that has not begun:
+ * ", waiting for a negotiation that has not yet begun" (round 16, NUMMRL).
+ */
+const NOT_YET_CLAUSE = /,\s*(?:still\s+)?(?:waiting|hovering|lingering|drifting|pausing)\s+(?:for|on|over|until)\b[^,.;!?]*?\b(?:not\s+yet|yet\s+to|has\s*n['’]t\s+yet|have\s*n['’]t\s+yet)\b[^,.;!?]*/gi;
+
+/** The warm half of a sentence that turns ("…remains unanswered, but for now …"), or null. */
+function warmHalfOf(sentence: string): string | null {
+  for (const m of sentence.matchAll(TURN)) {
+    const head = sentence.slice(0, m.index);
+    const tail = sentence.slice(m.index! + m[0].length).trim();
+    if (OPEN_THREAD.test(head) && !OPEN_THREAD.test(tail) && WARM.test(tail)) return capitalize(tail);
+  }
+  return null;
+}
+
+/**
  * A gentle table's ending that was flagged twice for leaving a thread open
  * (round 15, RZBU7G): "The question of the stuck pressure valve remains open
  * for another day, but for now, the amber light … feels exactly like home."
@@ -2145,28 +2174,172 @@ export function warmClose(names: string[]): string {
  * its warm half ("For now, the amber light…"). When no warm sentence is
  * left, the warm close is added. An ending whose last words are already
  * settled is returned as it is — naming the open thread earlier is fine.
+ *
+ * Round 16 (NUMMRL): the mixed sentence — "…remains unanswered, a loose
+ * thread in the paperwork, but for now the path is clear and the two of
+ * them are safe together." — was the second-to-last, so the trailing check
+ * never saw it. A sentence that turns warm is cut to its warm half wherever
+ * it is, and a "waiting for … that has not yet begun" clause goes wherever
+ * it is. A sentence that only names a thread, before a warm close, stays.
  */
 export function closeOpenEnding(text: string, names: string[]): string {
   if (!text?.trim()) return text;
-  const sentences = text.trim().split(SENTENCE_SPLIT).map(s => s.trim()).filter(Boolean);
-  const kept = [...sentences];
   let changed = false;
-  while (kept.length > 0 && OPEN_THREAD.test(kept[kept.length - 1]!)) {
-    const last = kept[kept.length - 1]!;
-    let warmHalf: string | null = null;
-    for (const m of last.matchAll(TURN)) {
-      const head = last.slice(0, m.index);
-      const tail = last.slice(m.index! + m[0].length).trim();
-      if (OPEN_THREAD.test(head) && !OPEN_THREAD.test(tail) && WARM.test(tail)) { warmHalf = capitalize(tail); break; }
+  const sentences = text.trim().split(SENTENCE_SPLIT).map(s => s.trim()).filter(Boolean).map(s => {
+    let out = s.replace(NOT_YET_CLAUSE, '');
+    if (out !== s) {
+      out = out.replace(/\s+([.!?…])/g, '$1');
+      if (!/[.!?…]["”’']?$/.test(out)) out = `${out}.`;
+      changed = true;
     }
+    if (OPEN_THREAD.test(out)) {
+      const warm = warmHalfOf(out);
+      if (warm) { changed = true; return warm; }
+    }
+    return out;
+  });
+  const kept = [...sentences];
+  while (kept.length > 0 && OPEN_THREAD.test(kept[kept.length - 1]!)) {
     changed = true;
-    if (warmHalf) { kept[kept.length - 1] = warmHalf; break; }
     kept.pop();
   }
   if (!changed) return text;
   if (!kept.some(s => WARM.test(s) && !OPEN_THREAD.test(s))) kept.push(warmClose(names));
   const out = kept.join(' ');
   console.log(`[guard] gentle ending: open thread closed ${changedSpan(text, out)}`);
+  return out;
+}
+
+// ─── Stock beats, mechanics and small repairs (round 16) ────────────────────
+
+/** Words of a trouble that say nothing about what the character does. */
+const TROUBLE_STOP = new Set(['after', 'anything', 'everything', 'something', 'about', 'much', 'very', 'always', 'never', 'every', 'with', 'from', 'into', 'their', 'them', 'they', 'other', 'things', 'thing', 'when', 'what', 'that', 'this', 'even', 'just', 'only', 'more', 'most', 'some', 'have', 'been', 'being', 'gets', 'get', 'too', 'far', 'over', 'under', 'people', 'others', 'myself', 'yourself', 'itself']);
+/** A few everyday words that show the same trouble ("shiny" → a glint). */
+const TROUBLE_KIN: Record<string, string[]> = {
+  shiny: ['shin', 'glint', 'glitter', 'sparkl', 'gleam', 'glimmer'],
+  wander: ['wander', 'stray', 'drift off', 'run off', 'ran off', 'slip away', 'slips away', 'slipped away'],
+  worr: ['worr', 'anxious', 'fret', 'panick'],
+  curious: ['curious', 'curiosity', 'poke', 'poking', 'prod'],
+};
+const TROUBLE_NEGATION = /\b(?:not|never|no|nor|ignor\w*|resist\w*|without|instead\s+of|avoid\w*|refus\w*|won['’]t|don['’]t|didn['’]t|can['’]t|cannot|isn['’]t|wasn['’]t|doesn['’]t|stops?\s+(?:myself|herself|himself|themselves|themself)|rather\s+than)\b/i;
+
+function troubleStems(trouble: string, partyNames: string[]): string[] {
+  const names = new Set(partyNames.flatMap(n => n.toLowerCase().split(/\s+/)));
+  const words = trouble.toLowerCase().replace(/["“”]/g, '').split(/[^a-z'’]+/).filter(w => w.length >= 4 && !TROUBLE_STOP.has(w) && !names.has(w));
+  const stems = new Set<string>();
+  for (const w of words) {
+    const stem = w.replace(/['’]s$/, '').slice(0, 5);
+    stems.add(stem);
+    for (const [key, kin] of Object.entries(TROUBLE_KIN)) if (stem.startsWith(key.slice(0, 4)) || key.startsWith(stem.slice(0, 4))) for (const k of kin) stems.add(k);
+  }
+  return [...stems];
+}
+
+/**
+ * Did the turn show the trouble a compel is about? Round 16 (NUMMRL): Biz's
+ * "Wanders off after anything shiny" was compelled — "the words could be
+ * Biz's motto" — on the turn Biz stared at Barnaby's spectacles, "ignoring
+ * the shiny glint by Mom's shoe". A word of the trouble (or a close kin —
+ * "shiny" is a glint) must appear in what the character did or said or in
+ * the ruling, in a clause that does not deny it ("ignoring", "instead of",
+ * "not"). Party names in the trouble ("Worries about Biz") never count. The
+ * private thought is not evidence: it talks about the whisper's advice.
+ */
+export function troubleShown(trouble: string | null | undefined, texts: Array<string | null | undefined>, partyNames: string[] = []): boolean {
+  if (!trouble?.trim()) return false;
+  const stems = troubleStems(trouble, partyNames);
+  if (stems.length === 0) return false;
+  for (const t of texts) {
+    if (!t) continue;
+    const clauses = t.toLowerCase().split(/[,;:.!?—–]+|\s+(?=(?:but|while|though|although|because|so)\s)/);
+    for (const c of clauses) {
+      for (const stem of stems) {
+        const at = c.search(new RegExp(`(?<![a-z])${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+        if (at < 0) continue;
+        if (!TROUBLE_NEGATION.test(c.slice(0, at))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Game mechanics named in a character's own words: fate points, trust as a stat, stress numbers, invoking aspects, "+2". */
+const MECHANIC = /\bfate\s+points?\b|\bFP\b|\b(?:whisper|voice)\s+trust\b|\btrust\s+(?:score|level|meter|rating|stat)\b|\b(?:my|our|her|his|their)\s+trust\s+(?:in\s+(?:the|this|that)\s+(?:voice|whisper)\s+)?(?:is|was|has|sits|stands|at)\b|\btrust\s+(?:is\s+)?at\s+\d|\b\d+\s*\/\s*3\s+stress\b|\bstress\s+(?:level|points?|track|boxes)\b|\binvok(?:e|es|ed|ing)\s+(?:an?\s+|my\s+)?aspects?\b|(?<![\w])\+\d\b/i;
+/** "my trust is too low to let…" says a feeling, as a stat: "I'm not ready to let…". */
+const LOW_TRUST_TO = /\b(?:my|our)\s+trust(?:\s+in\s+(?:the|this|that)\s+(?:voice|whisper))?\s+is\s+(?:too|so|very|far\s+too|still\s+too)\s+low\s+(?:for\s+me\s+)?to\b/gi;
+
+/**
+ * A character's thought or words without the game's mechanics. Round 16
+ * (NUMMRL), Liz's thoughts: "Biz just earned a fate point", "my trust is too
+ * low to let the certified witness take control". "My trust is too low to"
+ * becomes "I'm not ready to"; any other clause that names a mechanic goes
+ * with the rest of its sentence (its whole sentence when it is the first
+ * clause). Returns '' when nothing is left.
+ */
+export function withoutMechanics(text: string): string {
+  if (!text) return text;
+  let out = text.replace(LOW_TRUST_TO, "I'm not ready to");
+  if (!MECHANIC.test(out)) {
+    if (out !== text) console.log(`[guard] game mechanics out of a character's words: ${changedSpan(text, out)}`);
+    return out;
+  }
+  const sentences = out.split(SENTENCE_SPLIT);
+  const kept: string[] = [];
+  for (const sentence of sentences) {
+    if (!MECHANIC.test(sentence)) { kept.push(sentence); continue; }
+    const clauses = sentence.split(/(?<=[,;—–])\s+|\s+(?=(?:but|so|because|while|though|although|since)\s)/);
+    const first = clauses.findIndex(c => MECHANIC.test(c));
+    if (first <= 0) continue;
+    let head = clauses.slice(0, first).join(' ').trim().replace(/[\s,;:—–-]+$/u, '');
+    if (!/[.!?…]["”’']?$/.test(head)) head = `${head}.`;
+    kept.push(head);
+  }
+  const result = kept.join(' ').replace(/\s+/g, ' ').trim();
+  console.log(`[guard] game mechanics out of a character's words: ${changedSpan(text, result || '(nothing left)')}`);
+  return result;
+}
+
+/**
+ * A pronoun glued to an NPC's name in a character's speech: "Got it, Mom!
+ * Barnaby it, you said we were stuck?" (round 16, NUMMRL) is "Barnaby, you
+ * said…". Only a known NPC's name, then a bare pronoun, then a comma.
+ */
+export function withoutStrayPronounAfterName(text: string, npcNames: string[]): string {
+  if (!text || npcNames.length === 0) return text;
+  const forms = new Set<string>();
+  for (const n of npcNames) {
+    const full = n.trim();
+    if (!full) continue;
+    forms.add(full);
+    forms.add(full.replace(/^(?:the|a|an)\s+/i, ''));
+    const first = full.replace(/^(?:the|a|an)\s+/i, '').split(/\s+/)[0] ?? '';
+    if (/^\p{Lu}[\p{L}'’-]{2,}$/u.test(first)) forms.add(first);
+  }
+  const alts = [...forms].filter(Boolean).sort((a, b) => b.length - a.length).map(f => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const out = text.replace(new RegExp(`(?<![\\p{L}'’-])(${alts})\\s+(?:it|he|him|she|her|they|them)(?=\\s*,)`, 'gu'), '$1');
+  if (out !== text) console.log(`[guard] stray pronoun after a name: ${changedSpan(text, out)}`);
+  return out;
+}
+
+/** Words after "a" that start with a vowel letter but not a vowel sound: "a unicorn", "a one-time", "a European". */
+const CONSONANT_SOUND = /^(?:u(?:n[iaei]|s[eu]|s$|t[eio]|r[aeiu]|k|biq|to|re|vu)|eu|ew|one|once|uni|ouija)/i;
+
+/**
+ * "a engine" → "an engine" — wherever a substitution (or the model) left
+ * "a" before a vowel sound (round 16, NUMMRL: "a sound like a engine
+ * idling"). Lower-case "a", or a capital "A" that starts a sentence; the
+ * next word starts with a vowel letter and is not "a unicorn", "a user",
+ * "a one-time", "a European" or a lone capital ("a A-grade form").
+ */
+export function fixIndefiniteArticles(text: string): string {
+  if (!text || !/\b[aA]\s+[aeiouAEIOU]/.test(text)) return text;
+  const out = text.replace(/(^|[.!?…]["”’']?\s+|["“‘(\s—–-])([aA])(\s+)([aeiouAEIOU][\p{L}'’-]*)/gu, (whole, lead: string, a: string, sp: string, word: string) => {
+    if (a === 'A' && !/^$|[.!?…]["”’']?\s+$|["“‘(]$/.test(lead)) return whole;
+    if (CONSONANT_SOUND.test(word)) return whole;
+    if (/^\p{Lu}(?:$|[^\p{Ll}])/u.test(word)) return whole;
+    return `${lead}${a}n${sp}${word}`;
+  });
+  if (out !== text) console.log(`[guard] article: ${changedSpan(text, out)}`);
   return out;
 }
 

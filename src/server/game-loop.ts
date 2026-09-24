@@ -16,8 +16,8 @@ import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
 import { getSessionTokenForCharacter } from './room.js';
 import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
-import { LineRotation, invokeLines, compelLines, appendBeat } from './template-lines.js';
-import { gateGentleTone, type ToneJudge, type ToneKind } from './tone-gate.js';
+import { LineRotation, invokeLines, compelLines, appendBeat, withoutStockBeats } from './template-lines.js';
+import { gateGentleTone, gateChildOptions, gateChildThought, type ToneJudge, type ToneListJudge, type ToneKind } from './tone-gate.js';
 import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet, partyRolesLine } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
 import { PLAIN_PROSE_STYLE } from './agents/style.js';
@@ -31,6 +31,7 @@ import {
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
   kinAddressTerms, highConceptsToNames, sheetPhrases, isSheetPhraseName, sheetPhrasesToNames, optionsWithoutSheetBeings, type SheetOwner, takenOutLine, outcomeLines, whisperInboxMessage,
   withoutWhisperMentions, withoutDmWhispers, narratesItemTransferRecently, narratedItemEvents, declaredTakes, confirmsClaim, sameItem, usesMissingItems, reconcileItemChanges, releasedInAction, isStack, withoutHeldParaphrases, optionsWithoutGoneItems, eatenByReceiver, optionsWithoutMouthedThings, changedSpan, softenForChildren, ownWordsForCompanions, repeatsRecentBeat, withoutRepeatedSentences, softenEnding, bleakEnding, closeOpenEnding, tidyQuotes, spokenOrNull, withoutInventedPcSurnames, withoutCount, itemCount, lessOne,
+  withoutMechanics, withoutStrayPronounAfterName, fixIndefiniteArticles, troubleShown,
 } from './narrative-guards.js';
 import { checkedWhisperVerdict } from './whisper-verdict.js';
 import { referTo } from '../shared/pronouns.js';
@@ -77,13 +78,19 @@ function getFirstName(fullName: string): string {
  * campaign. Throws when the campaign cannot be read.
  */
 export function campaignWantsGentlePeril(db: Database.Database, campaignId: string): boolean {
-  const row = db.prepare('SELECT setup_chat, dm_instructions, dm_custom_prompt FROM campaigns WHERE id = ?').get(campaignId) as { setup_chat?: string | null; dm_instructions?: string | null; dm_custom_prompt?: string | null } | undefined;
-  let hostLines: string[] = [];
+  const row = db.prepare('SELECT dm_instructions, dm_custom_prompt FROM campaigns WHERE id = ?').get(campaignId) as { dm_instructions?: string | null; dm_custom_prompt?: string | null } | undefined;
+  return wantsGentlePeril([...hostSetupMessages(db, campaignId), row?.dm_instructions, row?.dm_custom_prompt]);
+}
+
+/** What the host said in the setup chat, as stored on the campaign (an unreadable chat says nothing). */
+export function hostSetupMessages(db: Database.Database, campaignId: string): string[] {
+  const row = db.prepare('SELECT setup_chat FROM campaigns WHERE id = ?').get(campaignId) as { setup_chat?: string | null } | undefined;
   try {
     const chat = row?.setup_chat ? JSON.parse(row.setup_chat) as Array<{ role: string; content: string }> : [];
-    hostLines = Array.isArray(chat) ? chat.filter(m => m?.role === 'user' && typeof m.content === 'string').map(m => m.content) : [];
-  } catch { /* an unreadable chat says nothing */ }
-  return wantsGentlePeril([...hostLines, row?.dm_instructions, row?.dm_custom_prompt]);
+    return Array.isArray(chat) ? chat.filter(m => m?.role === 'user' && typeof m.content === 'string').map(m => m.content) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Grounding for the epilogue and closing reflections, stated once so both say the same thing. */
@@ -605,14 +612,26 @@ export class GameLoop {
    * `soften` defaults to nothing because the DM's prose goes through
    * guardText (softenForChildren) after this anyway.
    */
-  private async toneGated<T>(kind: ToneKind, first: T, textOf: (v: T) => string, regenerate: (feedback: string) => Promise<T | null | undefined>, opts: { soften?: (v: T) => T; extraFlags?: (text: string) => string[]; label?: string } = {}): Promise<T> {
+  private async toneGated<T>(kind: ToneKind, first: T, textOf: (v: T) => string, regenerate: (feedback: string) => Promise<T | null | undefined>, opts: { soften?: (v: T) => T; extraFlags?: (text: string) => string[]; label?: string; mapText?: (v: T, edit: (text: string) => string) => T } = {}): Promise<T> {
     if (!this.familyTable()) return first;
-    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, judge: GameLoop.toneJudge });
+    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames() }, judge: GameLoop.toneJudge });
     return result.value;
+  }
+
+  /** The child player characters, by first name (for the tone judge). */
+  private childNames(): string[] {
+    return childrenInParty(this.partyForDm()).map(n => getFirstName(n));
+  }
+
+  /** Is this character one of the children at the table? */
+  private isChild(character: Character): boolean {
+    return childrenInParty(this.partyForDm()).some(n => this.namesMatch(n, character.definition.name));
   }
 
   /** The tone judge; tests swap in a mock. Undefined: the LLM judge on the game's proxy. */
   static toneJudge: ToneJudge | undefined;
+  /** The one-call judge for the child's options; tests swap in a mock. Undefined: the LLM judge. */
+  static toneListJudge: ToneListJudge | undefined;
 
   /**
    * DM-authored prose — narration, resolutions, summaries, the epilogue —
@@ -643,6 +662,8 @@ export class GameLoop {
       if (this.familyTable()) fixed = softenForChildren(fixed);
       // Quotes the model left unbalanced (`in ink!', The air`, `"taxation.'`).
       fixed = tidyQuotes(fixed);
+      // "a engine" (NUMMRL) — the model's, or a substitution's above.
+      fixed = fixIndefiniteArticles(fixed);
       return fixed;
     } catch (e) {
       console.error('[guard] narration name guard failed, text left as written:', e);
@@ -693,9 +714,19 @@ export class GameLoop {
     }
   }
 
+  /**
+   * The delivered ruling without the server's stock beats — each as appended,
+   * or as guardText left it — for the memory writers.
+   */
+  private memoryText(delivered: string, beats: string[]): string {
+    if (beats.length === 0) return delivered;
+    const variants = beats.flatMap(b => [b, this.guardText(b)]);
+    return withoutStockBeats(delivered, variants);
+  }
+
   /** A memory as it is stored: the NPC pronoun fix, and gentle at a family table. */
   private memoryRepair = (text: string): string => {
-    const fixed = repairChildNouns(this.fixNpcPronouns(text, { speech: true }), this.pronounMembers(), { npcNames: this.knownNpcNames() });
+    const fixed = fixIndefiniteArticles(repairChildNouns(this.fixNpcPronouns(text, { speech: true }), this.pronounMembers(), { npcNames: this.knownNpcNames() }));
     return this.familyTable() ? softenForChildren(fixed) : fixed;
   };
 
@@ -1197,6 +1228,7 @@ export class GameLoop {
       await this.dm.openScene(openingCtx, openingOpts),
       o => [o.arrival ?? '', o.narration ?? '', ...(o.introductions ?? []).map(x => x.text)].filter(Boolean).join('\n'),
       feedback => this.dm.openScene({ ...openingCtx, toneFeedback: feedback }, openingOpts),
+      { mapText: (o, edit) => ({ ...o, arrival: o.arrival ? edit(o.arrival) : o.arrival, narration: o.narration ? edit(o.narration) : o.narration, introductions: o.introductions?.map(x => ({ ...x, text: x.text ? edit(x.text) : x.text })) }) },
     ), (e) => {
       console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
       return null;
@@ -1493,6 +1525,7 @@ export class GameLoop {
       await this.dm.narrate(narrateArgs.ctx, pacing),
       n => n.narration,
       feedback => this.dm.narrate({ ...narrateArgs.ctx, toneFeedback: feedback }, pacing),
+      { mapText: (n, edit) => ({ ...n, narration: edit(n.narration) }) },
     );
     const narration = await this.haltable(async () => {
       let narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
@@ -1501,7 +1534,8 @@ export class GameLoop {
         narration = await this.dm.narrate(narrateArgs.ctx, narrateArgs.pacing);
       }
       return this.toneGated('narration', narration, n => n.narration,
-        feedback => this.dm.narrate({ ...narrateArgs.ctx, toneFeedback: feedback }, narrateArgs.pacing));
+        feedback => this.dm.narrate({ ...narrateArgs.ctx, toneFeedback: feedback }, narrateArgs.pacing),
+        { mapText: (n, edit) => ({ ...n, narration: edit(n.narration) }) });
     }, (e) => {
       console.error('[game-loop] narration failed:', e);
       return { narration: 'The scene continues...', currentLocationName: '', activeNpcs: [] as string[], isSceneEnd: false, itemMoves: undefined } as DmNarrationResult;
@@ -1769,6 +1803,23 @@ export class GameLoop {
       const cut = before.filter(d => !proposals.actions.some(a => a.description === d));
       if (cut.length > 0) console.log(`[items] ${character.definition.name}: dropped option(s) that reach for a gone thing or mouth a thing: ${cut.map(d => `"${d}"`).join(', ')}`);
     }
+    for (const a of proposals.actions) a.description = fixIndefiniteArticles(a.description);
+    // A gentle table's child reads their own options (round 16, NUMMRL: "pull
+    // her back before the shelf slams shut on her hand"): softened, then all
+    // judged in one short call, and a flagged option dropped — never rewritten.
+    if (this.familyTable() && this.isChild(character)) {
+      for (const a of proposals.actions) {
+        a.description = softenForChildren(a.description);
+        if (a.reasoning) a.reasoning = softenForChildren(a.reasoning);
+      }
+      const options = proposals.actions;
+      const gated = await this.haltable(
+        () => gateChildOptions(options.map(a => a.description), { judge: GameLoop.toneListJudge, children: this.childNames(), label: character.definition.name }),
+        (e) => { console.error('[tone-gate] options gate failed — kept as written:', e); return { keep: options.map((_, i) => i), dropped: [] }; },
+      );
+      if (!gated) return;
+      proposals.actions = gated.keep.map(i => options[i]!);
+    }
 
     if (!(await this.pace({ window: true }))) return;
     this.sendToOwner(characterId, {
@@ -1968,6 +2019,30 @@ export class GameLoop {
     decision.chosenAction = this.fixNpcPronouns(decision.chosenAction, { speech: true });
     if (decision.spokenWords) decision.spokenWords = this.fixNpcPronouns(decision.spokenWords, { speech: true });
     decision.innerThought = this.fixNpcPronouns(decision.innerThought, { speech: true });
+    // Round 16 (NUMMRL). No game mechanics in what a character thinks or
+    // says ("Biz just earned a fate point", "my trust is too low to…"); no
+    // pronoun glued to an NPC's name ("Barnaby it, you said…"); "an engine".
+    {
+      const thought = withoutMechanics(decision.innerThought);
+      decision.innerThought = fixIndefiniteArticles(thought.trim() ? thought : endSentence(`I'll ${lowerFirst(decision.chosenAction.replace(/^I\s+/i, ''))}`));
+      if (decision.spokenWords) {
+        const npcNames = [...new Set([...this.knownNpcNames(), ...this.allNpcs().map(n => n.name)])];
+        decision.spokenWords = spokenOrNull(fixIndefiniteArticles(withoutStrayPronounAfterName(withoutMechanics(decision.spokenWords), npcNames)));
+      }
+      decision.chosenAction = fixIndefiniteArticles(decision.chosenAction);
+    }
+    // A gentle table's child reads their own character's thought (NUMMRL:
+    // "I'm scared of being separated from her in this dark aisle", "she looks
+    // so stressed with that wound"): softened, judged, a flagged sentence out.
+    if (this.familyTable() && this.isChild(character)) {
+      const thought = decision.innerThought;
+      const gated = await this.haltable(
+        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), label: character.definition.name }),
+        (e) => { console.error('[tone-gate] thought gate failed — kept softened:', e); return softenForChildren(thought); },
+      );
+      if (gated === null) return;
+      decision.innerThought = gated;
+    }
 
     let actionTranscript = `${character.definition.name}: ${decision.chosenAction}`;
     if (decision.spokenWords) {
@@ -2062,6 +2137,9 @@ export class GameLoop {
       await this.dm.resolve(rulingCtx, ...args),
       r => r.narration,
       feedback => this.dm.resolve({ ...rulingCtx, toneFeedback: feedback }, ...args),
+      // Round 16 (NUMMRL): kept while still flagged, the flagged phrases come
+      // out of the narration before anything — memory included — reads it.
+      { mapText: (r, edit) => ({ ...r, narration: edit(r.narration) }) },
     );
     const ruling = this.haltable(() => resolveGated(
         decision.spokenWords
@@ -2116,6 +2194,11 @@ export class GameLoop {
       resolution.narration = this.plainOutcome(character, resolution.outcome);
     }
 
+    // The server's own lines appended to the ruling this turn (corrections,
+    // asides, invoke and compel beats): the table reads them, the memory
+    // writers do not (round 16 — "The worry about Biz flared up again" was a
+    // compel line, stored as Liz's memory).
+    const stockBeats: string[] = [];
     if (diceResult && resolution.difficulty != null && resolution.skill && campaign.system_id === 'fate-core') {
       if (resolution.difficulty > 8) {
         console.log(`[game-loop] FATE difficulty capped: DM set ${resolution.difficulty}, max is 8 (Legendary)`);
@@ -2144,7 +2227,9 @@ export class GameLoop {
           const correctionBeats: Record<string, string[]> = outcomeLines(getFirstName(character.definition.name), this.ownPronouns(character)).correction;
           const beats = correctionBeats[correctOutcome] ?? [];
           if (beats.length > 0) {
-            resolution.narration = appendBeat(resolution.narration, this.lines.pick(`correction-${correctOutcome}`, beats, this.recentStoryText()));
+            const beat = this.lines.pick(`correction-${correctOutcome}`, beats, this.recentStoryText());
+            resolution.narration = appendBeat(resolution.narration, beat);
+            stockBeats.push(beat);
           }
         }
       }
@@ -2160,6 +2245,7 @@ export class GameLoop {
           ? `(${resolution.skill} +${skillRank} ties the ${diffName} (+${resolution.difficulty}) difficulty — a tie means you succeed, but at a minor cost.)`
           : `(${resolution.skill} +${skillRank} with dice ${dSign}${diceResult.total} = +${effort} vs ${diffName} (+${resolution.difficulty}) — ${Math.abs(shifts)} shift${Math.abs(shifts) !== 1 ? 's' : ''} short.${character.state.fatePoints > 0 ? ' An aspect invoke for +2 could have changed this!' : ''})`;
         resolution.narration = appendBeat(resolution.narration, aside);
+        stockBeats.push(aside);
       }
     }
 
@@ -2204,7 +2290,10 @@ export class GameLoop {
         resolution.outcome = upgradedOutcome;
         const invokeFirst = getFirstName(character.definition.name);
         const invokeLine = this.lines.pick('invoke', invokeLines(invokeFirst, bestAspect), this.recentStoryText(), { whenSpent: 'skip' });
-        if (invokeLine) resolution.narration = appendBeat(resolution.narration, invokeLine);
+        if (invokeLine) {
+          resolution.narration = appendBeat(resolution.narration, invokeLine);
+          stockBeats.push(invokeLine);
+        }
         this.addTranscript('system', `[${character.definition.name} invokes "${bestAspect}" for +2 — outcome upgraded to ${upgradedOutcome}! (${newFp} FP remaining)]`);
       }
     }
@@ -2346,6 +2435,7 @@ export class GameLoop {
     const lastCompelTurn = (character as any)._lastCompelTurn ?? -Infinity;
     if (this.state.currentTurn - lastCompelTurn >= 3) {
       let shouldCompel = false;
+      let proactive = false;
       if (resolution.outcome === 'failure') {
         shouldCompel = true;
       } else if (resolution.outcome === 'success-with-cost') {
@@ -2354,17 +2444,37 @@ export class GameLoop {
         shouldCompel = true;
       } else if (character.state.fatePoints === 0 && this.state.currentTurn - lastCompelTurn >= 4) {
         shouldCompel = true;
+        proactive = true;
         console.log(`[game-loop] Proactive compel: ${character.definition.name} at 0 FP for ${this.state.currentTurn - lastCompelTurn} turns — GM keeps the economy flowing`);
       }
-      if (shouldCompel) {
+      // A compel is the trouble happening (round 16, NUMMRL: "Wanders off
+      // after anything shiny… the words could be Biz's motto" on the turn Biz
+      // ignored the shiny glint). Shown in what they did or said or in the
+      // ruling: the compel and its line. Not shown: no compel — except the
+      // economy's proactive point at 0 FP, which comes with no line that
+      // claims the trouble happened.
+      const shown = shouldCompel && troubleShown(character.definition.trouble,
+        [decision.chosenAction, decision.spokenWords, withoutStockBeats(resolution.narration, stockBeats)],
+        Array.from(this.characters.values()).map(c => c.definition.name));
+      if (shouldCompel && !shown && !proactive) {
+        console.log(`[game-loop] Compel skipped: "${character.definition.trouble}" did not show in ${character.definition.name}'s turn`);
+      } else if (shouldCompel) {
         character.state.fatePoints = Math.min(character.state.fatePoints + 1, 5);
         (character as any)._lastCompelTurn = this.state.currentTurn;
-        console.log(`[game-loop] Compel triggered: "${character.definition.trouble}" on ${resolution.outcome} — ${character.definition.name} now at ${character.state.fatePoints} FP`);
-        this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
-        const compelFirst = getFirstName(character.definition.name);
-        const compelTrouble = character.definition.trouble;
-        const compelLine = this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText(), { whenSpent: 'skip' });
-        if (compelLine) resolution.narration += `\n\n${compelLine}`;
+        if (shown) {
+          console.log(`[game-loop] Compel triggered: "${character.definition.trouble}" on ${resolution.outcome} — ${character.definition.name} now at ${character.state.fatePoints} FP`);
+          this.addTranscript('system', `[Compel: "${character.definition.trouble}" — ${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
+          const compelFirst = getFirstName(character.definition.name);
+          const compelTrouble = character.definition.trouble;
+          const compelLine = this.lines.pick('compel', compelLines(compelFirst, compelTrouble), this.recentStoryText(), { whenSpent: 'skip' });
+          if (compelLine) {
+            resolution.narration += `\n\n${compelLine}`;
+            stockBeats.push(compelLine);
+          }
+        } else {
+          console.log(`[game-loop] Fate point for the economy: ${character.definition.name} now at ${character.state.fatePoints} FP — "${character.definition.trouble}" did not show, so no compel line`);
+          this.addTranscript('system', `[${character.definition.name} earns a fate point (${character.state.fatePoints} FP)]`);
+        }
         affectedCharIds.add(characterId);
       }
     }
@@ -2433,9 +2543,11 @@ export class GameLoop {
       }
     }
 
+    // What memory reads: the ruling as the table read it, without the stock beats.
+    const rulingForMemory = this.memoryText(resolution.narration, stockBeats);
     this.memoryStore.extractAndStore(
       characterId, this.campaignId, character.definition.name,
-      decision.chosenAction, resolution.narration, whisper,
+      decision.chosenAction, rulingForMemory, whisper,
       this.state.currentScene, this.state.currentTurn,
       { pronounNote: this.castPronouns(), rolesNote: partyRolesLine(this.pronounMembers()), repair: this.memoryRepair },
     ).then(stored => {
@@ -2446,7 +2558,7 @@ export class GameLoop {
       if (observerId === characterId) continue;
       this.memoryStore.storeObservation(
         observerId, this.campaignId, observer.definition.name,
-        character.definition.name, decision.chosenAction, resolution.narration,
+        character.definition.name, decision.chosenAction, rulingForMemory,
         this.state.currentScene, this.state.currentTurn,
         // What the actor calls this observer ("Mom" for Liz): "my hand" in Liz's own memory.
         this.addressTermsOf(characterId).filter(t => this.namesMatch(t.name, observer.definition.name)).map(t => t.address),
@@ -3358,6 +3470,48 @@ export class GameLoop {
   }
 }
 
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Capitalised words that are never a character's name. */
+const NOT_A_PC_NAME = new Set(['the', 'a', 'an', 'i', 'it', 'in', 'on', 'at', 'and', 'but', 'or', 'my', 'our', 'their', 'they', 'she', 'he', 'we', 'you', 'this', 'that', 'these', 'those', 'there', 'here', 'premise', 'influences', 'please', 'gentle', 'no', 'yes', 'so', 'then', 'when', 'while', 'if', 'city', 'mom', 'dad']);
+
+/**
+ * The players' own characters, as far as anyone knows before they are made:
+ * names the host used in the setup chat that the world's premise uses too,
+ * and that are no NPC, place or item ("Liz and Biz have arrived in…").
+ */
+export function partyNamesForIntroduction(seed: WorldSeed, hostMessages: string[]): string[] {
+  const words = (t: string) => new Set([...(t ?? '').matchAll(/(?<![\p{L}'’-])(\p{Lu}\p{Ll}+)(?:['’]s)?(?![\p{L}-])/gu)].map(m => m[1]!));
+  const host = words(hostMessages.join('\n'));
+  const premise = words(seed.premise ?? '');
+  const world = new Set([...seed.npcs.map(n => n.name), ...seed.locations.map(l => l.name), ...(seed.items ?? []).map(i => i.name)].flatMap(n => (n ?? '').split(/\s+/)).map(w => w.replace(/['’]s$/, '').replace(/[^\p{L}'’-]/gu, '').toLowerCase()));
+  return [...premise].filter(w => host.has(w) && !world.has(w.toLowerCase()) && !NOT_A_PC_NAME.has(w.toLowerCase()));
+}
+
+/**
+ * The first sight of the world is read by one of the players, before they
+ * have said who they are: the players' characters are never named in it.
+ * Live (NUMMRL): the host, who plays Liz, read "You and Liz stand in the
+ * middle of the intersection". "You and Liz" is "You and your companion";
+ * "Liz and Biz" (every one of them) is "you and your companion"; any other
+ * mention is "your companion".
+ */
+function readerNotNamed(text: string, names: string[]): string {
+  const clean = names.map(n => n.trim()).filter(Boolean);
+  if (clean.length === 0 || !text) return text;
+  const alt = `(?:${clean.map(esc).join('|')})`;
+  const companion = clean.length > 2 ? 'your companions' : 'your companion';
+  let out = text;
+  if (clean.length >= 2) out = out.replace(new RegExp(`\\b${alt}(?:,\\s*${alt})*,?\\s+and\\s+${alt}\\b`, 'g'), `you and ${companion}`);
+  out = out
+    .replace(new RegExp(`\\b(You|you)\\s+and\\s+${alt}\\b`, 'g'), `$1 and your companion`)
+    .replace(new RegExp(`\\b${alt}\\s+and\\s+you\\b`, 'g'), 'your companion and you')
+    .replace(new RegExp(`\\b${alt}['’]s\\b`, 'g'), "your companion's")
+    .replace(new RegExp(`\\b${alt}\\b`, 'g'), 'your companion')
+    .replace(/(^|[.!?…]["”’']?\s+|\n\s*|["“]\s*)(you|your)\b/g, (_m, lead: string, w: string) => `${lead}${w.charAt(0).toUpperCase()}${w.slice(1)}`);
+  if (out !== text) console.log(`[world-introduction] the players' characters not named: ${clean.join(', ')}`);
+  return out;
+}
+
 /**
  * A player's first sight of the world as it is shown: an NPC's seed pronouns
  * put back where nobody else could be meant, and gentle when the host asked
@@ -3365,9 +3519,9 @@ export class GameLoop {
  * with terrifying determination, his oversized briefcase… He looks you in
  * the eye" — Barnaby is it/its and the host had asked for gentle peril.
  */
-export function worldIntroductionAsShown(text: string, seed: WorldSeed, gentlePeril: boolean): string {
+export function worldIntroductionAsShown(text: string, seed: WorldSeed, gentlePeril: boolean, partyNames: string[] = []): string {
   if (!text?.trim()) return text;
-  let out = text;
+  let out = readerNotNamed(text, partyNames);
   try {
     const fixed = new Map(seedNpcPronouns(seed.npcs).map(n => [n.name, n.pronouns]));
     const npcs = seed.npcs.map(n => ({ name: n.name, pronouns: fixed.get(n.name) ?? null }));
