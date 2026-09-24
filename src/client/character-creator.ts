@@ -2,6 +2,7 @@ import type { WsClient } from './ws-client.js';
 import type { CharacterDefinition } from '../shared/types.js';
 import { parseOneCharacter, parseCharacters } from '../shared/markdown-parser.js';
 import { renderNegotiationChat } from './negotiation-chat.js';
+import { appendMarkdown } from './markdown.js';
 
 const FATE_SKILLS = [
   'Athletics', 'Burglary', 'Contacts', 'Crafts', 'Deceive', 'Drive',
@@ -240,7 +241,7 @@ Quick Fingers: +2 to Stealth when picking locks
     const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
     for (const p of paragraphs.length > 0 ? paragraphs : [text]) {
       const para = document.createElement('p');
-      para.textContent = p;
+      appendMarkdown(para, p);
       worldIntroText.appendChild(para);
     }
     worldIntroEl.classList.remove('hidden');
@@ -400,7 +401,8 @@ Quick Fingers: +2 to Stealth when picking locks
     const bubbles = rest.map(turn => {
       const bubble = document.createElement('div');
       bubble.className = `dm-chat-bubble ${turn.role === 'user' ? 'player' : 'dm'}`;
-      bubble.textContent = turn.content;
+      if (turn.role === 'user') bubble.textContent = turn.content;
+      else appendMarkdown(bubble, turn.content);
       return bubble;
     });
     chatLog.replaceChildren(...bubbles);
@@ -420,7 +422,10 @@ Quick Fingers: +2 to Stealth when picking locks
   function addChatMsg(text: string, sender: 'dm' | 'player') {
     const bubble = document.createElement('div');
     bubble.className = `dm-chat-bubble ${sender}`;
-    bubble.textContent = text;
+    // The DM's replies are model text: safe markdown (DOM nodes only). The
+    // player's own words stay literal.
+    if (sender === 'dm') appendMarkdown(bubble, text);
+    else bubble.textContent = text;
     chatLog.appendChild(bubble);
     chatLog.scrollTop = chatLog.scrollHeight;
   }

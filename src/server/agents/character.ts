@@ -1,4 +1,5 @@
 import { callLlm } from './llm-client.js';
+import { PLAIN_PROSE_STYLE } from './style.js';
 import { ActionProposalSchema, ActionDecisionSchema } from './schemas.js';
 import type { ActionProposal, ActionDecision } from './schemas.js';
 import type { CharacterDefinition, CharacterState, TranscriptMessage } from '../../shared/types.js';
@@ -240,7 +241,7 @@ export class CharacterAgent {
 
     return callLlm({
       messages: [
-        { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.' },
+        { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.\n' + PLAIN_PROSE_STYLE },
         { role: 'user', content: userMessage },
       ],
       schema: ActionProposalSchema,
@@ -352,7 +353,7 @@ NEVER set trustDelta to exactly 0.0 when a whisper was given.`;
       : [];
 
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-      { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.' },
+      { role: 'system', content: charPrompt + '\nRespond with JSON ONLY. No thinking, no prose, no markdown. Start your response with { immediately. Do not use <think> tags.\n' + PLAIN_PROSE_STYLE },
       { role: 'user', content: decisionMessage },
     ];
 

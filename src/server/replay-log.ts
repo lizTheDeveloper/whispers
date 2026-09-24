@@ -16,9 +16,11 @@ const REPLAY_WINDOW = 600;
  *
  * `sessionToken` is the viewer-scope tag, not authorship metadata: rows with
  * a token are ONLY replayed to that session, rows with null go to everyone
- * in the room. Today the only tagged kind is 'whisper-echo' — a player's
- * "You whisper:" line is a local render for the sender alone, so a refresh
- * must restore it for that sender and leak nothing to anyone else.
+ * in the room. Two kinds are tagged: 'whisper-echo' — a player's "You
+ * whisper:" line is a local render for the sender alone — and
+ * 'character-thought' — a character's inner thought and whisper verdict go
+ * only to the seat that plays them. A refresh must restore either for that
+ * seat and leak nothing to anyone else.
  *
  * seq comes from MAX(seq)+1 inside the same statement; better-sqlite3 is
  * synchronous on one connection, so appends from the game loop and from
@@ -85,7 +87,14 @@ export function loadReplayLog(
   const entries: ReplayEntry[] = [];
   for (const row of rows.reverse()) {
     try {
-      entries.push(JSON.parse(row.entry) as ReplayEntry);
+      const entry = JSON.parse(row.entry) as ReplayEntry;
+      // Rows written before thoughts were split out of action-taken carried
+      // them publicly. A public row never replays a character's private mind.
+      if (entry.type === 'action-taken') {
+        delete entry.innerThought;
+        delete entry.whisperInfluence;
+      }
+      entries.push(entry);
     } catch {
       // A corrupt row is a missing display line, not a crashed rejoin.
     }

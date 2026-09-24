@@ -160,6 +160,18 @@ function hostSocket(joinCode: string): WebSocket | null {
   return h && h.ws.readyState === WebSocket.OPEN ? h.ws : null;
 }
 
+/**
+ * Send to the one seat that plays `characterId` — the campaign_sessions row
+ * bound at approval (makeCharacterLive), the same authority whisper routing
+ * uses. A character nobody is seated at gets nothing: their private thinking
+ * is not the host's to read unless the host is the one playing them.
+ */
+function sendToCharacterOwner(joinCode: string, campaignId: string, characterId: string, msg: ServerMessage): void {
+  const token = getSessionTokenForCharacter(getDb(), campaignId, characterId);
+  const ws = token ? socketFor(joinCode, token) : null;
+  if (ws) send(ws, msg);
+}
+
 /** Tell one socket the table is paused (and why), if it is — so a tab that joins or refreshes mid-pause shows the banner. */
 function sendPauseState(ws: WebSocket, campaignId: string, phase: string): void {
   if (phase !== 'playing') return;
@@ -191,6 +203,7 @@ function resumeGame(jc: string, campaign: import('../shared/types.js').Campaign,
     (m) => broadcast(jc, m),
     (m) => { const host = hostSocket(jc); if (host) send(host, m); },
     { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
+    (characterId, m) => sendToCharacterOwner(jc, campaign.id, characterId, m),
   );
   gameLoops.set(jc, rebuilt);
   broadcast(jc, { type: 'game-paused', paused: false, reason: null, by });
@@ -757,8 +770,16 @@ wss.on('connection', (ws) => {
       // outlives the window, and not nothing (the prompt is not in the
       // replay log).
       if (campaign.phase === 'playing') {
-        const openWindow = gameLoops.get(msg.joinCode)?.openWhisperWindow();
-        if (openWindow) send(ws, openWindow);
+        const openLoop = gameLoops.get(msg.joinCode);
+        const openWindow = openLoop?.openWhisperWindow();
+        if (openWindow) {
+          send(ws, openWindow);
+          // Its chips and mood line only if this seat plays that character.
+          const guidance = openLoop?.openWhisperWindowGuidance();
+          if (guidance && getSessionTokenForCharacter(db, campaign.id, guidance.characterId) === currentPlayer.sessionToken) {
+            send(ws, guidance);
+          }
+        }
       }
 
       // Sent last and deliberately not awaited: sendWorldIntroduction makes an
@@ -1644,6 +1665,7 @@ wss.on('connection', (ws) => {
         (m) => broadcast(jc, m),
         (m) => { const host = players.find(p => p.isOwner); if (host) send(host.ws, m); },
         { campaignId: campaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
+        (characterId, m) => sendToCharacterOwner(jc, campaign.id, characterId, m),
       );
       gameLoops.set(jc, gameLoop);
       gameLoop.start().catch(e => console.error('Game loop error:', e));
@@ -1732,6 +1754,7 @@ wss.on('connection', (ws) => {
           (m) => broadcast(jc, m),
           (m) => { const host = hostSocket(jc); if (host) send(host, m); },
           { campaignId: endedCampaign.id, joinCode: jc, phase: 'playing', currentScene: 0, currentTurn: 0, initiativeOrder: [], activeCharacterId: null, awaitingWhisper: false, awaitingDmAnswer: false, currentLocationId: null },
+          (characterId, m) => sendToCharacterOwner(jc, endedCampaign.id, characterId, m),
         );
         epilogueLoop.restoreForEpilogue();
         epilogueLoop.endGame().catch(e => {

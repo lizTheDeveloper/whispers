@@ -165,7 +165,7 @@ async function runLoop(opts: { seed?: WorldSeed; lizState?: typeof STATE; bizSta
     loop = new GameLoop(db, campaignId, (m) => {
       broadcasts.push(m);
       if (opts.until(m, broadcasts)) setImmediate(() => { loop.stop(); resolve(); });
-    }, () => {}, state);
+    }, () => {}, state, (_id, m) => broadcasts.push(m));
   });
   const running = loop.start().catch((e) => { console.error("LOOP FAILED", e); });
   await Promise.race([done, new Promise(r => setTimeout(r, opts.timeoutMs ?? 15_000))]);

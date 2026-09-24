@@ -11,7 +11,11 @@ import { CharacterMemoryStore } from './character-memory.js';
 import { callProse, runWithLlmSignal } from './agents/llm-client.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
-import { recordReplayBroadcast } from './replay-log.js';
+import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
+import { getSessionTokenForCharacter } from './room.js';
+import { beatText, pacingFromEnv, readingDelayMs, type Pacing } from './pacing.js';
+import { shortenSuggestion, lowerFirst, endSentence } from './whisper-suggestions.js';
+import { PLAIN_PROSE_STYLE } from './agents/style.js';
 import { generateSceneImage, clearCampaignImageCache } from './image-gen.js';
 import { transcriptVisibleTo, storyLines } from './transcript-visibility.js';
 import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
@@ -121,6 +125,15 @@ export class GameLoop {
   private quietTurns = 0;
   private pendingWhisperTimer: ReturnType<typeof setTimeout> | null = null;
   private openWhisperPrompt: Extract<ServerMessage, { type: 'whisper-prompt' }> | null = null;
+  // The owner-only half of the open prompt (mood, goals, suggestion chips).
+  private openWhisperGuidance: Extract<ServerMessage, { type: 'whisper-guidance' }> | null = null;
+  // Reading-time pacing (see pacing.ts). readyAt is when the table has had
+  // time to read everything shown so far; pace() holds the next beat until
+  // then. A pause freezes what is left of the wait in paceHeldMs.
+  private pacing: Pacing = pacingFromEnv();
+  private readyAt = 0;
+  private paceHeldMs = 0;
+  private paceWake: (() => void) | null = null;
   // Wall-clock close of the open whisper window while its countdown runs;
   // null while none is open or while a pause holds it.
   private whisperDeadline: number | null = null;
@@ -141,6 +154,9 @@ export class GameLoop {
     broadcastFn: (msg: ServerMessage) => void,
     private sendToHostFn: (msg: ServerMessage) => void,
     initialState: RoomState,
+    // Delivers to the one seat that plays `characterId` (and to no one when
+    // nobody does). A character's private thinking travels only this way.
+    private sendToOwnerFn: (characterId: string, msg: ServerMessage) => void = () => {},
   ) {
     this.dm = new DmAgent(db);
     this.worldBible = new WorldBible(db);
@@ -163,8 +179,62 @@ export class GameLoop {
       } catch (e) {
         console.error('[game-loop] replay-log append failed:', e);
       }
+      this.markBeat(msg);
       broadcastFn(msg);
     };
+  }
+
+  /**
+   * A character's private thinking — their options, the whisper panel's
+   * chips, their inner thought — to the seat that plays them and no one
+   * else. The host sees it only when the host is that seat. A thought is a
+   * log line, so it is also written to the replay log scoped to that seat's
+   * session (the whisper-echo pattern), and a refresh restores it for them
+   * alone.
+   */
+  private sendToOwner(characterId: string, raw: ServerMessage): void {
+    const msg = this.guardMessage(raw);
+    if (msg.type === 'character-thought') {
+      try {
+        const token = getSessionTokenForCharacter(this.db, this.campaignId, characterId);
+        if (token) appendReplayEntry(this.db, this.campaignId, msg, token);
+      } catch (e) {
+        console.error('[game-loop] replay-log append (private) failed:', e);
+      }
+    }
+    this.markBeat(msg);
+    this.sendToOwnerFn(characterId, msg);
+  }
+
+  /** A beat just went out: the next one waits until it has been read. Bursts add up. */
+  private markBeat(msg: ServerMessage): void {
+    const text = beatText(msg);
+    if (text === null) return;
+    const delay = readingDelayMs(text, this.pacing);
+    if (delay <= 0) return;
+    if (this.pauseReason) {
+      this.paceHeldMs += delay;
+      return;
+    }
+    this.readyAt = Math.max(Date.now(), this.readyAt) + delay;
+  }
+
+  /**
+   * Hold the next beat until the table has read the last one. Pause parks
+   * here (what is left of the wait resumes with the table); stop wakes it at
+   * once. Resolves true to carry on, false once stopped. Every player waits
+   * together, because the loop itself waits — the client just shows.
+   */
+  private async pace(): Promise<boolean> {
+    for (;;) {
+      if (!(await this.awaitRunnable())) return false;
+      const wait = this.readyAt - Date.now();
+      if (wait <= 0) return true;
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(() => { this.paceWake = null; resolve(); }, wait);
+        this.paceWake = () => { clearTimeout(timer); this.paceWake = null; resolve(); };
+      });
+    }
   }
 
   loadCharacters(): void {
@@ -401,7 +471,7 @@ export class GameLoop {
         return {
           ...msg,
           action: repairAddress(msg.action, terms, { vocative: false }),
-          innerThought: repairAddress(msg.innerThought, terms, { vocative: false }),
+          innerThought: msg.innerThought === undefined ? undefined : repairAddress(msg.innerThought, terms, { vocative: false }),
           spokenWords: msg.spokenWords ? repairAddress(msg.spokenWords, terms, { vocative: true }) : msg.spokenWords,
         };
       }
@@ -620,6 +690,8 @@ export class GameLoop {
     this.resumeGate = null;
     this.clearWhisperTimer();
     this.openWhisperPrompt = null;
+    this.openWhisperGuidance = null;
+    this.paceWake?.();
     if (this.pendingWhisperResolve) {
       this.pendingWhisperResolve(null);
       this.pendingWhisperResolve = null;
@@ -670,6 +742,9 @@ export class GameLoop {
       this.resumeGate = { promise, release };
       this.llmAbort.abort();
       this.clearWhisperTimer();
+      // Freeze the reading wait: what is left of it resumes with the table.
+      this.paceHeldMs = Math.max(0, this.readyAt - Date.now());
+      this.paceWake?.();
     }
     this.broadcastFn({ type: 'game-paused', paused: true, reason, by });
     return true;
@@ -682,6 +757,8 @@ export class GameLoop {
     this.pauseReason = null;
     this.quietTurns = 0;
     this.llmAbort = new AbortController();
+    this.readyAt = Date.now() + this.paceHeldMs;
+    this.paceHeldMs = 0;
     this.broadcastFn({ type: 'game-paused', paused: false, reason: null, by });
     if (this.pendingWhisperResolve) {
       // The window was held; give the table a fresh countdown for it, and
@@ -690,6 +767,8 @@ export class GameLoop {
       if (this.openWhisperPrompt) {
         this.openWhisperPrompt = { ...this.openWhisperPrompt, windowMs: WHISPER_WINDOW_MS, remainingMs: WHISPER_WINDOW_MS };
         this.broadcastFn(this.openWhisperPrompt);
+        // The re-sent prompt resets the owner's panel; refill it.
+        if (this.openWhisperGuidance) this.sendToOwner(this.openWhisperGuidance.characterId, this.openWhisperGuidance);
       }
     }
     const gate = this.resumeGate;
@@ -867,6 +946,7 @@ export class GameLoop {
         .catch(() => {});
     }
 
+    if (!(await this.pace())) return;
     this.broadcastFn({ type: 'narration', text: narration.narration, sceneNumber: this.state.currentScene, locationName: narration.currentLocationName || undefined });
 
     const roundCount = Math.floor(this.sceneTurnCount / partySize);
@@ -925,6 +1005,7 @@ export class GameLoop {
       // They come back at the next scene, or when a companion helps them up.
       console.log(`[game-loop] Skipping ${character.definition.name} — taken out and recovering`);
       const first = getFirstName(character.definition.name);
+      if (!(await this.pace())) return;
       this.broadcastFn({ type: 'narration', text: `[${first} is still down — out of action until someone helps ${first} up, or the scene ends]`, sceneNumber: this.state.currentScene });
       this.state.currentTurn++;
       this.sceneTurnCount++;
@@ -988,7 +1069,8 @@ export class GameLoop {
       a.description = a.description.replace(/\*+/g, '').replace(/_+/g, '').replace(/^#+\s*/, '').trim();
     }
 
-    this.broadcastFn({
+    if (!(await this.pace())) return;
+    this.sendToOwner(characterId, {
       type: 'action-proposals',
       characterId,
       characterName: character.definition.name,
@@ -1016,12 +1098,21 @@ export class GameLoop {
     // The window's length travels with the prompt so the client counts down
     // from what the server will actually wait, not a number of its own.
     const windowMs = carryingSaved ? 0 : (this.firstWhisperWindow ? FIRST_WHISPER_WINDOW_MS : WHISPER_WINDOW_MS);
+    // The table sees who is deciding and the countdown; the mood, goals and
+    // suggestion chips are built from this character's private options, so
+    // they go to the seat that plays them, right behind the prompt.
     const whisperPrompt: Extract<ServerMessage, { type: 'whisper-prompt' }> = {
-      type: 'whisper-prompt', characterId, characterName: character.definition.name, mood, trustHint, suggestions,
-      goals: goals.length > 0 ? goals : undefined, carryingQueued: carrying?.length,
+      type: 'whisper-prompt', characterId, characterName: character.definition.name,
+      carryingQueued: carrying?.length,
       ...(carryingSaved ? {} : { windowMs, remainingMs: windowMs }),
     };
+    const guidance: Extract<ServerMessage, { type: 'whisper-guidance' }> = {
+      type: 'whisper-guidance', characterId, mood, trustHint, suggestions,
+      goals: goals.length > 0 ? goals : undefined,
+    };
+    if (!(await this.pace())) return;
     this.broadcastFn(whisperPrompt);
+    if (!carryingSaved) this.sendToOwner(characterId, guidance);
 
     let whisper: string | null;
     if (carryingSaved) {
@@ -1029,8 +1120,10 @@ export class GameLoop {
     } else {
       this.firstWhisperWindow = false;
       this.openWhisperPrompt = whisperPrompt;
+      this.openWhisperGuidance = guidance;
       whisper = await this.waitForWhisper(characterId, windowMs);
       this.openWhisperPrompt = null;
+      this.openWhisperGuidance = null;
     }
     // A whisper that landed in a window the pause was holding is kept: the
     // turn picks up here with it once the host resumes.
@@ -1137,12 +1230,20 @@ export class GameLoop {
         : `${character.definition.name} resisted the whisper`;
       this.addTranscript('system', `[${influenceNote}, trust: ${character.state.whisperTrust.toFixed(2)}]`, characterId);
     }
+    // The table sees what they did and said; what they thought, and how they
+    // took the whisper, is for the seat that plays them.
+    if (!(await this.pace())) return;
     this.broadcastFn({
       type: 'action-taken',
       characterId,
       characterName: character.definition.name,
       action: decision.chosenAction,
       spokenWords: decision.spokenWords ?? null,
+    });
+    this.sendToOwner(characterId, {
+      type: 'character-thought',
+      characterId,
+      characterName: character.definition.name,
       innerThought: decision.innerThought,
       whisperInfluence: whisper ? decision.whisperedInfluence : 'none',
     });
@@ -1493,6 +1594,7 @@ export class GameLoop {
     }
 
     this.addTranscript('dm', resolution.narration);
+    if (!(await this.pace())) return;
     this.broadcastFn({ type: 'resolution', text: resolution.narration });
 
     affectedCharIds.add(characterId);
@@ -1605,6 +1707,7 @@ export class GameLoop {
       ignored: s.ignored,
       trustDelta: Math.round((s.trustEnd - s.trustStart) * 100) / 100,
     }));
+    if (!(await this.pace())) return;
     this.broadcastFn({ type: 'scene-end', summary, sceneNumber: this.state.currentScene, whisperStats: whisperStats.length > 0 ? whisperStats : undefined });
 
     this.db.prepare('INSERT INTO scenes (id, campaign_id, scene_number, transcript, summary) VALUES (?, ?, ?, ?, ?)')
@@ -1762,7 +1865,7 @@ export class GameLoop {
       try {
         const reflection = await callProse({
           messages: [
-            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
+            { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. ${PLAIN_PROSE_STYLE} Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
             { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.\n\nWhat happened: ${sceneSummaries}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. One line each.` },
           ],
           // Two short lines (~80 tokens), but reasoning comes out of the same
@@ -1784,7 +1887,6 @@ export class GameLoop {
             characterName: char.definition.name,
             action: thought ? `[Final reflection] ${thought}` : '[Reflects quietly]',
             spokenWords: spoken ?? null,
-            innerThought: thought ?? 'The journey ends.',
             whisperInfluence: 'none',
           });
           console.log(`[game-loop] ${char.definition.name} closing reflection generated`);
@@ -1889,6 +1991,11 @@ export class GameLoop {
   openWhisperWindow(): Extract<ServerMessage, { type: 'whisper-prompt' }> | null {
     if (!this.openWhisperPrompt || this.whisperDeadline === null) return null;
     return { ...this.openWhisperPrompt, remainingMs: Math.max(0, this.whisperDeadline - Date.now()) };
+  }
+
+  /** The owner-only half of the open whisper window, for a (re)joining owner's tab. Null whenever openWhisperWindow() is. */
+  openWhisperWindowGuidance(): Extract<ServerMessage, { type: 'whisper-guidance' }> | null {
+    return this.openWhisperWindow() ? this.openWhisperGuidance : null;
   }
 
   /** (Re)start the countdown on the open whisper window; it closes with no whisper when it runs out. */
@@ -2032,7 +2139,14 @@ export class GameLoop {
     const suggestions: string[] = [];
 
     if (actions.length >= 2) {
-      const shorten = (a: string) => a.replace(/^I\s+/i, '').replace(/^(try|attempt|decide|choose|want) to\s+/i, '').split(/[.!]/)[0]!.trim().slice(0, 50);
+      // Whole words and clauses only, and names keep their capitals (see
+      // whisper-suggestions.ts): chips were cut mid-word and lower-cased whole.
+      const names = [
+        ...Array.from(this.characters.values()).map(c => c.definition.name),
+        ...this.knownNpcNames(),
+      ];
+      const shorten = (a: string) => shortenSuggestion(a);
+      const lower = (a: string) => lowerFirst(a, names);
       const isBold = (a: string) => /\b(confront|charge|demand|fight|challenge|steal|break|threaten|accuse|attack|grab|rush)\b/i.test(a);
       const isCautious = (a: string) => /\b(observe|watch|wait|hide|sneak|listen|study|examine|scout|retreat)\b/i.test(a);
       const isSocial = (a: string) => /\b(talk|ask|persuade|approach|greet|question|negotiate|whisper to|speak|confide)\b/i.test(a);
@@ -2042,13 +2156,14 @@ export class GameLoop {
       const socialIdx = actions.findIndex(a => isSocial(a));
 
       if (boldIdx >= 0) {
-        suggestions.push(`Do it — ${shorten(actions[boldIdx]!).toLowerCase()}.`);
+        suggestions.push(endSentence(`Do it — ${lower(shorten(actions[boldIdx]!))}`));
       }
       if (cautiousIdx >= 0 && cautiousIdx !== boldIdx) {
-        suggestions.push(`Be careful. ${shorten(actions[cautiousIdx]!).charAt(0).toUpperCase()}${shorten(actions[cautiousIdx]!).slice(1)}.`);
+        const careful = shorten(actions[cautiousIdx]!);
+        suggestions.push(endSentence(`Be careful. ${careful.charAt(0).toUpperCase()}${careful.slice(1)}`));
       }
       if (socialIdx >= 0 && socialIdx !== boldIdx && socialIdx !== cautiousIdx) {
-        suggestions.push(`Talk first — ${shorten(actions[socialIdx]!).toLowerCase()}.`);
+        suggestions.push(endSentence(`Talk first — ${lower(shorten(actions[socialIdx]!))}`));
       }
     }
 
@@ -2088,6 +2203,14 @@ export class GameLoop {
     }
 
     return suggestions.slice(0, 3);
+  }
+
+  private knownNpcNames(): string[] {
+    try {
+      return (this.db.prepare('SELECT name FROM entities WHERE campaign_id = ? AND type = ?').all(this.campaignId, 'npc') as Array<{ name: string }>).map(r => r.name);
+    } catch {
+      return [];
+    }
   }
 
   private extractNpcNamesFromNarration(narration: string): string[] {
