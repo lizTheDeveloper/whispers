@@ -233,21 +233,33 @@ const DECLINE = /\bbut\b[^.!?;]{0,40}?\b(?:(?:I|we)\s*(?:['’]m|am|are|['’]re
  * never the speaker (I, we, my men) — as the one who would do it.
  */
 const MODAL = String.raw`(?:(?:will|['’]ll|would|['’]d|could|might|may|can|is\s+going\s+to|are\s+going\s+to|['’]s\s+going\s+to|['’]re\s+going\s+to)\s+(?:only\s+|just\s+|probably\s+|surely\s+)?)?`;
-/** "If you fire, you…", "the moment you move, you…". */
-const WARN_IF_YOU = new RegExp(String.raw`\b(?:if|once|when|the\s+moment|the\s+second|as\s+soon\s+as)\s+you\b[^.!?;]*,\s*you\s*${MODAL}$`, 'i');
+/**
+ * "If you fire, you…", "the moment you move, you…", and (BPWLEL) the same
+ * with a third party: "If he fires, he'll hit the kid". Never I/we.
+ */
+const WARN_SUBJECT = String.raw`(?:you|he|she|they|the\s+[\p{L}'’-]+)`;
+const WARN_IF_YOU = new RegExp(String.raw`\b(?:if|once|when|the\s+moment|the\s+second|as\s+soon\s+as)\s+${WARN_SUBJECT}\b[^.!?;]*,\s*${WARN_SUBJECT}\s*${MODAL}$`, 'iu');
+/** "You aim at the thief, you shoot the child." (BPWLEL, spoken to the shooter): a warning with no "if". */
+const WARN_YOU_COMMA = new RegExp(String.raw`^\s*["“‘']?\s*you\s+[^.!?;,]*,\s*you\s*${MODAL}$`, 'i');
 /** "Fire, and you…", "Pull that trigger and you'll…": a short imperative, then "and you". */
 const WARN_AND_YOU = new RegExp(String.raw`^\s*["“‘']?\s*((?:[\p{L}'’-]+\s+){0,5}[\p{L}'’-]+)\s*,?\s+(?:and|or)\s+you\s*${MODAL}$`, 'iu');
 /** "…ensures Vane shoots Pip", "…means Grell stabs the boy": a prediction with someone else as the harmer. */
 const WARN_PREDICTS = new RegExp(String.raw`\b(?:[Ee]nsures?|[Mm]eans|[Gg]uarantees?|(?:will|would)\s+(?:mean|ensure|guarantee))\s+(?:that\s+)?(?:you|he|she|they|the\s+\p{Ll}[\p{Ll}'’-]*|\p{Lu}[\p{Ll}'’-]+(?:\s+\p{Lu}[\p{Ll}'’-]+)?)\s*${MODAL}$`, 'u');
 /** The speaker, or their own people, doing it: a threat, never a warning. */
 const SPEAKER_SIDE = /\b(?:I|we|my|our|me|us)\b/i;
-/** A verb in the past: what happened, not a warning of what would. */
-const PAST_VERB = /(?:ed|ew|ot|uck|ung|ang)$|^(?:hit|cut|beat|bit|slit|hanged)$/i;
+/**
+ * A verb that is only ever past: what happened, not a warning of what would.
+ * BPWLEL: the old ending test read "shoot" (…ot) and "hit"/"cut" as past, so
+ * "You aim at the thief, you shoot the child" lost its warning exemption.
+ * Forms that are also present (hit, cut, beat, slit, hurt) are not listed.
+ */
+const PAST_VERB = /(?:ed|ew)$|^(?:shot|struck|stuck|stung|slung|flung|hung|sprang|slew|smote|bit|stabbed|fought|caught|brought|thought)$/i;
 
 function warned(sentence: string, index: number, verb: string): boolean {
   if (PAST_VERB.test(verb.trim().split(/\s+/)[0] ?? '')) return false;
   const lead = sentence.slice(0, index);
   if (WARN_IF_YOU.test(lead)) return true;
+  if (WARN_YOU_COMMA.test(lead)) return true;
   const and = WARN_AND_YOU.exec(lead);
   // The imperative is the whole lead: not "You lunge and you…", not "Grell lunges, and you…" narrated.
   if (and && !/^(?:I|you|he|she|we|they|it)$/i.test(and[1]!.trim().split(/\s+/)[0] ?? '') && !SPEAKER_SIDE.test(and[1]!)) return true;

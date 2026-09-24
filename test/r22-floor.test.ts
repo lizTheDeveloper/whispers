@@ -186,6 +186,40 @@ describe('2. refusals and warnings pass; threats and harm do not', () => {
   });
 });
 
+describe('2a. round 22 live (BPWLEL): "shoot" and "hit" are not past tense in a warning', () => {
+  it.each([
+    // The live line the backstop removed.
+    'You aim at the thief, you shoot the child.',
+    // The same warning, said other ways.
+    "If you fire, you'll hit the child.",
+    "If you fire, you'll shoot the child.",
+    "Fire that pistol and you'll hit the kid.",
+    'Shoot her and you shoot the child.',
+    "If he fires, he'll hit the kid.",
+    'If they loose those arrows, they hit the boy.',
+    'You aim at the thief, you kill the child.',
+    'You swing that blade, you cut the kid.',
+  ])('kept: %s', (text) => {
+    expect(removed(text)).toEqual([]);
+  });
+
+  it.each([
+    // Done, not warned: a past verb stays a report of harm.
+    'Grell fired, and you shot the child.',
+    'If you fired, you killed the child.',
+    'Vane shot Pip.',
+    // The speaker is the harmer.
+    "If you fire, I'll shoot the kid.",
+    'You aim at the thief, I shoot the child.',
+    'If we fire, we hit the boy.',
+    // Plain harm with no warning shape.
+    'You shoot the child.',
+    'He hits the kid.',
+  ])('removed: %s', (text) => {
+    expect(removed(text)).toHaveLength(1);
+  });
+});
+
 describe('2b. a "but" that does not decline is not a refusal', () => {
   it.each([
     'The voice wants me to stab the boy, but no one is watching.',
