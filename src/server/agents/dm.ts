@@ -236,13 +236,18 @@ export function describeParty(members: PartyMember[]): string {
   });
   const hasAges = members.some(m => m.age !== undefined && String(m.age).trim());
   const hasAddress = members.some(m => describeAddressTerms(m, members).length > 0);
+  // A worked example from this party's own sheets: "Biz steadies Liz", never "Biz steadies Mom".
+  const example = members.flatMap(m => (m.relationships ?? [])
+    .filter(r => r.address?.trim() && !sameFirstName(r.address, r.to) && r.address.trim().toLowerCase() !== r.to.trim().toLowerCase())
+    .map(r => ({ speaker: m.name.trim().split(/\s+/)[0]!, to: r.to.trim().split(/\s+/)[0]!, term: r.address!.trim() })))[0];
+  const addressExample = example ? ` ("${example.speaker} steadies ${example.to}", never "${example.speaker} steadies ${example.term}")` : '';
   return [
     'THE PARTY — the player characters actually at this table (authoritative). Any other player-character names that came up while setting the game up were placeholders: those people are not in this game and must never appear as party members.',
     ...lines,
     hasAges ? 'Characters act their stated ages — a child thinks, talks and is treated like a child.' : '',
     anyUnstated ? 'Never guess a gender this block does not state — not from a name, an age, or the other side of a relation (a mother\'s child is not therefore a son). Where it is not stated, use the character\'s name or "they", and gender-neutral words for them: kid, child, parent, sibling — never son, daughter, boy, girl, he or she.' : '',
     'Characters address each other the way they naturally would — a child calls their mother "Mom", not by her first name.',
-    hasAddress ? 'Address terms are personal to the relationship: a term like "Mom" is what one character calls another, never that person\'s name. Only that character uses it, and only in their own dialogue; NPCs and everyone else use the name. Narration uses names too.' : '',
+    hasAddress ? `Address terms are personal to the relationship: a term like "Mom" is what one character calls another, never that person\'s name. Only that character uses it, and only in their own dialogue; NPCs and everyone else use the name. In narration, resolutions, scene summaries and the epilogue, characters are called by their NAMES${addressExample} — even when a character\'s own action uses the address term; an address term appears only inside that character\'s quoted speech.` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -549,10 +554,12 @@ export class DmAgent {
       placeList ? `\n<places>\n${placeList}\n</places>` : '',
       `\n<task>`,
       arrivalExpected
-        ? `0. arrival: REQUIRED — 1-2 sentences of the moment of arrival itself, happening to ${names}: the lurch or fall or flash, landing or waking up here, blinking, disoriented, realising a moment ago they were somewhere else entirely. This is about THEM, not the place — it must never be scenery alone. The narration below picks up right after it.`
+        ? `0. arrival: REQUIRED — 1-2 sentences of the moment of arrival itself, happening to ${names}: the lurch or fall or flash, landing or waking up here, blinking, disoriented, realising a moment ago they were somewhere else entirely. This is about THEM, not the place — it must never be scenery alone. The transport is told HERE and only here; the narration below picks up right after it.`
         : `0. arrival: "".`,
       opts.scenarioOpening
         ? `1. narration: "" (the scene is already set).`
+        : arrivalExpected
+        ? `1. narration: 3-5 vivid sentences that begin AFTER the arrival above, told from the characters' point of view. ${names} have ALREADY landed and are here now — do NOT narrate the transport again: no flash, no fall, no being pulled, hurled or swept out of anywhere, no "one moment… the next". Describe where they now stand and what hits them first, the strangeness of this world landing on people who have never seen it before — not scenery with nobody in it. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`
         : `1. narration: 3-5 vivid sentences told from the characters' point of view, at the exact moment the premise puts them here. Read the premise and where they come from: if they have just been transported, summoned, isekaied, shipwrecked or otherwise pulled out of their old lives, this scene IS their arrival — the moment they land or wake up here, disoriented, the strangeness of this world hitting people who have never seen it before. If they already belong here, open on them as the situation begins. Show the place as it lands on THEM — not just scenery or a description of the place with nobody in it. Establish ONLY what the characters would perceive right now. Do NOT reveal secrets, hidden motives, twists, who is behind anything, or the answer to any mystery. Do not have anyone demand an item, fact or task the party has never been given. Do not make the characters act, speak or decide — they do that themselves once play begins.`,
       `2. introductions: one per party member, 1-2 sentences each, describing that character as the others would see them on first glance — look, bearing, manner — and stating what they are to each other exactly as the party block says (e.g. "Liz, Biz's mother, ..."). Never invent a relationship that is not stated, and never a gender: use only the relation words and pronouns the party block gives, and where it says gender is not stated, use the name or "they" and words like kid or child. Do not narrate what anyone calls anyone — that shows in their own dialogue. Use the party members' exact names.`,
       `3. currentLocationName: copy one exact name from <places> if the party is at one of them, otherwise "".${personalityReminder}`,
@@ -827,16 +834,20 @@ ${people}`;
       ? `\nThe world they are joining:\nPremise: ${opts.seed.premise}\nPlaces: ${opts.seed.locations.slice(0, 5).map(l => l.name).join(', ')}\nPeople: ${opts.seed.npcs.slice(0, 5).map(n => `${n.name} (${n.disposition ?? 'unknown'})`).join(', ')}\n`
       : '';
     const unmetBlock = opts.unmet.length > 0
-      ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nAsk for these, but ask the way a person would.\n`
+      ? `\nStill needed for their sheet:\n${opts.unmet.map(u => `- ${u}`).join('\n')}\nEvery reply asks about at least one of these — the way a person would, one or two at a time.\n`
       : '';
 
     const systemPrompt = `You are a character creation API for a TTRPG. You help a player named ${opts.playerName} build a character through conversation, for a world that already exists.
+
+THIS IS CHARACTER CREATION, NOT PLAY. The game has not started and nothing is happening to the character yet. The first message in this conversation may be a short look at the world written as a scene — that was a preview, not the start of play. Never write as if play has begun: never "You stand in…", never narrate what happens next, never end on "What do you do?" or "what catches your attention?". Every question is ABOUT the character, and reads that way — say "your character", or their name once you know it.
 
 Ask a MIX of two kinds of question, and lead with the second kind:
 
 DIRECT — the plain thing, when you need a specific field. "What do we call them?"
 
-INDIRECT — put the character in a real place from the world below and ask what they do, notice, or want. "You are on the tidal stair as the water comes up. What makes you stop?" Never ask for a game term this way. Infer aspects, skills and a trouble from how they answer, and reflect what you inferred back in plain language so they can correct you.
+INDIRECT — imagine the character in a real place from the world below and ask what they WOULD do, notice, or want there. "Picture your character on the tidal stair as the water comes up — what would make them stop?" It is a hypothetical about who they are, not a scene they are in. Never ask for a game term this way. Infer aspects, skills and a trouble from how they answer, and reflect what you inferred back in plain language so they can correct you.
+
+PRONOUNS — early on, as soon as you know their name, ask how the character should be referred to: she/her, he/him, they/them, or something else. One plain, friendly question, asked once. Until the player answers, never call the character he or she — not in your reply and not anywhere in the sheet: use their name, or "they".
 
 Open indirect. Use direct questions only to close the gaps listed below. Never present a checklist, never ask for more than two things at once, and never use the words "high concept", "aspect" or "stunt" in a question — describe what you mean instead.
 
@@ -850,7 +861,7 @@ CRITICAL: respond with ONLY a JSON object. No asterisks, no roleplay actions, no
 Every reply carries the sheet as it stands so far, finished or not: {"reply": "your next question, or what you understand about them in plain language", "definition": {"name":"...","highConcept":"...","trouble":"...","aspects":["..."],"personality":"...","backstory":"...","skills":{"Skill":3},"stunts":["..."],"age":null,"pronouns":null,"relationships":[]}}
 Fill in every field the player has stated or you have inferred and reflected back; leave the rest empty ("", [], {}). When the player states something outright — a name, what they are, what trouble dogs them, something they can do — record it in the sheet at once, in their words lightly tidied, and do not ask for it again. Include everything from earlier turns too, not just what changed. Only when you know nothing yet may "definition" be null.
 
-"age" is a number or short phrase if you know it, else null. "pronouns" is how this character is referred to ("she/her", "he/him", "they/them") — fill it only if the player said so or plainly stated a gender ("I'm a girl", "my son"); otherwise null. Never assume a gender from a name, an age, a role or anything else, and do not write one into the backstory or personality either — if it matters to the player they will say, and you may ask. "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a kid whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Use the player's own relation word: "my kid Biz" is "kid", not "son" — never assume a gender. Fill it from what the player told you — including anything the backstory states, such as "her kid Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
+"age" is a number or short phrase if you know it, else null. "pronouns" is how this character is referred to ("she/her", "he/him", "they/them", or the player's own words) — fill it only with what the player told you when asked, or said outright about pronouns; otherwise null. Do not work it out from a gendered word ("mom", "boy") — ask instead. Never assume a gender from a name, an age, a role or anything else, and until "pronouns" is filled, no field of the sheet (high concept, trouble, aspects, stunts, personality, backstory) may call the character he, him, his, she or her — write "Fast on their feet", not "Fast on his feet". "relationships" lists people this character has a stated tie to — each {"to":"their exact name","relation":"what that person is TO THIS CHARACTER","address":"what this character calls them"}. Example: a kid whose mother Liz is at the table gets {"to":"Liz","relation":"mother","address":"Mom"}. Use the player's own relation word: "my kid Biz" is "kid", not "son" — never assume a gender. Fill it from what the player told you — including anything the backstory states, such as "her kid Biz" or "Biz and Mom" — and never invent ties the player did not state. Leave it [] if there are none.`;
 
     const messages = [{ role: 'system', content: systemPrompt }, ...opts.history];
     const last = messages[messages.length - 1];
@@ -910,10 +921,11 @@ Fill in every field the player has stated or you have inferred and reflected bac
 
     const whisperHint = this.buildWhisperSummaryHint(transcript);
 
+    const namesRule = ' Call every character by their name. A word one character calls another ("Mom", a nickname) belongs only inside that character\'s quoted speech, never in your own sentences.';
     try {
       const result = await callLlm({
         messages: [
-          { role: 'system', content: 'You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.' },
+          { role: 'system', content: `You are a JSON API. Summarize TTRPG scenes. Output ONLY a JSON object.${namesRule}` },
           { role: 'user', content: `${text}\n\nSummarize in 3-5 sentences. Cover: what happened, who was involved, what changed, and what's unresolved.${charHint}${compactionHint}${whisperHint}${worldHint} Include any NPC reactions, items found, or locations visited. End with a TRANSITION HOOK — one sentence that creates urgency for the next scene (a sound in the distance, a ticking clock, a choice that can't wait, an NPC who just left with a secret).\n\nRespond as JSON: {"summary": "your summary here"}` },
         ],
         schema: SceneSummarySchema,
@@ -922,7 +934,7 @@ Fill in every field the player has stated or you have inferred and reflected bac
     } catch {
       const plainText = await callProse({
         messages: [
-          { role: 'system', content: 'Summarize this TTRPG scene in 3-5 sentences. Plain text only, no JSON.' },
+          { role: 'system', content: `Summarize this TTRPG scene in 3-5 sentences. Plain text only, no JSON.${namesRule}` },
           { role: 'user', content: `${text}\n\nCover: what happened, who was involved, what changed.${charHint}` },
         ],
         // 3-5 sentences (~200 tokens) after reasoning over a whole scene's

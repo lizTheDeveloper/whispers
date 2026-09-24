@@ -9,10 +9,13 @@
 //     opening even when the DM writes scenery only ("The marble floor beneath
 //     my feet hums…").
 //  2. Pronouns. Character agents are told each companion's pronouns (or that
-//     they are not stated), and a guard repairs he/she written for a character
-//     whose gender nobody stated — NPCs and stated genders untouched.
+//     they are not stated). The rule-based guard that once rewrote he/she in
+//     model prose is gone — it wrote clumsy, mixed text — replaced by the
+//     interview asking each player (see character-interview.test.ts).
 //  3. Address. Biz calls Liz "Mom": "Liz, can you help me?" from Biz becomes
-//     "Mom, can you help me?", and "Mom Liz" becomes "Mom".
+//     "Mom, can you help me?", and "Mom Liz" becomes "Mom". The other way
+//     round in narration: "Biz steadies Mom." from the DM becomes "Biz
+//     steadies Liz." — the address term belongs to Biz's speech only.
 //  4. Taken out. A character who is taken out does not take normal turns until
 //     they recover — at the next scene, or when a companion helps them up.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -36,6 +39,7 @@ const canned = {
   narration: 'A bell dings somewhere down the queue, and Clerk Oswin Pell looks up from a towering stack of forms.',
   resolution: 'The form rustles; the clerk grunts and waves them on.',
   decisions: {} as Record<string, { chosenAction: string; spokenWords: string | null }>,
+  epilogue: 'The queue closed behind them, and the Bureau went quiet.',
 };
 
 vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
@@ -62,6 +66,13 @@ vi.mock('../src/server/agents/llm-client.js', async (importOriginal) => ({
       return { diceExpression: '4dF', difficulty: 0, skill: 'Notice', outcome: 'success', narration: canned.resolution, stateChanges: [] };
     }
     if (all.includes('Summarize')) return { summary: 'The queue moved.' };
+    return 'ok';
+  }),
+  callProse: vi.fn(async (opts: { messages: Msg[] }) => {
+    llmCalls.push(opts.messages);
+    const all = opts.messages.map(m => m.content).join('\n');
+    if (all.includes('session epilogues')) return canned.epilogue;
+    if (all.includes('closing reflection')) return 'SPOKEN: "We made it."\nTHOUGHT: The forms were never the point.';
     return 'ok';
   }),
 }));
@@ -127,7 +138,7 @@ let seq = 0;
  * A fresh table with Liz and Biz, run until `until` says stop (or a timeout).
  * `lizState` lets a test start Liz already taken out.
  */
-async function runLoop(opts: { seed?: WorldSeed; lizState?: typeof STATE; until: (m: ServerMessage, all: ServerMessage[]) => boolean; timeoutMs?: number }) {
+async function runLoop(opts: { seed?: WorldSeed; lizState?: typeof STATE; bizState?: typeof STATE; until: (m: ServerMessage, all: ServerMessage[]) => boolean; timeoutMs?: number; endGame?: boolean }) {
   const { createRoom } = await import('../src/server/room.js');
   const { setWorldSeed, markSeedAccepted, seedWorld } = await import('../src/server/world-seed.js');
   const { GameLoop } = await import('../src/server/game-loop.js');
@@ -141,7 +152,7 @@ async function runLoop(opts: { seed?: WorldSeed; lizState?: typeof STATE; until:
   db.prepare('INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)')
     .run(lizId, campaignId, JSON.stringify(LIZ), JSON.stringify(opts.lizState ?? STATE));
   db.prepare('INSERT INTO characters (id, campaign_id, definition, state) VALUES (?, ?, ?, ?)')
-    .run(bizId, campaignId, JSON.stringify(BIZ), JSON.stringify(STATE));
+    .run(bizId, campaignId, JSON.stringify(BIZ), JSON.stringify(opts.bizState ?? STATE));
   const state: RoomState = {
     campaignId, joinCode, phase: 'playing', currentScene: 0, currentTurn: 0,
     initiativeOrder: [], activeCharacterId: null,
@@ -160,6 +171,7 @@ async function runLoop(opts: { seed?: WorldSeed; lizState?: typeof STATE; until:
   await Promise.race([done, new Promise(r => setTimeout(r, opts.timeoutMs ?? 15_000))]);
   loop.stop();
   await Promise.race([running, new Promise(r => setTimeout(r, 5_000))]);
+  if (opts.endGame) await loop.endGame();
   const calls = llmCalls.slice(callsBefore).map(c => c.map(m => m.content).join('\n'));
   return { broadcasts, calls, lizId, bizId, campaignId };
 }
@@ -214,6 +226,35 @@ describe('an arrival premise always opens on an arrival beat', () => {
       const first = narrations(broadcasts)[0]!;
       expect(first).toContain('tumble onto cold marble');
       expect(first).not.toMatch(/Bureau of Misfiled Souls\. They blink/);
+    } finally {
+      canned.openingArrival = undefined;
+    }
+  }, 30_000);
+
+  // Live: "Liz and Biz land hard… They blink, disoriented…" and then the
+  // DM's own "A blinding flash… Liz and Biz are hurled from their waiting
+  // room…" — transported twice. When the scene prose narrates the transport
+  // itself, nothing is put in front of it.
+  it('never puts a second transport in front of scene prose that already narrates one', async () => {
+    const saved = canned.openingNarration;
+    canned.openingNarration = 'A blinding flash snaps the kitchen into chaos, and Liz and Biz are hurled from their waiting room onto cold marble under humming lamps.';
+    canned.openingArrival = undefined;
+    try {
+      const { broadcasts } = await runLoop({ until: m => m.type === 'whisper-prompt' });
+      const first = narrations(broadcasts)[0]!;
+      expect(first).toBe(canned.openingNarration);
+      expect(first).not.toMatch(/land hard/);
+    } finally {
+      canned.openingNarration = saved;
+    }
+  }, 30_000);
+
+  it("the DM's arrival comes first and the scene after it, once each", async () => {
+    canned.openingArrival = 'Liz and Biz tumble onto cold marble, dizzy and disoriented.';
+    try {
+      const { broadcasts } = await runLoop({ until: m => m.type === 'whisper-prompt' });
+      const first = narrations(broadcasts)[0]!;
+      expect(first).toBe(`${canned.openingArrival}\n\n${canned.openingNarration}`);
     } finally {
       canned.openingArrival = undefined;
     }
@@ -277,73 +318,22 @@ describe('character agents are told how to refer to each companion', () => {
   }, 30_000);
 });
 
-describe('the pronoun guard', () => {
-  const people = () => [
-    { name: 'Liz', gender: 'f' as const, aliases: ['Mom'] },
-    { name: 'Biz', gender: null, aliases: [] },
-  ];
-
-  it("repairs Biz's he/him/his and leaves Liz's her alone", async () => {
-    const { repairPronouns } = await import('../src/server/narrative-guards.js');
-    expect(repairPronouns('Liz pulls Biz close and places her hand on his shoulder.', people()))
-      .toBe('Liz pulls Biz close and places her hand on their shoulder.');
-    expect(repairPronouns('Biz grips the pen as he leans over the form.', people()))
-      .toBe('Biz grips the pen as Biz leans over the form.');
-    expect(repairPronouns('Biz steadies the stamp, keeping his hand clear.', people()))
-      .toBe('Biz steadies the stamp, keeping their hand clear.');
-    expect(repairPronouns('Liz wraps her arms around Biz and pulls him close.', people()))
-      .toBe('Liz wraps her arms around Biz and pulls them close.');
+describe('pronouns are asked for, not repaired', () => {
+  // The rule-based he/she repair pass produced "…clinging to their boots as
+  // Biz steps…" and mixed their/his in one sentence. It is removed; the
+  // interview asks each player instead, and prompts carry the answer.
+  it('no longer exports a pronoun repair pass', async () => {
+    const guards = await import('../src/server/narrative-guards.js') as Record<string, unknown>;
+    expect(guards.repairPronouns).toBeUndefined();
   });
 
-  it('follows the subject into the next sentence only when it is unambiguous', async () => {
-    const { repairPronouns } = await import('../src/server/narrative-guards.js');
-    expect(repairPronouns('Biz leans over the counter. He squints at the stamp.', people()))
-      .toBe('Biz leans over the counter. Biz squints at the stamp.');
-    // The previous sentence's subject is an NPC: leave it.
-    expect(repairPronouns('The clerk stares at Biz. He frowns.', people()))
-      .toBe('The clerk stares at Biz. He frowns.');
-  });
-
-  it('never touches NPCs, other named people, or dialogue', async () => {
-    const { repairPronouns } = await import('../src/server/narrative-guards.js');
-    const npc = 'Clerk Oswin Pell stamps the form and adjusts his spectacles.';
-    expect(repairPronouns(npc, people())).toBe(npc);
-    const shared = 'Biz watches Oswin adjust his spectacles.';
-    expect(repairPronouns(shared, people())).toBe(shared);
-    const noun = 'Biz hands the clerk his form.';
-    expect(repairPronouns(noun, people())).toBe(noun);
-    const quoted = 'Biz whispers, "He is watching us."';
-    expect(repairPronouns(quoted, people())).toBe(quoted);
-  });
-
-  it('leaves a character with stated he/him alone', async () => {
-    const { repairPronouns } = await import('../src/server/narrative-guards.js');
-    const text = 'Liz pulls Biz close and places her hand on his shoulder.';
-    expect(repairPronouns(text, [{ name: 'Liz', gender: 'f', aliases: [] }, { name: 'Biz', gender: 'm', aliases: [] }])).toBe(text);
-  });
-
-  it('turns "son"/"daughter" into "child" for a character with no stated gender', async () => {
-    const { repairPronouns } = await import('../src/server/narrative-guards.js');
-    expect(repairPronouns('Liz hugs her son Biz tightly.', people())).toBe('Liz hugs her child Biz tightly.');
-    expect(repairPronouns("Biz, Liz's daughter, stares at the ceiling.", people())).toBe("Biz, Liz's child, stares at the ceiling.");
-    // The possessive in "her son" is the parent's, even when the parent is not named here.
-    expect(repairPronouns('Biz, her son, waits by the desk.', people())).toBe('Biz, her child, waits by the desk.');
-    expect(repairPronouns('Liz hugs her son Biz tightly.', [{ name: 'Liz', gender: 'f', aliases: [] }, { name: 'Biz', gender: 'm', aliases: [] }]))
-      .toBe('Liz hugs her son Biz tightly.');
-  });
-
-  it('runs on everything the loop broadcasts: DM narration, resolutions and actions', async () => {
+  it('broadcasts DM prose with its pronouns as the model wrote them', async () => {
     canned.narration = 'Liz pulls Biz close and places her hand on his shoulder as the queue lurches forward.';
-    canned.resolution = 'Biz squints at the stamp, keeping his hand clear of the wet ink.';
     try {
       const { broadcasts } = await runLoop({ until: m => m.type === 'resolution' });
-      const texts = [...narrations(broadcasts), ...broadcasts.filter(m => m.type === 'resolution').map(m => (m as any).text as string)];
-      expect(texts.some(t => t.includes('places her hand on their shoulder'))).toBe(true);
-      expect(texts.some(t => t.includes('keeping their hand clear'))).toBe(true);
-      expect(texts.join('\n')).not.toMatch(/\bhis (shoulder|hand)\b/);
+      expect(narrations(broadcasts)).toContain(canned.narration);
     } finally {
       canned.narration = 'A bell dings somewhere down the queue, and Clerk Oswin Pell looks up from a towering stack of forms.';
-      canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
     }
   }, 30_000);
 });
@@ -389,6 +379,109 @@ describe('the address guard', () => {
       canned.decisions = {};
     }
   }, 30_000);
+});
+
+describe('narration calls party members by name', () => {
+  const terms = [{ name: 'Liz', address: 'Mom' }];
+
+  it('replaces an address term used as a name in DM prose', async () => {
+    const { namesInNarration } = await import('../src/server/narrative-guards.js');
+    expect(namesInNarration('Biz steadies Mom.', terms)).toBe('Biz steadies Liz.');
+    expect(namesInNarration('Biz lifted Mom onto the slab, confirming the direction for Mom.', terms))
+      .toBe('Biz lifted Liz onto the slab, confirming the direction for Liz.');
+    expect(namesInNarration("Biz grips Mom's hand.", terms)).toBe("Biz grips Liz's hand.");
+    expect(namesInNarration('Mom Liz squints at the form.', terms)).toBe('Liz squints at the form.');
+  });
+
+  it('leaves quoted speech, "her mom", and names that merely contain the word alone', async () => {
+    const { namesInNarration } = await import('../src/server/narrative-guards.js');
+    for (const text of [
+      'Biz tugs a sleeve. "Mom, look at this stamp!"',
+      'Biz tugs a sleeve. “Mom, look!”',
+      "Biz tugs a sleeve: 'Mom, it's glowing!'",
+      'The clerk asks after her mom.',
+      'The clerk asks after his Mom.',
+      'Liz uses her Mom Voice on the clerk.',
+      'The Mom Voice echoes down the hall.',
+    ]) expect(namesInNarration(text, terms)).toBe(text);
+    // A term two characters use for two different people is not a name for either.
+    expect(namesInNarration('Mom waits.', [{ name: 'Liz', address: 'Mom' }, { name: 'Ana', address: 'Mom' }])).toBe('Mom waits.');
+  });
+
+  // Live: the world bible held NPCs named "Liz", "Biz" and "Mom", extracted
+  // from the DM's prose, and fed them back to the DM as people in the world.
+  it('world facts never record a party member, or an address term, as an NPC', async () => {
+    const { withoutPartyEntities } = await import('../src/server/narrative-guards.js');
+    const facts = {
+      newEntities: ['Liz', 'Biz', 'Mom', 'Clerk Thistledown', 'Wanderer'].map(name => ({ name, type: 'npc' })),
+    };
+    expect(withoutPartyEntities(facts, ['Liz', 'Biz'], ['Mom']).newEntities.map(e => e.name))
+      .toEqual(['Clerk Thistledown', 'Wanderer']);
+  });
+
+  it("runs on the loop's narration, resolutions and epilogue, but not on Biz's own action", async () => {
+    canned.narration = 'Biz steadies Mom as the queue lurches. "Mom, hold on," Biz whispers.';
+    canned.resolution = "Biz grips Mom's hand and the stamp comes down clean.";
+    canned.epilogue = 'In the end Biz hoisted Mom onto the slab, and the Bureau let them go.';
+    canned.decisions = { Biz: { chosenAction: "I hold on tight, keeping Mom's hand in mine as the queue moves", spokenWords: null } };
+    try {
+      const { broadcasts } = await runLoop({ until: m => m.type === 'resolution', endGame: true });
+      expect(narrations(broadcasts)).toContain('Biz steadies Liz as the queue lurches. "Mom, hold on," Biz whispers.');
+      const resolutions = broadcasts.filter(m => m.type === 'resolution').map(m => (m as Extract<ServerMessage, { type: 'resolution' }>).text);
+      expect(resolutions.length).toBeGreaterThan(0);
+      expect(resolutions.join('\n')).not.toMatch(/Mom's hand/);
+      const epilogue = broadcasts.find(m => m.type === 'narration' && m.isEpilogue) as Extract<ServerMessage, { type: 'narration' }>;
+      expect(epilogue.text).toBe('In the end Biz hoisted Liz onto the slab, and the Bureau let them go.');
+      const bizAction = broadcasts.find(m => m.type === 'action-taken' && m.characterName === 'Biz' && !m.action.startsWith('[')) as Extract<ServerMessage, { type: 'action-taken' }> | undefined;
+      if (bizAction) expect(bizAction.action).toContain("Mom's hand");
+    } finally {
+      canned.narration = 'A bell dings somewhere down the queue, and Clerk Oswin Pell looks up from a towering stack of forms.';
+      canned.resolution = 'The form rustles; the clerk grunts and waves them on.';
+      canned.epilogue = 'The queue closed behind them, and the Bureau went quiet.';
+      canned.decisions = {};
+    }
+  }, 30_000);
+});
+
+describe('the ending reads the characters as they are now', () => {
+  // Live: the epilogue gave Liz "a cold pulse up her twisted ankle" after the
+  // log said she recovered from it. Recovered consequences leave the state
+  // at the scene break; the epilogue and closing reflections are given the
+  // current ones and told the rest have healed.
+  it("gives the epilogue each character's current injuries, and says any others have healed", async () => {
+    const { calls } = await runLoop({
+      bizState: { ...STATE, consequences: ['Sprained Wrist'] },
+      until: m => m.type === 'whisper-prompt',
+      endGame: true,
+    });
+    const epilogue = calls.find(c => c.includes('session epilogues'))!;
+    expect(epilogue).toMatch(/Liz \([^)]*\): no current injuries/);
+    expect(epilogue).toMatch(/Biz \([^)]*\): current injuries: Sprained Wrist/);
+    expect(epilogue).toMatch(/has healed — never describe it as still hurting/);
+  }, 30_000);
+
+  it('describes the condition from the state alone', async () => {
+    const { currentCondition } = await import('../src/server/game-loop.js');
+    expect(currentCondition({ consequences: [] })).toBe('no current injuries');
+    expect(currentCondition({ consequences: ['Twisted Ankle', 'Taken Out (recovering)'] })).toBe('current injuries: Twisted Ankle, taken out');
+  });
+});
+
+describe('the whisper status line is grammatical', () => {
+  // Live: `Liz is their trouble "I can't let Biz out of my sight…" is weighing on them.`
+  it("puts the trouble in its own sentence, in the character's own pronouns or name", async () => {
+    const { characterStatusLine } = await import('../src/server/game-loop.js');
+    const trouble = "I can't let Biz out of my sight";
+    expect(characterStatusLine({ name: 'Liz', pronouns: 'she/her', trouble, states: [], troublePull: true }))
+      .toBe(`Liz's trouble, "${trouble}", is weighing on her.`);
+    expect(characterStatusLine({ name: 'Liz', pronouns: 'she/her', trouble, states: ['under heavy stress'], troublePull: true }))
+      .toBe(`Liz is under heavy stress. Liz's trouble, "${trouble}", is weighing on her.`);
+    expect(characterStatusLine({ name: 'Biz', pronouns: null, trouble: 'Wanders off', states: [], troublePull: true }))
+      .toBe('The trouble "Wanders off" is weighing on Biz.');
+    expect(characterStatusLine({ name: 'Ash', pronouns: 'xe/xem', trouble: 'Owes a debt', states: [], troublePull: true }))
+      .toBe('Ash\'s trouble, "Owes a debt", is weighing on xem.');
+    expect(characterStatusLine({ name: 'Liz', pronouns: 'she/her', trouble, states: [], troublePull: false })).toBe('Liz is focused and alert.');
+  });
 });
 
 // ─── 4. Taken out ──────────────────────────────────────────────────────────

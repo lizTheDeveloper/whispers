@@ -121,6 +121,42 @@ describe('the interview draft', () => {
   });
 });
 
+describe('the interview asks how the character is referred to', () => {
+  const SHEET = {
+    name: 'Biz', highConcept: 'Ten-Year-Old Who Asks Why', trouble: 'Wanders off when something glows',
+    aspects: ['Quick on their feet', 'Pocket full of bottle caps'], personality: 'Curious.', backstory: 'Collects questions.',
+    skills: { Notice: 3 }, stunts: ['Small and Quick: +2 to Stealth in tight spaces.'],
+  };
+
+  it('marks pronouns unmet until the player states them, and asks for them', async () => {
+    const { checkInterviewReadiness, checkCharacterReadiness } = await import('../src/server/character-readiness.js');
+    const r = checkInterviewReadiness(SHEET);
+    expect(r.ready).toBe(false);
+    expect(r.unmet).toEqual(['pronouns']);
+    expect(r.detail.join(' ')).toMatch(/she\/her, he\/him, they\/them/);
+    expect(checkInterviewReadiness({ ...SHEET, pronouns: 'they/them' })).toMatchObject({ ready: true, unmet: [] });
+    // Sheets made outside the interview (form, pasted markdown) are not held to it.
+    expect(checkCharacterReadiness(SHEET).ready).toBe(true);
+  });
+
+  it('does not accept a sheet that genders a character whose pronouns nobody stated', async () => {
+    const { checkInterviewReadiness } = await import('../src/server/character-readiness.js');
+    for (const guess of [
+      { aspects: ['Fast on his feet', 'Pocket full of bottle caps'] },
+      { backstory: 'She collects questions.' },
+      { highConcept: 'A kid who asks why, and keeps asking him' },
+      { trouble: 'Wanders off when her eye catches a glow' },
+    ]) {
+      const r = checkInterviewReadiness({ ...SHEET, ...guess });
+      expect(r.ready).toBe(false);
+      expect(r.unmet).toEqual(['pronouns']);
+      expect(r.detail.join(' ')).toMatch(/he or she/);
+    }
+    // Once the player has said, the sheet may use them.
+    expect(checkInterviewReadiness({ ...SHEET, aspects: ['Fast on his feet', 'Bottle caps'], pronouns: 'he/him' }).ready).toBe(true);
+  });
+});
+
 describe('the interview end-to-end, over the wire', () => {
   let harness: Harness;
   let port: number;
@@ -385,6 +421,36 @@ describe('the interview end-to-end, over the wire', () => {
     expect(r3.readiness.unmet).toEqual(expect.arrayContaining(['aspects', 'skills']));
 
     await closeWs(rejoinWs);
+    await closeWs(hostWs);
+  }, 60_000);
+
+  // Live: Biz's sheet came back "Fast on his feet" though nobody had said
+  // how Biz is referred to. That sheet is not offered for confirmation: the
+  // checklist says pronouns are still needed, and confirming is refused.
+  it('does not offer a sheet that guesses a gender; it asks for pronouns first', async () => {
+    const { hostWs, joined } = await openTable();
+    const playerWs = await connectWs(port);
+    const pq = new MessageQueue(playerWs);
+    sendMsg(playerWs, { type: 'join', joinCode: joined.joinCode, playerName: 'Biz' });
+    await pq.waitFor('room-joined', 10_000);
+    await pq.waitFor('world-introduction', 10_000);
+
+    const before = harness.receivedBodies.length;
+    sendMsg(playerWs, { type: 'char-chat', text: 'UNSTATED_PRONOUNS_TRIGGER I am Biz, ten, fast and curious.' });
+    const reply = await pq.waitFor('char-chat-reply', 15_000) as any;
+    expect(reply.definition).toBeNull();
+    const readiness = await pq.waitFor('character-readiness', 10_000) as any;
+    expect(readiness.readiness.unmet).toEqual(['pronouns']);
+    await expect(pq.waitFor('character-preview', 300)).rejects.toThrow();
+    // The interviewer was told to ask how the character is referred to.
+    const prompt = harness.receivedBodies.slice(before).find(b => b.includes('character creation API'))!;
+    expect(prompt).toMatch(/how the character should be referred to/i);
+
+    sendMsg(playerWs, { type: 'confirm-character' });
+    const refused = await pq.waitFor('error', 10_000) as any;
+    expect(refused.message).toMatch(/no character to confirm|not finished/i);
+
+    await closeWs(playerWs);
     await closeWs(hostWs);
   }, 60_000);
 

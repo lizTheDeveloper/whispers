@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { DmAgent, describeRelationships, introduceCharacter, pronounsFor, statedGender, type PartyMember } from './agents/dm.js';
+import { DmAgent, describeRelationships, introduceCharacter, pronounsFor, type PartyMember } from './agents/dm.js';
 import { CharacterAgent, type PartyMemberView } from './agents/character.js';
 import type { DmOpening } from './agents/schemas.js';
 import { ExtractorAgent } from './agents/extractor.js';
@@ -17,8 +17,8 @@ import { transcriptVisibleTo, storyLines } from './transcript-visibility.js';
 import type { Character, CharacterDefinition, CharacterState, TranscriptMessage, RoomState } from '../shared/types.js';
 import type { PauseReason, ServerMessage } from '../shared/protocol.js';
 import {
-  premiseImpliesArrival, hasArrivalBeat, fallbackArrival,
-  repairPronouns, repairAddress, type GuardPerson, type AddressTerm,
+  premiseImpliesArrival, hasArrivalBeat, fallbackArrival, narratesTransport,
+  repairAddress, namesInNarration, withoutPartyEntities, type AddressTerm,
   TAKEN_OUT, isTakenOut, recoverAtSceneBreak, declaredTakenOut, aidsCharacter,
 } from './narrative-guards.js';
 
@@ -53,6 +53,44 @@ const TITLES = new Set(['dame', 'sir', 'lord', 'lady', 'prince', 'princess', 'ki
 function getFirstName(fullName: string): string {
   const parts = fullName.split(/\s+/);
   return parts.find(p => !TITLES.has(p.toLowerCase())) ?? parts[0]!;
+}
+
+/** A character's condition as it stands now: only consequences they still carry (a recovered one is gone from state). */
+export function currentCondition(state: Pick<CharacterState, 'consequences'>): string {
+  const now = state.consequences.map(c => (c === TAKEN_OUT ? 'taken out' : c));
+  return now.length > 0 ? `current injuries: ${now.join(', ')}` : 'no current injuries';
+}
+
+/** "she/her" → "her", "he/him" → "him", "they/them" → "them", "xe/xem" → "xem"; null when not stated. */
+function objectPronoun(pronouns: string | undefined | null): string | null {
+  const parts = pronouns?.trim().toLowerCase().split(/[\/,\s]+/).filter(Boolean) ?? [];
+  if (parts.length === 0) return null;
+  if (parts[1]) return parts[1];
+  return parts[0] === 'she' ? 'her' : parts[0] === 'he' ? 'him' : parts[0] === 'they' ? 'them' : null;
+}
+
+/**
+ * The status line shown with a whisper prompt: "Liz is under heavy stress."
+ * A pull from the trouble is its own sentence, in the character's own
+ * pronouns — or their name when nobody has stated any.
+ */
+export function characterStatusLine(opts: {
+  name: string;
+  pronouns?: string | null;
+  trouble: string;
+  states: string[];
+  troublePull: boolean;
+}): string {
+  const sentences: string[] = [];
+  if (opts.states.length > 0) sentences.push(`${opts.name} is ${opts.states.join(', ')}.`);
+  if (opts.troublePull) {
+    const obj = objectPronoun(opts.pronouns);
+    sentences.push(obj
+      ? `${opts.name}'s trouble, "${opts.trouble}", is weighing on ${obj}.`
+      : `The trouble "${opts.trouble}" is weighing on ${opts.name}.`);
+  }
+  if (sentences.length === 0) sentences.push(`${opts.name} is focused and alert.`);
+  return sentences.join(' ');
 }
 
 export class GameLoop {
@@ -310,47 +348,28 @@ export class GameLoop {
   }
 
   /**
-   * Everyone the pronoun guard protects: each party member's gender as the
-   * sheets state it (null = nobody said), and the words companions use for
-   * them ("Mom" is a mention of Liz).
+   * DM-authored prose — narration, resolutions, summaries, the epilogue —
+   * calls party members by name: "Biz steadies Mom" becomes "Biz steadies
+   * Liz". Quoted speech is never touched. See namesInNarration.
    */
-  private guardPeople(): GuardPerson[] {
-    const chars = Array.from(this.characters.values());
-    const party = this.partyForDm();
-    return chars.map((c, i) => ({
-      name: c.definition.name,
-      gender: statedGender(party[i]!, party),
-      aliases: chars.flatMap(o => (o.id === c.id ? [] : (o.definition.relationships ?? [])
-        .filter(r => this.namesMatch(r.to, c.definition.name) && r.address?.trim() && !this.namesMatch(r.address, c.definition.name))
-        .map(r => r.address!.trim()))),
-    }));
-  }
-
-  /** Lower-cased words of known place and item names: capitalised in prose, but never a person. */
-  private nonPersonWords(): Set<string> {
-    let names: string[] = [];
-    try {
-      names = [
-        ...this.worldBible.getAllLocationNames(this.campaignId),
-        ...(this.db.prepare('SELECT name FROM items WHERE campaign_id = ?').all(this.campaignId) as Array<{ name: string }>).map(r => r.name),
-      ];
-    } catch (e) {
-      console.error('[game-loop] could not read place/item names for the pronoun guard:', e);
-    }
-    return new Set(names.flatMap(n => n.toLowerCase().match(/[a-z][a-z'’-]*/g) ?? []));
-  }
-
-  /** The pronoun guard over one piece of prose (dialogue in quotes is never touched). */
   private guardText(text: string): string {
     if (!text || this.characters.size === 0) return text;
     try {
-      const fixed = repairPronouns(text, this.guardPeople(), { nonPersonWords: this.nonPersonWords() });
-      if (fixed !== text) console.log(`[guard] pronouns repaired: "${text.slice(0, 80)}" → "${fixed.slice(0, 80)}"`);
+      const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id));
+      const fixed = namesInNarration(text, terms);
+      if (fixed !== text) console.log(`[guard] address term in narration replaced by a name: "${text.slice(0, 80)}" → "${fixed.slice(0, 80)}"`);
       return fixed;
     } catch (e) {
-      console.error('[guard] pronoun guard failed, text left as written:', e);
+      console.error('[guard] narration name guard failed, text left as written:', e);
       return text;
     }
+  }
+
+  /** Extracted world facts without the party recorded as NPCs (see withoutPartyEntities). */
+  private worldFacts<T extends { newEntities: Array<{ name: string }> }>(facts: T): T {
+    const names = Array.from(this.characters.values()).map(c => c.definition.name);
+    const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id).map(t => t.address));
+    return withoutPartyEntities(facts, names, terms);
   }
 
   /** What `speakerId` calls each companion, when that is not simply their name ("Mom" for Liz). */
@@ -366,22 +385,23 @@ export class GameLoop {
   /**
    * The single funnel every outgoing message passes through (the broadcast
    * wrapper calls it; addTranscript runs the same text guard). DM prose —
-   * narration, resolutions, scene summaries — and character actions and
-   * thoughts get the pronoun guard; a character's own spoken words get only
-   * the address guard, since dialogue pronouns can mean anyone.
+   * narration (the epilogue included), resolutions, scene summaries — gets
+   * the narration name guard. A character's own action, thought and words
+   * are theirs: "keeping Mom's hand" is right in Biz's mouth, so they get
+   * only the address guard ("Mom Liz" → "Mom", and "Liz," → "Mom," in
+   * Biz's speech).
    */
   private guardMessage(msg: ServerMessage): ServerMessage {
     switch (msg.type) {
       case 'narration': return { ...msg, text: this.guardText(msg.text) };
       case 'resolution': return { ...msg, text: this.guardText(msg.text) };
       case 'scene-end': return { ...msg, summary: this.guardText(msg.summary) };
-      case 'action-proposals': return { ...msg, actions: msg.actions.map(a => this.guardText(a)) };
       case 'action-taken': {
         const terms = this.addressTermsOf(msg.characterId);
         return {
           ...msg,
-          action: repairAddress(this.guardText(msg.action), terms, { vocative: false }),
-          innerThought: repairAddress(this.guardText(msg.innerThought), terms, { vocative: false }),
+          action: repairAddress(msg.action, terms, { vocative: false }),
+          innerThought: repairAddress(msg.innerThought, terms, { vocative: false }),
           spokenWords: msg.spokenWords ? repairAddress(msg.spokenWords, terms, { vocative: true }) : msg.spokenWords,
         };
       }
@@ -544,12 +564,19 @@ export class GameLoop {
   }
 
   /**
-   * The opening of a transported party always carries an arrival beat. The
-   * DM's own `arrival` field when it wrote a real one; its narration alone
-   * when that already lands the party (arrival language plus a party member
-   * or "they"); otherwise a deterministic line built from the premise, put
-   * before the DM's scenery. A DM `arrival` that is only scenery is kept, but
-   * after the fallback — it never stands in for the arrival.
+   * The opening of a transported party always carries exactly ONE arrival.
+   * The DM is asked for the arrival and the scene as separate fields, the
+   * scene starting after they have landed. In order:
+   *  - the scene prose itself narrates the transport (the flash, being
+   *    hurled out of the kitchen): that IS the arrival, and nothing is put
+   *    in front of it — a second transport before it read as the party
+   *    being moved twice ("…land hard. They blink…" then "A blinding flash
+   *    … Liz and Biz are hurled from their waiting room…");
+   *  - the DM's own `arrival` field, when it wrote a real one;
+   *  - the scene prose alone, when it already lands the party (arrival
+   *    language plus a party member or "they");
+   *  - otherwise a deterministic line built from the premise, before the
+   *    DM's scenery. A DM `arrival` that is only scenery is kept, after it.
    */
   private withArrival(sceneText: string, opening: DmOpening | null, premise: string): string {
     const names = Array.from(this.characters.values()).map(c => getFirstName(c.definition.name));
@@ -557,7 +584,10 @@ export class GameLoop {
     const narration = opening?.narration.trim() ?? '';
     const partyWord = new RegExp(`\\b(${[...names, 'they', 'them', 'their', 'you'].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'i');
     let lead: string[];
-    if (dmArrival && hasArrivalBeat(dmArrival)) {
+    if (narration && narratesTransport(narration) && partyWord.test(narration)) {
+      if (dmArrival) console.log('[game-loop] Opening scene narrates the transport itself — using it as the arrival, not the separate arrival field');
+      return sceneText;
+    } else if (dmArrival && hasArrivalBeat(dmArrival)) {
       lead = [dmArrival];
     } else if (!dmArrival && narration && hasArrivalBeat(narration) && partyWord.test(narration)) {
       return sceneText;
@@ -1032,12 +1062,8 @@ export class GameLoop {
     if ('spokenWords' in decision && decision.spokenWords) {
       decision.spokenWords = decision.spokenWords.replace(/\*+/g, '').replace(/_+/g, '').trim();
     }
-    // The pronoun guard on the character's own action and thought, here at
-    // the source so the transcript line, the DM's ruling and every screen
-    // carry the same text.
-    decision.chosenAction = this.guardText(decision.chosenAction);
-    decision.innerThought = this.guardText(decision.innerThought);
-    // The address guard, likewise before anyone reads it: Biz calls Liz
+    // The address guard, here at the source so the transcript line, the
+    // DM's ruling and every screen carry the same text: Biz calls Liz
     // "Mom", in speech and in thought.
     const addressTerms = this.addressTermsOf(characterId);
     if (addressTerms.length > 0) {
@@ -1505,7 +1531,7 @@ export class GameLoop {
         .then(facts => {
           const total = facts.newLocations.length + facts.newEntities.length + facts.newItems.length + facts.newEvents.length + facts.newRelationships.length;
           if (total > 0) {
-            this.worldBible.applyDiff(this.campaignId, facts, { markKnown: true });
+            this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true });
             console.log(`[game-loop] Periodic extraction (turn ${this.state.currentTurn}): ${total} facts (${facts.newEvents.length} events, ${facts.newRelationships.length} rels, ${facts.newEntities.length} entities)`);
           }
         })
@@ -1528,7 +1554,7 @@ export class GameLoop {
 
     try {
       const facts = await this.extractor.extractFacts(toExtract, this.state.currentScene);
-      this.worldBible.applyDiff(this.campaignId, facts, { markKnown: true });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true });
     } catch (e) {
       console.error('Mid-scene fact extraction failed:', e);
     }
@@ -1593,7 +1619,7 @@ export class GameLoop {
         events: facts.newEvents.length,
         relationships: facts.newRelationships.length,
       }));
-      this.worldBible.applyDiff(this.campaignId, facts, { markKnown: true });
+      this.worldBible.applyDiff(this.campaignId, this.worldFacts(facts), { markKnown: true });
     } catch (e: any) {
       console.error('[game-loop] Fact extraction failed:', e.message?.slice(0, 200));
     }
@@ -1660,7 +1686,7 @@ export class GameLoop {
       const trustArc = c.state.whisperTrust >= 0.7 ? 'deeply trusts the guiding voice'
         : c.state.whisperTrust >= 0.4 ? 'remains uncertain about the whispers'
         : 'has grown wary of the voice in their mind';
-      return `${c.definition.name} (${c.definition.highConcept}): stress ${c.state.stress}/3, ${c.state.fatePoints} FP, ${trustArc}. Key memories: ${memText || 'none'}`;
+      return `${c.definition.name} (${c.definition.highConcept}): ${currentCondition(c.state)}, stress ${c.state.stress}/3, ${c.state.fatePoints} FP, ${trustArc}. Key memories: ${memText || 'none'}`;
     }).join('\n');
 
     const relationships = this.worldBible.getRelationships(this.campaignId);
@@ -1687,7 +1713,7 @@ export class GameLoop {
     try {
       const epilogue = await callProse({
         messages: [
-          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them.` },
+          { role: 'system', content: `You write brief TTRPG session epilogues. Plain text only, no JSON, no asterisks. ${voiceHint} 3-5 sentences. Describe only events that actually occurred in the session record you are given — never invent discoveries, losses, victories, escapes or resolutions it does not show. A character's CURRENT injuries are the ones listed under Characters; an injury the record mentions that is not listed there has healed — never describe it as still hurting. Call every character by their name; a word one character calls another ("Mom", a nickname) belongs only inside quoted speech. A thread left unresolved stays open: say so ("the question of who misfiled the form remains unanswered") rather than resolving it. You may reflect on how the voices the characters heard shaped them.` },
           { role: 'user', content: `Session complete: ${scenesPlayed} scene${scenesPlayed === 1 ? '' : 's'}, ${this.state.currentTurn} turns.\n\nSession record:\n${record}\n\nCharacters:\n${charLines}${relBlock}\n\nWorld background (for names and tone only — not a record of what happened):\n${worldState}\n\nWrite a brief closing narration of this session. What did the characters actually do? What was left unresolved? End with one evocative image drawn from something that happened.` },
         ],
         // Seen live at 248 characters, stopped mid-sentence ("...and the
@@ -1737,7 +1763,7 @@ export class GameLoop {
         const reflection = await callProse({
           messages: [
             { role: 'system', content: `You are ${char.definition.name}, a ${char.definition.highConcept}. The adventure is over. Write a brief closing reflection — one spoken line (what you say aloud to your companions or to yourself) and one inner thought (what you carry with you). Plain text, no JSON, no asterisks. Format exactly:\nSPOKEN: "your words"\nTHOUGHT: your private reflection` },
-            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nWhat happened: ${sceneSummaries}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. One line each.` },
+            { role: 'user', content: `Your journey is over. Here is what you remember:\n${memText}\n\nYour relationship with the whisper: ${trustArc} (trust: ${trustPct}%)\n\nHow you are right now: ${currentCondition(char.state)}. Any injury you remember that is not listed here has healed.\n\nWhat happened: ${sceneSummaries}\n\nWrite your final words and thought. Be specific — name a person, place, or moment that actually appears in what happened; do not invent outcomes. One line each.` },
           ],
           // Two short lines (~80 tokens), but reasoning comes out of the same
           // budget: 200 was enough to come back empty or cut off.
@@ -1978,10 +2004,14 @@ export class GameLoop {
     if (character.state.fatePoints === 0) parts.push('out of fate points — vulnerable');
 
     const troublePull = recentMem.some(m => m.content.toLowerCase().includes(character.definition.trouble.toLowerCase().split(' ')[0]!));
-    if (troublePull) parts.push(`their trouble "${character.definition.trouble}" is weighing on them`);
-
-    if (parts.length === 0) parts.push('focused and alert');
-    return `${name} is ${parts.join(', ')}.`;
+    const full = this.characters.get(character.id);
+    return characterStatusLine({
+      name,
+      pronouns: full ? this.ownPronouns(full) : character.definition.pronouns,
+      trouble: character.definition.trouble,
+      states: parts,
+      troublePull,
+    });
   }
 
   private getCompanionLastAction(excludeCharId: string): { name: string; action: string; spokenWords?: string } | null {
@@ -2195,11 +2225,10 @@ export class GameLoop {
   }
 
   private addTranscript(role: TranscriptMessage['role'], content: string, characterId?: string): void {
-    // Story text gets the same pronoun guard as the broadcast funnel. A
-    // player's whisper is their own words and is never rewritten.
-    // Character lines ("Liz: I …") are guarded at the source in processTurn —
-    // here the "Name:" bookkeeping prefix would read as a mention of them.
-    const guarded = role === 'dm' || role === 'system' ? this.guardText(content) : content;
+    // DM story text gets the same narration guard as the broadcast funnel.
+    // A player's whisper is their own words and is never rewritten, and a
+    // character's own line may call a companion "Mom".
+    const guarded = role === 'dm' ? this.guardText(content) : content;
     this.transcript.push({ role, content: guarded, characterId, timestamp: new Date().toISOString() });
   }
 }

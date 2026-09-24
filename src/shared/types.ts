@@ -173,7 +173,7 @@ export interface WorldReadiness {
   detail: string[];
 }
 
-export type CharacterReadinessItem = 'name' | 'highConcept' | 'trouble' | 'aspects' | 'skills' | 'stunts';
+export type CharacterReadinessItem = 'name' | 'highConcept' | 'trouble' | 'aspects' | 'skills' | 'stunts' | 'pronouns';
 
 export interface CharacterReadiness {
   ready: boolean;

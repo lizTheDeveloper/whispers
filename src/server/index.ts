@@ -32,7 +32,7 @@ import {
   interviewSheet, mergeCharacterDraft,
   type InterviewTurn,
 } from './character-interview.js';
-import { checkCharacterReadiness } from './character-readiness.js';
+import { checkCharacterReadiness, checkInterviewReadiness } from './character-readiness.js';
 import { appendReplayEntry, loadReplayLog } from './replay-log.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import type { CampaignMaterial } from '../shared/types.js';
@@ -724,7 +724,7 @@ wss.on('connection', (ws) => {
             // draft so far, so a refresh does not blank what was registered.
             const draftSheet = interviewSheet(nonOwnerInterview);
             if (!nonOwnerInterview.definition && draftSheet) {
-              send(ws, { type: 'character-readiness', readiness: checkCharacterReadiness(draftSheet) });
+              send(ws, { type: 'character-readiness', readiness: checkInterviewReadiness(draftSheet) });
             }
           }
         }
@@ -1299,7 +1299,7 @@ wss.on('connection', (ws) => {
         // The interviewer is told what is still missing from the sheet so
         // far — the running draft, not just a finished sheet — or it asks
         // again for a name the player already gave.
-        const before = checkCharacterReadiness(interviewSheet(interview));
+        const before = checkInterviewReadiness(interviewSheet(interview));
         const fullHistory = getInterviewBySession(db, campaign.id, currentPlayer.sessionToken)?.transcript ?? [];
         const history = windowInterviewHistory(fullHistory);
         const reply = await dm.interviewForCharacter({
@@ -1330,8 +1330,8 @@ wss.on('connection', (ws) => {
         // and changes nothing). The checklist is computed from that draft.
         const draft = reply.definition ? mergeCharacterDraft(interviewSheet(current), reply.definition) : interviewSheet(current);
         if (reply.definition && draft) setInterviewDraft(db, interview.id, draft);
-        const draftReadiness = checkCharacterReadiness(draft);
-        const storedReadiness = checkCharacterReadiness(current.definition);
+        const draftReadiness = checkInterviewReadiness(draft);
+        const storedReadiness = checkInterviewReadiness(current.definition);
         // A ready draft that differs from the stored sheet is a new proposal
         // (setInterviewDefinition resets it to unconfirmed). One identical to
         // a ready stored sheet — a thin reply that changed nothing — is not:
@@ -1370,7 +1370,7 @@ wss.on('connection', (ws) => {
         send(ws, { type: 'error', message: 'There is no character to confirm yet.' });
         return;
       }
-      const readiness = checkCharacterReadiness(interview.definition);
+      const readiness = checkInterviewReadiness(interview.definition);
       if (!readiness.ready) {
         send(ws, { type: 'error', message: 'That character is not finished yet.' });
         return;

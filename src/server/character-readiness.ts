@@ -58,3 +58,34 @@ export function checkCharacterReadiness(def: unknown): CharacterReadiness {
 
   return { ready: unmet.length === 0, unmet, detail };
 }
+
+/** A gendered pronoun: fine once the player has said how the character is referred to, a guess before that. */
+const GENDERED = /\b(?:he|him|his|himself|she|her|hers|herself)\b/i;
+
+/** Every piece of the sheet that describes the character in prose. */
+function describingText(d: Record<string, unknown>): string[] {
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter(isNonEmptyString) : []);
+  return [d.highConcept, d.trouble, d.personality, d.backstory, ...list(d.aspects), ...list(d.stunts)].filter(isNonEmptyString);
+}
+
+/**
+ * "Finished" for a sheet built in the character interview: everything
+ * checkCharacterReadiness asks for, plus how the character is referred to.
+ * The interview ASKS each player for pronouns; until they are stated the
+ * sheet must not gender the character either — "Fast on his feet" for a
+ * character nobody has called "he" is a guess, and it is refused here
+ * (reported as unmet "pronouns") rather than repaired, so the interviewer
+ * asks and rewrites it. Other ways of submitting a sheet (the form, pasted
+ * markdown) keep checkCharacterReadiness alone.
+ */
+export function checkInterviewReadiness(def: unknown): CharacterReadiness {
+  const base = checkCharacterReadiness(def);
+  const d = (def && typeof def === 'object' && !Array.isArray(def)) ? def as Record<string, unknown> : {};
+  if (isNonEmptyString(d.pronouns)) return base;
+  const guessed = describingText(d).some(t => GENDERED.test(t));
+  const unmet: CharacterReadinessItem[] = [...base.unmet, 'pronouns'];
+  const detail = [...base.detail, guessed
+    ? 'The sheet calls them he or she, but nobody has said how they are referred to yet — ask, and until then use their name.'
+    : 'How should people refer to them — she/her, he/him, they/them, or something else?'];
+  return { ready: false, unmet, detail };
+}

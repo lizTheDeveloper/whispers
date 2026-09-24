@@ -93,6 +93,82 @@ describe('the opening is an arrival, from the characters\' point of view', () =>
   });
 });
 
+describe('an opening with an arrival is told once', () => {
+  // Live: "Liz and Biz land hard… They blink, disoriented…" was followed by
+  // "A blinding flash… Liz and Biz are hurled from their waiting room…" —
+  // the party transported twice. The arrival and the scene are separate
+  // fields, and the scene begins after the landing.
+  it('asks for the arrival in its own field and for the scene to start after it, without re-telling the transport', async () => {
+    const { DmAgent } = await import('../src/server/agents/dm.js');
+    const { createRoom } = await import('../src/server/room.js');
+    const { campaignId } = createRoom(db, { name: 'Arrival once', dmPreset: 'chronicler', systemId: 'fate-core' });
+    llmCalls.length = 0;
+    await new DmAgent(db).openScene({
+      preset: 'chronicler', houseRules: null, dmInstructions: null, dmCustomPrompt: null,
+      campaignId, worldSummary: '', transcript: [], systemId: 'fate-core', influences: [], party: [LIZ, BIZ],
+    }, { premise: ISEKAI_PREMISE, scenarioOpening: null, places: [], arrivalExpected: true });
+    const sent = llmCalls[0]!.map(m => m.content).join('\n');
+    const narrationLine = sent.split('\n').find(l => l.startsWith('1. narration:'))!;
+    expect(narrationLine).toMatch(/begin AFTER the arrival/);
+    expect(narrationLine).toMatch(/ALREADY landed/);
+    expect(narrationLine).toMatch(/do NOT narrate the transport again/i);
+    expect(narrationLine).not.toMatch(/this scene IS their arrival/i);
+  });
+});
+
+describe('the character interview is character creation, not play', () => {
+  // Live: after "My name is Liz. I'm a mom…" the interviewer replied "You
+  // stand in the Gutter Canal Bazaar… What catches your attention, and what
+  // do you do?" and the player had to say "Hang on, I'm still making my
+  // character!"
+  async function interviewSystemPrompt(unmet: string[] = []) {
+    const { DmAgent } = await import('../src/server/agents/dm.js');
+    llmCalls.length = 0;
+    await new DmAgent(db).interviewForCharacter({ systemId: 'fate-core', preset: 'chronicler', playerName: 'Liz', influences: [], seed: null, history: [{ role: 'user', content: "My name is Liz. I'm a mom." }], unmet });
+    return llmCalls[0]![0]!.content;
+  }
+
+  it('says plainly that play has not started, and frames in-world questions as questions about the character', async () => {
+    const system = await interviewSystemPrompt();
+    expect(system).toMatch(/CHARACTER CREATION, NOT PLAY/);
+    expect(system).toMatch(/never "You stand in/);
+    expect(system).toMatch(/What do you do\?/); // named only as something never to write
+    // No example in the prompt is itself in-scene second person.
+    expect(system).not.toMatch(/"You (?:are|stand|find yourself) (?:on|in|at) [^"]*\?"/);
+    expect(system).toMatch(/Picture your character/);
+  });
+
+  it('asks for pronouns early, as one question, and never genders the character before they are stated', async () => {
+    const system = await interviewSystemPrompt();
+    expect(system).toMatch(/PRONOUNS — early on/);
+    expect(system).toMatch(/she\/her, he\/him, they\/them, or something else/);
+    expect(system).toMatch(/Do not work it out from a gendered word/);
+    expect(system).toMatch(/"Fast on their feet", not "Fast on his feet"/);
+  });
+
+  it('asks about what the sheet still needs on every reply', async () => {
+    const system = await interviewSystemPrompt(['How should people refer to them — she/her, he/him, they/them, or something else?']);
+    expect(system).toMatch(/Every reply asks about at least one of these/);
+    expect(system).toContain('How should people refer to them');
+  });
+});
+
+describe('narration calls characters by name', () => {
+  it('the party block tells the DM that address terms live only in quoted speech, with this party\'s own example', async () => {
+    const { describeParty } = await import('../src/server/agents/dm.js');
+    const block = describeParty([LIZ, BIZ]);
+    expect(block).toMatch(/narration, resolutions, scene summaries and the epilogue, characters are called by their NAMES/);
+    expect(block).toContain('("Biz steadies Liz", never "Biz steadies Mom")');
+  });
+
+  it('the scene summary is told the same', async () => {
+    const { DmAgent } = await import('../src/server/agents/dm.js');
+    llmCalls.length = 0;
+    await new DmAgent(db).summarizeScene([{ role: 'dm', content: 'Biz lifts Liz onto the slab.', timestamp: '' }], ['Liz', 'Biz']).catch(() => '');
+    expect(llmCalls[0]![0]!.content).toMatch(/Call every character by their name/);
+  });
+});
+
 describe('introductions do not append sheet facts the prose already states', () => {
   it('appends nothing when the DM prose already says "Biz\'s mother"', async () => {
     const { introduceCharacter } = await import('../src/server/agents/dm.js');
