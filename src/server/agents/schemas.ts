@@ -145,6 +145,9 @@ export const CharInterviewReplySchema = z.object({
     // allowed to sink an otherwise-good sheet (and a retry) over a nicety.
     age: z.union([z.number(), z.string()]).nullish().catch(undefined)
       .transform(v => (v === null || v === undefined || (typeof v === 'string' && !v.trim()) ? undefined : v)),
+    // Only what the player stated; blank or malformed means unspecified.
+    pronouns: z.string().nullish().catch(undefined)
+      .transform(v => (v && v.trim() ? v.trim() : undefined)),
     relationships: z.array(z.unknown()).catch([]).default([]).transform(items => items.flatMap(item => {
       const r = CharacterRelationshipSchema.safeParse(item);
       return r.success ? [r.data] : [];

@@ -44,6 +44,12 @@ export interface CharacterDefinition {
   stunts: string[];
   /** Optional: a number or a phrase ("late thirties"). Children should play as children. */
   age?: number | string;
+  /**
+   * Optional, only as the player stated it ("she/her", "they/them"). Unset
+   * means unspecified: nobody — DM included — may guess a gender from a name,
+   * an age or a relation word.
+   */
+  pronouns?: string;
   relationships?: CharacterRelationship[];
 }
 

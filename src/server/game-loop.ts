@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { DmAgent, describeRelationships, type PartyMember } from './agents/dm.js';
+import { DmAgent, describeRelationships, introduceCharacter, type PartyMember } from './agents/dm.js';
 import { CharacterAgent, type PartyMemberView } from './agents/character.js';
 import type { DmOpening } from './agents/schemas.js';
 import { ExtractorAgent } from './agents/extractor.js';
@@ -279,11 +279,13 @@ export class GameLoop {
   }
 
   /** The live party as the DM needs to know it — the real players, never setup placeholders. */
-  private partyForDm(): PartyMember[] {
+  private partyForDm(opts: { withBackstory?: boolean } = {}): PartyMember[] {
     return Array.from(this.characters.values()).map(c => ({
+      ...(opts.withBackstory ? { backstory: c.definition.backstory } : {}),
       name: c.definition.name,
       highConcept: c.definition.highConcept,
       age: c.definition.age,
+      pronouns: c.definition.pronouns,
       relationships: c.definition.relationships,
     }));
   }
@@ -349,7 +351,8 @@ export class GameLoop {
         transcript: this.transcript,
         systemId: campaign.system_id,
         influences: getInfluences(this.db, this.campaignId),
-        party: this.partyForDm(),
+        // The opening alone also reads backstories: where they come from decides how they arrive.
+        party: this.partyForDm({ withBackstory: true }),
       }, { premise, scenarioOpening, places }), (e) => {
       console.error('[game-loop] opening generation failed — opening from the premise and the character sheets instead:', e);
       return null;
@@ -388,25 +391,16 @@ export class GameLoop {
   }
 
   /**
-   * A character as the others see them. The DM's prose when it wrote one —
-   * with any stated relationship it left out appended, because who is whose
-   * mother is a fact of the sheet, not a stylistic choice — otherwise a
-   * plain line built from the sheet itself.
+   * A character as the others see them: the DM's prose, with a natural
+   * sentence added for any stated tie it really left out (the relation word
+   * or its inverse plus the other name counts as stated), otherwise a plain
+   * line from the sheet. See introduceCharacter.
    */
   private introductionFor(c: Character, opening: DmOpening | null): string {
-    const d = c.definition;
-    const member: PartyMember = { name: d.name, highConcept: d.highConcept, age: d.age, relationships: d.relationships };
-    const fromDm = opening?.introductions.find(i => this.namesMatch(i.name, d.name))?.text.trim();
-    if (fromDm) {
-      const lower = fromDm.toLowerCase();
-      const missing = (d.relationships ?? []).filter(r => !lower.includes(r.relation.trim().toLowerCase()));
-      const extra = missing.length > 0 ? ' ' + describeRelationships({ ...member, relationships: missing }).join(' ') : '';
-      return `${fromDm}${extra}`;
-    }
-    const ageText = d.age === undefined || !String(d.age).trim() ? ''
-      : typeof d.age === 'number' || /^\d+$/.test(String(d.age).trim()) ? `, ${String(d.age).trim()} years old` : `, ${String(d.age).trim()}`;
-    const rels = describeRelationships(member);
-    return `${d.name} — ${d.highConcept}${ageText}.${rels.length > 0 ? ' ' + rels.join(' ') : ''}`;
+    const fromDm = opening?.introductions.find(i => this.namesMatch(i.name, c.definition.name))?.text;
+    const party = this.partyForDm();
+    const member = party.find(p => p.name === c.definition.name)!;
+    return introduceCharacter(member, fromDm, party);
   }
 
   stop(): void {
