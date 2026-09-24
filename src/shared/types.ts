@@ -198,4 +198,9 @@ export interface RoomState {
   stockLines?: Record<string, number[]>;
   /** The content rating the host chose (round 20), carried in every checkpoint so a resume restores it. Unset: not chosen. */
   contentRating?: import('./rating.js').ContentRating;
+  /**
+   * Server-side (round 21): everyone the safety floor protects, and why —
+   * once on, never off for the game; carried in every checkpoint.
+   */
+  protectedPeople?: Array<{ name: string; why: string }>;
 }

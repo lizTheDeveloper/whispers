@@ -34,7 +34,7 @@ import { callLlm, ambientLlmSignal, isLlmAbort, LlmAbortError } from './agents/l
 import { quoteRuns, storyUnits, isWarm, softenForChildren } from './narrative-guards.js';
 import { SENTENCE_SPLIT } from './sentences.js';
 import type { ToneTier } from '../shared/rating.js';
-import { floorBackstop, withoutFloorBreaches } from './safety-floor.js';
+import { floorBackstop, withoutFloorBreaches, type ProtectedPerson } from './safety-floor.js';
 
 export type { ToneTier };
 
@@ -70,6 +70,12 @@ export interface ToneContext {
    * describes still count.
    */
   minors?: string[];
+  /**
+   * Round 21: everyone the floor protects, with why — sticky for the game
+   * (safety-floor.ts childReferencesIn): "Crewman Silas — the story calls
+   * them "the cabin boy"". The judge is told each name and the reason.
+   */
+  protectedPeople?: ProtectedPerson[];
 }
 
 export interface ToneVerdict {
@@ -172,9 +178,11 @@ const REPLY_FORMAT = 'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"v
 
 /** The minors line of a judge prompt. */
 function minorsLine(ctx: ToneContext): string {
-  const minors = [...new Set((ctx.minors ?? []).map(m => m.trim()).filter(Boolean))];
+  const why = new Map((ctx.protectedPeople ?? []).filter(p => p?.name?.trim()).map(p => [p.name.trim(), p.why?.trim() ?? '']));
+  const minors = [...new Set([...(ctx.minors ?? []).map(m => m.trim()), ...why.keys()].filter(Boolean))];
+  const listed = minors.map(m => (why.get(m) ? `${m} (${why.get(m)})` : m));
   return minors.length > 0
-    ? `Minors and child characters in this story, protected by the SAFETY FLOOR at every rating: ${minors.join(', ')} — and any other child the passage describes.`
+    ? `Minors and child characters in this story, protected by the SAFETY FLOOR at every rating: ${listed.join('; ')} — and any other child the passage describes. Each stays protected whatever else the passage calls them ("a young man", "the crewman"), and a pronoun or "you" that means one of them is them.`
     : 'The SAFETY FLOOR protects any child or minor the passage describes.';
 }
 
@@ -705,7 +713,7 @@ export async function gateGentleTone<T>(opts: {
 }): Promise<GateResult<T>> {
   const judge = opts.judge ?? llmToneJudge;
   const what = opts.label ? `${opts.kind} (${opts.label})` : opts.kind;
-  const floorCtx = { minors: [...(opts.ctx?.minors ?? []), ...(opts.ctx?.children ?? [])] };
+  const floorCtx = { minors: [...(opts.ctx?.minors ?? []), ...(opts.ctx?.protectedPeople ?? []).map(p => p.name), ...(opts.ctx?.children ?? [])] };
   // `judged`: the phrases the backstop removes — the judge's own, and the
   // sentences the safety floor's deterministic pass caught. A deterministic
   // ending flag (bleakEnding's closing words) has its own softener
@@ -835,23 +843,24 @@ function withoutFloorSentences(text: string, floor: string[], floorCtx: { minors
  * flagged the list stands (softened) rather than leave the child nothing.
  * No verdict: all kept (fail-open).
  */
-export async function gateChildOptions(options: string[], opts: { judge?: ToneListJudge; children?: string[]; ownFeelings?: string[]; label?: string; optionsFor?: 'child' | 'adult'; tier?: ToneTier; minors?: string[] } = {}): Promise<{ keep: number[]; dropped: string[] }> {
+export async function gateChildOptions(options: string[], opts: { judge?: ToneListJudge; children?: string[]; ownFeelings?: string[]; label?: string; optionsFor?: 'child' | 'adult'; tier?: ToneTier; minors?: string[]; protectedPeople?: ProtectedPerson[] } = {}): Promise<{ keep: number[]; dropped: string[] }> {
   if (options.length === 0) return { keep: [], dropped: [] };
   // Round 20: an option that crosses the safety floor never reaches anyone,
   // whatever the judge says (or fails to say).
-  const floorCtx = { minors: [...(opts.minors ?? []), ...(opts.children ?? [])] };
+  const floorCtx = { minors: [...(opts.minors ?? []), ...(opts.protectedPeople ?? []).map(p => p.name), ...(opts.children ?? [])] };
   const crossing = options.map(o => floorBackstop(o, floorCtx).length > 0);
   for (const [i, o] of options.entries()) if (crossing[i]) console.warn(`[floor] options${opts.label ? ` (${opts.label})` : ''}: dropped "${o.slice(0, 160)}"`);
   const r = await gateOptionsByJudge(options, opts);
   return { keep: r.keep.filter(i => !crossing[i]), dropped: [...r.dropped, ...options.filter((_, i) => crossing[i] && r.keep.includes(i))] };
 }
 
-async function gateOptionsByJudge(options: string[], opts: { judge?: ToneListJudge; children?: string[]; ownFeelings?: string[]; label?: string; optionsFor?: 'child' | 'adult'; tier?: ToneTier } = {}): Promise<{ keep: number[]; dropped: string[] }> {
+async function gateOptionsByJudge(options: string[], opts: { judge?: ToneListJudge; children?: string[]; ownFeelings?: string[]; label?: string; optionsFor?: 'child' | 'adult'; tier?: ToneTier; minors?: string[]; protectedPeople?: ProtectedPerson[] } = {}): Promise<{ keep: number[]; dropped: string[] }> {
   const all = options.map((_, i) => i);
   const judge = opts.judge ?? llmToneListJudge;
   const what = opts.label ? `options (${opts.label})` : 'options';
   const started = Date.now();
-  const verdict = await judge(options, 'options', { children: opts.children, ownFeelings: opts.ownFeelings, ...(opts.optionsFor === 'adult' ? { optionsFor: 'adult' as const } : {}), ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}) });
+  // Round 21: the list judge is told who the floor protects, and why.
+  const verdict = await judge(options, 'options', { children: opts.children, ownFeelings: opts.ownFeelings, ...(opts.optionsFor === 'adult' ? { optionsFor: 'adult' as const } : {}), ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}), ...(opts.minors?.length ? { minors: opts.minors } : {}), ...(opts.protectedPeople?.length ? { protectedPeople: opts.protectedPeople } : {}) });
   if (!verdict) {
     console.log(`[tone-gate] ${what}: no verdict (${Date.now() - started}ms) — kept as written`);
     return { keep: all, dropped: [] };
@@ -862,11 +871,16 @@ async function gateOptionsByJudge(options: string[], opts: { judge?: ToneListJud
     console.log(`[tone-gate] ${what}: ok (${Date.now() - started}ms)`);
     return { keep: all, dropped: [] };
   }
+  // Round 21: the floor judge's flags are all the floor's — never kept, even when nothing is left.
+  if (keep.length === 0 && opts.tier === 'floor') {
+    console.warn(`[floor] ${what}: every option crossed the safety floor (${Date.now() - started}ms) — all dropped: ${dropped.map(d => `"${d}"`).join(', ')}`);
+    return { keep: [], dropped };
+  }
   if (keep.length === 0) {
     console.warn(`[tone-gate] ${what}: every option flagged (${Date.now() - started}ms) — kept, softened: ${dropped.map(d => `"${d}"`).join(', ')}`);
     return { keep: all, dropped: [] };
   }
-  console.warn(`[tone-gate] ${what}: dropped (${Date.now() - started}ms) ${dropped.map(d => `"${d}"`).join(', ')}`);
+  console.warn(`[${opts.tier === 'floor' ? 'floor' : 'tone-gate'}] ${what}: dropped (${Date.now() - started}ms) ${dropped.map(d => `"${d}"`).join(', ')}`);
   return { keep, dropped };
 }
 
@@ -884,7 +898,7 @@ async function gateOptionsByJudge(options: string[], opts: { judge?: ToneListJud
 export async function gateChildThought(thought: string, opts: { judge?: ToneJudge; label?: string; /** Run the softener first (round 20: off below the gentle rating). Default true. */ soften?: boolean } & ToneContext = {}): Promise<string> {
   // Round 20: whatever the judge says, nothing that crosses the safety floor stays.
   const out = await gateThoughtByJudge(thought, opts);
-  return withoutFloorBreaches(out, { minors: [...(opts.minors ?? []), ...(opts.children ?? [])] }, opts.label ? `thought (${opts.label})` : 'thought').text;
+  return withoutFloorBreaches(out, { minors: [...(opts.minors ?? []), ...(opts.protectedPeople ?? []).map(p => p.name), ...(opts.children ?? [])] }, opts.label ? `thought (${opts.label})` : 'thought').text;
 }
 
 async function gateThoughtByJudge(thought: string, opts: { judge?: ToneJudge; label?: string; soften?: boolean } & ToneContext = {}): Promise<string> {
@@ -892,7 +906,7 @@ async function gateThoughtByJudge(thought: string, opts: { judge?: ToneJudge; la
   if (!softened.trim()) return softened;
   const judge = opts.judge ?? llmToneJudge;
   const what = opts.label ? `thought (${opts.label})` : 'thought';
-  const ctx: ToneContext = { children: opts.children, ownFeelings: opts.ownFeelings, people: opts.people, ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}) };
+  const ctx: ToneContext = { children: opts.children, ownFeelings: opts.ownFeelings, people: opts.people, ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}), ...(opts.minors?.length ? { minors: opts.minors } : {}), ...(opts.protectedPeople?.length ? { protectedPeople: opts.protectedPeople } : {}) };
   const started = Date.now();
   const verdict = await judge(softened, 'thought', ctx);
   if (!verdict || !verdict.flagged) {

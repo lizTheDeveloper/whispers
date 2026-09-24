@@ -255,6 +255,35 @@ export function withoutFalseDraftClaim(reply: string, opts: { draftComing: boole
 }
 
 /**
+ * A sentence that says the game is ready to begin (round 21, FYXZTP: "The
+ * game is ready to begin." with the plot hooks still unmet; game B: "I will
+ * now finalize the setup so you can begin your adventure").
+ */
+const READY_CLAIM = /\b(?:(?:the\s+)?(?:game|world|table|adventure|setup|stage|everything)\s+(?:is|['’]s)\s+(?:all\s+)?(?:ready|set|prepared|in\s+place|complete|done)\b|(?:you|we)(?:['’]re|\s+are)\s+(?:all\s+)?(?:ready\s+to\s+(?:begin|start|play|go|dive\s+in)|all\s+set|good\s+to\s+go|set\s+to\s+(?:begin|start|play))|ready\s+to\s+(?:begin|start)\b(?!\s+(?:building|drafting|shaping|working|talking|help))|(?:you|we)\s+can\s+(?:now\s+)?(?:begin|start)\s+(?:the\s+game|playing|play|your\s+adventure|the\s+adventure)|let\s+the\s+(?:game|adventure|story)\s+begin|all\s+set\b|good\s+to\s+go\b|finali[sz]e\s+the\s+setup|everything\s+is\s+in\s+place)/i;
+
+/**
+ * The setup chat never says the game is ready while readiness has unmet
+ * items (round 21). A question ("Are you ready to begin…?") is not a
+ * claim. Nothing left: `fallback`, the next thing setup needs.
+ */
+export function withoutUnreadyClaim(reply: string, opts: { ready: boolean; fallback: string }): string {
+  if (!reply || opts.ready || !READY_CLAIM.test(reply)) return reply;
+  let dropped = 0;
+  const out = reply.split(/(\n+)/).map(p => {
+    if (/^\n+$/.test(p)) return p;
+    return p.split(SENTENCE_SPLIT).filter(sentence => {
+      if (/\?["”’']?\s*$/.test(sentence) || !READY_CLAIM.test(sentence)) return true;
+      dropped++;
+      console.log(`[dm-chat] the reply claims the game is ready while readiness has unmet items — sentence removed: "${sentence.slice(0, 120)}"`);
+      return false;
+    }).join(' ');
+  }).join('').replace(/\n{3,}/g, '\n\n').trim();
+  if (dropped === 0) return reply;
+  const question = opts.fallback.replace(/^Noted\.\s*/, '');
+  return out ? `${out} ${question}` : question;
+}
+
+/**
  * The readiness list as the setup model is told it. Before a world exists,
  * "Review and accept the starting world" read to it as "tell the host to
  * review the card" (live, it did — twice — with no card). The seed line
@@ -266,7 +295,7 @@ export function setupUnmetForModel(readiness: { unmet: string[]; detail: string[
     if (u === 'seedAccepted' && noSeed) return [];
     if (u === 'seed') return ['The world card has not been drafted yet. It is drafted for the host automatically, after your reply, once at least three influences are recorded and you set "done": true with dmInstructions. Never say or imply that a world or a world card is drafted or ready to review.'];
     return [readiness.detail[i] ?? u];
-  });
+  }).concat(readiness.unmet.length > 0 ? ['While anything above is unmet, never say the game is ready to begin, ready to start or all set — say what is still needed.'] : []);
 }
 
 /** Sentences of the DM's private direction that carry a secret: its labelled secret blocks, and any sentence about motives, secrets or who is behind what. */

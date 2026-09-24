@@ -19,7 +19,7 @@ import {
 import { makeCharacterLive } from './character-live.js';
 import {
   getWorldSeed, setWorldSeed, setWorldSeedIfNotAccepted, markSeedAccepted, isSeedAccepted, seedWorld, loadStockScenario,
-  withoutSeedSpoilers, withoutSetupFieldDumps, withoutSetupMechanics, withoutFalseDraftClaim, setupUnmetForModel, seedWithHostNouns, seedForHost, withHiddenSeedFields,
+  withoutSeedSpoilers, withoutSetupFieldDumps, withoutSetupMechanics, withoutFalseDraftClaim, withoutUnreadyClaim, setupUnmetForModel, seedWithHostNouns, seedForHost, withHiddenSeedFields,
   asksForWorldEdit, claimsWorldEdit, withoutFalseEditClaim,
 } from './world-seed.js';
 import { checkWorldReadiness, normalizeInfluences, MIN_INFLUENCES } from './world-readiness.js';
@@ -133,7 +133,15 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 interface ConnectedPlayer {
+  /** The seat's live socket: private sends go here. */
   ws: WebSocket;
+  /**
+   * Round 21: older sockets of the same seat still open (a second tab
+   * rejoined with the same token). They hear every broadcast, and when the
+   * live socket closes the newest of them becomes live again — live, the
+   * first tab went deaf when the second closed and the table paused.
+   */
+  older?: WebSocket[];
   sessionToken: string;
   playerName: string;
   characterId: string | null;
@@ -150,7 +158,9 @@ function broadcast(joinCode: string, msg: ServerMessage): void {
   if (!players) return;
   const data = JSON.stringify(msg);
   for (const p of players) {
-    if (p.ws.readyState === WebSocket.OPEN) p.ws.send(data);
+    for (const ws of [p.ws, ...(p.older ?? [])]) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    }
   }
 }
 
@@ -575,7 +585,15 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
     // The players' own characters, never named to the reader (round 16,
     // NUMMRL: the host, who plays Liz, read "You and Liz stand…").
     let partyNames: string[] = [];
-    try { partyNames = partyNamesForIntroduction(seed, hostSetupMessages(db, campaign.id)); } catch (e) { console.error('[world-introduction] could not read the party names:', e); }
+    // Round 21 (FYXZTP): only the sheets' and drafts' names and the names the host gave as the PCs.
+    try {
+      const sheetNames = [
+        ...(db.prepare('SELECT definition FROM characters WHERE campaign_id = ? AND revoked_at IS NULL').all(campaign.id) as Array<{ definition: string }>)
+          .map(r => { try { return (JSON.parse(r.definition) as { name?: string }).name ?? ''; } catch { return ''; } }),
+        ...listPendingCharacters(db, campaign.id).map(p => p.definition?.name ?? ''),
+      ];
+      partyNames = partyNamesForIntroduction(seed, hostSetupMessages(db, campaign.id), sheetNames);
+    } catch (e) { console.error('[world-introduction] could not read the party names:', e); }
     const introduce = (toneFeedback?: string) => dm.introduceWorld({
       preset: campaign.dmPreset,
       influences: getInfluences(db, campaign.id),
@@ -748,6 +766,10 @@ wss.on('connection', (ws) => {
       const existing = players.find(p => p.sessionToken === session.token);
 
       if (existing) {
+        // Round 21: the socket this rejoin replaces stays in the seat while it is open.
+        if (existing.ws !== ws && existing.ws.readyState === WebSocket.OPEN) {
+          existing.older = [...(existing.older ?? []).filter(o => o !== ws && o.readyState === WebSocket.OPEN), existing.ws];
+        }
         existing.ws = ws;
         existing.isOwner = isOwner;
         currentPlayer = existing;
@@ -1663,6 +1685,13 @@ wss.on('connection', (ws) => {
           ratingSet = askedRating;
         }
         reply.reply = withoutUnsetRatingClaims(reply.reply, ratingSet ?? ratingBefore.rating, nextSetupQuestion(before.detail));
+        // Round 21 (FYXZTP): "The game is ready to begin." with the plot hooks
+        // unmet. No reply can make the table ready (accepting the world is
+        // the host's own step), so readiness as it stood decides.
+        reply.reply = withoutUnreadyClaim(reply.reply, {
+          ready: before.ready,
+          fallback: before.detail.length > 0 ? `Before we begin: ${before.detail.join(" ")}` : nextSetupQuestion(before.detail),
+        });
         currentPlayer.setupChat.push({ role: 'assistant', content: reply.reply });
 
         const influences = normalizeInfluences(reply.influences);
@@ -2047,7 +2076,18 @@ wss.on('connection', (ws) => {
     // late close from the socket we replaced must not evict the live seat —
     // that would drop the reconnected DM out of the room (no host socket, no
     // broadcasts) and announce a departure that never happened.
-    if (currentPlayer.ws !== ws) return;
+    if (currentPlayer.ws !== ws) {
+      if (currentPlayer.older) currentPlayer.older = currentPlayer.older.filter(o => o !== ws);
+      return;
+    }
+    // Round 21: an older socket of this seat still open is the seat's live one again.
+    const stillOpen = (currentPlayer.older ?? []).filter(o => o !== ws && o.readyState === WebSocket.OPEN);
+    if (stillOpen.length > 0) {
+      currentPlayer.ws = stillOpen[stillOpen.length - 1]!;
+      currentPlayer.older = stillOpen.slice(0, -1);
+      console.log(`[server] "${currentPlayer.playerName}" in room ${currentJoinCode}: the newer tab closed — an older one still open is the seat's live socket again`);
+      return;
+    }
     const players = rooms.get(currentJoinCode);
     if (players) {
       const idx = players.indexOf(currentPlayer);

@@ -160,11 +160,13 @@ describe('round 20 in play: mature', () => {
   let p: Played;
   beforeAll(async () => { p = await play({ rating: 'mature' }); }, 40_000);
 
-  it('the tone gate is skipped — only the safety floor is judged; no list judge', () => {
+  it('the tone gate is skipped — only the safety floor is judged, options included (round 21)', () => {
     expect(p.seen.filter(m => m.type === 'resolution').length).toBeGreaterThanOrEqual(2);
     expect(p.judged.length).toBeGreaterThan(0);
     expect(p.judged.every(j => j.ctx?.tier === 'floor')).toBe(true);
-    expect(p.listed).toEqual([]);
+    // Round 21 (FYXZTP): every character's options go to the floor judge, at every rating.
+    expect(p.listed.length).toBeGreaterThan(0);
+    expect(p.listed.every(l => l.ctx?.tier === 'floor')).toBe(true);
   });
 
   it('every DM prompt runs in the MATURE register, with the safety floor, never the gentle one', () => {
@@ -194,11 +196,13 @@ describe('round 20 in play: adventure', () => {
   let p: Played;
   beforeAll(async () => { p = await play({ rating: 'adventure' }); }, 40_000);
 
-  it('the light judge reads the prose with the adventure criteria; no options or thoughts are judged', () => {
+  it('the light judge reads the prose with the adventure criteria; options only by the floor judge, thoughts not judged', () => {
     expect(p.judged.length).toBeGreaterThan(0);
     expect(p.judged.every(j => j.ctx?.tier === 'adventure')).toBe(true);
     expect(p.judged.map(j => j.kind)).toContain('ruling');
-    expect(p.listed).toEqual([]);
+    // Round 21 (FYXZTP): every character's options go to the floor judge, at every rating.
+    expect(p.listed.length).toBeGreaterThan(0);
+    expect(p.listed.every(l => l.ctx?.tier === 'floor')).toBe(true);
   });
 
   it('endings are not forced warm: no warm-close instruction, no ending softener, no closed-thread repair', () => {

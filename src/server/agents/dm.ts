@@ -102,28 +102,70 @@ export function nextSetupQuestion(unmet: string[]): string {
 }
 
 /**
+ * Titles with "and" in them that are one work, not two (round 21, FYXZTP:
+ * "Master and Commander" was saved as itself and as "Master" and
+ * "Commander" — 5/3 influences). Compared by influenceKey.
+ */
+const AND_TITLES = new Set([
+  'Master and Commander', 'Pride and Prejudice', 'Sense and Sensibility', 'War and Peace', 'Crime and Punishment',
+  'Beauty and the Beast', 'Dungeons and Dragons', 'Dungeons & Dragons', 'Fear and Loathing in Las Vegas', 'Romeo and Juliet',
+  'Antony and Cleopatra', 'Troilus and Cressida', 'Tristan and Isolde', 'Calvin and Hobbes', 'Wallace and Gromit',
+  'Rick and Morty', 'Ren and Stimpy', 'Frog and Toad', 'Hansel and Gretel', 'Jack and the Beanstalk', 'Lilo and Stitch',
+  'Bill and Ted', 'Sex and the City', 'Fire and Blood', 'Shadow and Bone', 'Children of Blood and Bone', 'Of Mice and Men',
+  'Law and Order', 'Gods and Monsters', 'Oryx and Crake', 'Thelma and Louise', 'Bonnie and Clyde', 'Tom and Jerry',
+  'Starsky and Hutch', 'The Moon and Sixpence', 'Sword and Sorcery', 'Swords and Deviltry', 'Blood and Guts in High School',
+  'A Court of Thorns and Roses', 'Jonathan Strange and Mr Norrell', 'Jonathan Strange & Mr Norrell', 'Life and Fate',
+  'The Old Man and the Sea', 'Lords and Ladies', 'Bread and Roses',
+].map(t => influenceKey(t)));
+
+/** Is "X and Y" one title: a known one, or one whose second half starts "the"/"a" in lower case ("Beauty and the Beast")? */
+function oneAndTitle(item: string, known: string[]): boolean {
+  const key = influenceKey(item);
+  if (AND_TITLES.has(key) || known.some(k => influenceKey(k) === key)) return true;
+  return /\s(?:and|&)\s+(?:the|a|an|of)\s/.test(item);
+}
+
+/**
  * Influences the host names outright: "three influences: Discworld, Spirited
  * Away, and Brazil", "my influences are…", "inspired by…". Split on commas
  * (and a final "and" after one); a title with "and" in it and no commas
- * around it stays whole. Anything unsure is left to the model.
+ * around it stays whole, and so does a quoted one or a known title
+ * ("Master and Commander", or one the model already has whole: `known`).
+ * Anything unsure is left to the model.
  */
-export function influencesNamedIn(text: string): string[] {
+export function influencesNamedIn(text: string, known: string[] = []): string[] {
   const m = text.match(/\binfluences?\b[^:.!?\n]{0,40}?(?::|\bare\b|\bis\b|—|–)\s*([^\n]+)/i)
     ?? text.match(/\binspired by\s+([^\n]+)/i);
   if (!m) return [];
   let list = m[1]!.trim().replace(/[.!?]+$/, '');
   // Stop at a sentence that follows the list ("…and Brazil. Keep it light.").
   list = list.split(/(?<=[a-z0-9)"'”’])[.!?]\s+(?=[A-Z])/)[0]!;
+  const quoted = (p: string) => /^\s*(?:and\s+|&\s+)?["“'‘].*["”'’]\s*$/.test(p);
   const parts = list.includes(',') || list.includes(';')
     ? list.split(/\s*[,;]\s*/).flatMap((p, i, all) => {
         if (i !== all.length - 1) return [p];
-        // "…, and Brazil" (a serial comma) or "…, Spirited Away and Brazil".
-        return /^(?:and|&)\s+/i.test(p) ? [p] : p.split(/\s+(?:and|&)\s+(?=[A-Z0-9"“'‘])/);
+        // "…, and Brazil" (a serial comma) or "…, Spirited Away and Brazil" — never a quoted or known title.
+        if (/^(?:and|&)\s+/i.test(p) || quoted(p) || oneAndTitle(p, known)) return [p];
+        return p.split(/\s+(?:and|&)\s+(?=[A-Z0-9"“'‘])/);
       })
     : [list];
   return parts
     .map(p => p.trim().replace(/^(?:and|&)\s+/i, '').replace(/^["“'‘]|["”'’]$/g, '').trim())
     .filter(p => p.length >= 2 && p.length <= 80 && /[A-Za-z]/.test(p));
+}
+
+/**
+ * The two halves of a title with "and" in it are not influences of their
+ * own when the title is on the list whole (round 21: "Master and Commander",
+ * "Master", "Commander").
+ */
+export function withoutSplitHalves(list: string[]): string[] {
+  const halves = new Set<string>();
+  for (const item of list) {
+    const m = item.match(/^(.+?)\s+(?:and|&)\s+(.+)$/i);
+    if (m) { halves.add(influenceKey(m[1]!)); halves.add(influenceKey(m[2]!)); }
+  }
+  return list.filter(i => !halves.has(influenceKey(i)) || /\s(?:and|&)\s/i.test(i));
 }
 
 export interface PartyMember {
@@ -1154,9 +1196,9 @@ Respond as JSON: { "reply": "your message", "done": false, "influences": [], "dm
     }
     // Influences the host named outright are recorded even when the model
     // leaves them out of "influences".
-    const named = opts.history.filter(m => m.role === 'user').flatMap(m => influencesNamedIn(m.content));
-    if (named.length > 0) {
-      const all = [...(reply.influences ?? []), ...named];
+    const named = opts.history.filter(m => m.role === 'user').flatMap(m => influencesNamedIn(m.content, reply.influences ?? []));
+    if (named.length > 0 || (reply.influences ?? []).length > 0) {
+      const all = withoutSplitHalves([...(reply.influences ?? []), ...named]);
       const seen = new Set<string>();
       reply = { ...reply, influences: all.filter(i => { const k = influenceKey(i); if (!k || seen.has(k)) return false; seen.add(k); return true; }) };
     }

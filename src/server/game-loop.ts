@@ -12,7 +12,7 @@ import { callProse, isLlmAbort, runWithLlmSignal } from './agents/llm-client.js'
 import { findPronounConflicts, ownKinNouns, repairChildNouns, repairGenderedNouns, sheetWithNeutralNouns, type PronounMember } from './pronoun-consistency.js';
 import { rollDice } from './dice.js';
 import { saveCheckpoint, loadCheckpoint, type CheckpointData } from './checkpoint.js';
-import { floorBackstop, withoutFloorBreaches, minorsInParty, describesChild } from './safety-floor.js';
+import { floorBackstop, withoutFloorBreaches, minorsInParty, describesChild, childReferencesIn, addProtected, type ProtectedPerson, type FloorCandidate } from './safety-floor.js';
 import { campaignWantsGentlePeril, hostSetupMessages, tableRating, setStoredContentRating, storedContentRating, type TableRating } from './content-rating.js';
 import { ratingPolicy, ratingChangeLine, parseContentRating, type ContentRating, type RatingPolicy } from '../shared/rating.js';
 import { appendReplayEntry, recordReplayBroadcast } from './replay-log.js';
@@ -691,7 +691,9 @@ export class GameLoop {
   private async toneGated<T>(kind: ToneKind, first: T, textOf: (v: T) => string, regenerate: (feedback: string) => Promise<T | null | undefined>, opts: { soften?: (v: T) => T; extraFlags?: (text: string) => string[]; label?: string; mapText?: (v: T, edit: (text: string) => string) => T } = {}): Promise<T> {
     // Round 20: the rating decides whether this kind is judged, and by which criteria.
     if (!this.policy().gates(kind)) return first;
-    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames(), people: this.partyPeople(), minors: this.minorNames(), ...this.toneTier() }, judge: GameLoop.toneJudge });
+    // Round 21: whoever this draft calls a child is protected before it is judged.
+    try { this.noteProtected(textOf(first) ?? '', `the ${kind}`); } catch (e) { console.error('[floor] could not read the draft for who it protects:', e); }
+    const result = await gateGentleTone({ kind, first, textOf, regenerate, soften: opts.soften ?? (v => v), extraFlags: opts.extraFlags, label: opts.label, mapText: opts.mapText, ctx: { children: this.childNames(), people: this.partyPeople(), minors: this.minorNames(), protectedPeople: this.protectedPeople(), ...this.toneTier() }, judge: GameLoop.toneJudge });
     return result.value;
   }
 
@@ -703,16 +705,64 @@ export class GameLoop {
    * them, at every rating.
    */
   private minorNames(): string[] {
-    const pcs = minorsInParty(this.partyForDm()).map(n => getFirstName(n));
-    let npcs: string[] = [];
+    return this.protectedPeople().map(p => p.name);
+  }
+
+  /**
+   * Round 21 (FYXZTP): the floor's list, with why — sticky for the whole
+   * game and carried in the checkpoint. Everyone the sheets and the world's
+   * descriptions make a child (as round 20 read them) is added on every
+   * read; everyone the story, a whisper or a character's words has called a
+   * child (noteProtected) is already on it. Nobody ever comes off.
+   */
+  private protectedPeople(): ProtectedPerson[] {
+    const list = (this.state.protectedPeople ??= []);
+    const add = (person: ProtectedPerson) => {
+      if (addProtected(list, person)) console.warn(`[floor] ${person.name} is protected by the safety floor from here on: ${person.why}`);
+    };
     try {
-      npcs = (this.db.prepare("SELECT name, description FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(this.campaignId) as Array<{ name: string; description: string | null }>)
-        .filter(r => describesChild(r.description) || describesChild(r.name))
-        .map(r => r.name.replace(/^(?:the|a|an)\s+/i, ''));
+      for (const name of minorsInParty(this.partyForDm())) add({ name, why: 'their character sheet makes them a child' });
+    } catch (e) {
+      console.error('[floor] could not read the party for the safety floor:', e);
+    }
+    try {
+      for (const r of this.db.prepare("SELECT name, description FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(this.campaignId) as Array<{ name: string; description: string | null }>) {
+        const name = r.name.replace(/^(?:the|a|an)\s+/i, '');
+        if (describesChild(r.description)) add({ name, why: `the world describes them: "${(r.description ?? '').slice(0, 90)}"` });
+        else if (describesChild(r.name)) add({ name, why: 'their name makes them a child' });
+      }
     } catch (e) {
       console.error('[floor] could not read the NPCs for the safety floor:', e);
     }
-    return [...new Set([...pcs, ...npcs])];
+    return list;
+  }
+
+  /** Everyone a text can call a child: the party and the story's NPCs, with their pronouns. */
+  private floorCandidates(): FloorCandidate[] {
+    const out: FloorCandidate[] = Array.from(this.characters.values()).map(c => ({ name: c.definition.name, pronouns: this.ownPronouns(c) ?? null }));
+    try {
+      const pronouns = new Map(this.worldBible.getNpcPronouns(this.campaignId).map(n => [n.name, n.pronouns]));
+      for (const r of this.db.prepare("SELECT name FROM entities WHERE campaign_id = ? AND alive = 1 AND type IN ('npc', 'creature')").all(this.campaignId) as Array<{ name: string }>) {
+        if (this.isPartyName(r.name)) continue;
+        out.push({ name: r.name.replace(/^(?:the|a|an)\s+/i, ''), pronouns: pronouns.get(r.name) ?? null, npc: true });
+      }
+    } catch (e) {
+      console.error('[floor] could not read the NPCs for the safety floor:', e);
+    }
+    return out;
+  }
+
+  /**
+   * Round 21 (FYXZTP): anything the story, a whisper or a character says
+   * that calls someone a child ("the cabin boy", "a ten-year-old", "barely
+   * out of boyhood") puts them on the floor's list for the rest of the game.
+   */
+  private noteProtected(text: string, source: string): void {
+    if (!text?.trim()) return;
+    const list = this.protectedPeople();
+    for (const person of childReferencesIn(text, this.floorCandidates(), source)) {
+      if (addProtected(list, person)) console.warn(`[floor] ${person.name} is protected by the safety floor from here on: ${person.why}`);
+    }
   }
 
   /** The child player characters, by first name (for the tone judge). */
@@ -766,6 +816,7 @@ export class GameLoop {
    */
   private guardText(text: string): string {
     if (!text || this.characters.size === 0) return text;
+    try { this.noteProtected(text, 'the story'); } catch (e) { console.error('[floor] could not read the story for who it protects:', e); }
     try {
       const terms = Array.from(this.characters.keys()).flatMap(id => this.addressTermsOf(id));
       // "the Curious Kid With a Sketchbook steps forward" is Biz stepping forward.
@@ -2012,7 +2063,9 @@ export class GameLoop {
     // down, a grown-up's at gentle only; softened at gentle only.
     const optionsPolicy = this.policy();
     const optionsChild = this.isChild(character);
-    if (optionsChild ? optionsPolicy.childOptions : optionsPolicy.adultOptions) {
+    for (const a of proposals.actions) this.noteProtected(a.description, `${character.definition.name}'s options`);
+    const optionsJudged = optionsChild ? optionsPolicy.childOptions : optionsPolicy.adultOptions;
+    if (optionsJudged) {
       const child = optionsChild;
       if (child && optionsPolicy.soften) {
         for (const a of proposals.actions) {
@@ -2023,9 +2076,22 @@ export class GameLoop {
       const options = proposals.actions;
       const gated = await this.haltable(
         () => gateChildOptions(options.map(a => a.description), child
-          ? { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name, minors: this.minorNames(), ...this.toneTier() }
-          : { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: 'adult', label: character.definition.name, minors: this.minorNames(), ...this.toneTier() }),
+          ? { judge: GameLoop.toneListJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), label: character.definition.name, minors: this.minorNames(), protectedPeople: this.protectedPeople(), ...this.toneTier() }
+          : { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: 'adult', label: character.definition.name, minors: this.minorNames(), protectedPeople: this.protectedPeople(), ...this.toneTier() }),
         (e) => { console.error('[tone-gate] options gate failed — kept as written:', e); return { keep: options.map((_, i) => i), dropped: [] }; },
+      );
+      if (!gated) return;
+      proposals.actions = gated.keep.map(i => options[i]!);
+    }
+    // Round 21 (FYXZTP): "I lunge at Silas, grabbing his throat" was offered
+    // to Aldric at mature — options the rating does not judge were read by
+    // nobody but the backstop. Every character's options, at every rating,
+    // go to the floor judge with the protected list.
+    if (!optionsJudged && proposals.actions.length > 0) {
+      const options = proposals.actions;
+      const gated = await this.haltable(
+        () => gateChildOptions(options.map(a => a.description), { judge: GameLoop.toneListJudge, children: this.childNames(), optionsFor: optionsChild ? 'child' : 'adult', label: character.definition.name, minors: this.minorNames(), protectedPeople: this.protectedPeople(), tier: 'floor' }),
+        (e) => { console.error('[floor] options floor judge failed — the backstop decides:', e); return { keep: options.map((_, i) => i), dropped: [] }; },
       );
       if (!gated) return;
       proposals.actions = gated.keep.map(i => options[i]!);
@@ -2168,6 +2234,7 @@ export class GameLoop {
     // words and thought never carry violence or sexual content aimed at a
     // child. What crosses it goes; an action left empty falls back below.
     {
+      for (const t of [decision.chosenAction, decision.spokenWords ?? '', decision.innerThought]) this.noteProtected(t, `${character.definition.name}'s words`);
       const floorCtx = { minors: this.minorNames() };
       const label = character.definition.name;
       decision.chosenAction = withoutFloorBreaches(decision.chosenAction, floorCtx, `action (${label})`).text;
@@ -2272,7 +2339,7 @@ export class GameLoop {
     if (thoughtPolicy.childThought && this.isChild(character)) {
       const thought = decision.innerThought;
       const gated = await this.haltable(
-        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), people: this.thoughtPeople(character), label: character.definition.name, soften: thoughtPolicy.soften, minors: this.minorNames(), ...this.toneTier() }),
+        () => gateChildThought(thought, { judge: GameLoop.toneJudge, children: this.childNames(), ownFeelings: this.ownFeelings(character), people: this.thoughtPeople(character), label: character.definition.name, soften: thoughtPolicy.soften, minors: this.minorNames(), protectedPeople: this.protectedPeople(), ...this.toneTier() }),
         (e) => { console.error('[tone-gate] thought gate failed — kept softened:', e); return thoughtPolicy.soften ? softenForChildren(thought) : thought; },
       );
       if (gated === null) return;
@@ -3085,7 +3152,7 @@ export class GameLoop {
       }
       // Public text: no whisper or voice, and at a gentle table an ending
       // that lands safe (see publicEnding).
-      const text = publicEnding((await this.consistentProse(epilogue.trim())).trim(), { soften: endingPolicy.soften, warmEnding: endingPolicy.endings !== 'open' });
+      const text = withoutFloorBreaches(publicEnding((await this.consistentProse(epilogue.trim())).trim(), { soften: endingPolicy.soften, warmEnding: endingPolicy.endings !== 'open' }), { minors: this.minorNames() }, 'epilogue').text;
       if (text && text.length > 20) {
         epilogueText = text;
         this.broadcastFn({ type: 'narration', text, sceneNumber: this.state.currentScene, isEpilogue: true });
@@ -3212,8 +3279,10 @@ export class GameLoop {
         const companions = Array.from(this.characters.values()).filter(c => c.id !== charId).map(c => ({ name: c.definition.name, inventory: [...(c.state.inventory ?? [])] }));
         const reflectOpts = { self, members, familyTable: reflectionPolicy.soften, warmEnding: reflectionPolicy.endings !== 'open', addressTerms: this.addressTermsOf(charId), companions };
         const reflected = publicReflection(reflection, reflectOpts);
-        const spoken = reflected.spoken ? this.fixNpcPronouns(reflected.spoken, { speech: true }) : reflected.spoken;
-        const thought = reflected.thought ? this.fixNpcPronouns(reflected.thought, { speech: true }) : reflected.thought;
+        // Round 21: the floor's last word on what is shown, with the protected list as it stands.
+        const floorCtx = { minors: this.minorNames() };
+        const spoken = reflected.spoken ? withoutFloorBreaches(this.fixNpcPronouns(reflected.spoken, { speech: true }), floorCtx, `reflection (${char.definition.name})`).text || null : reflected.spoken;
+        const thought = reflected.thought ? withoutFloorBreaches(this.fixNpcPronouns(reflected.thought, { speech: true }), floorCtx, `reflection (${char.definition.name})`).text || null : reflected.thought;
 
         if (spoken || thought) {
           this.broadcastFn({
@@ -3269,6 +3338,8 @@ export class GameLoop {
     if (!target) {
       return { status: 'rejected', characterId: targetId, characterName: null, message: 'That character is no longer at this table.' };
     }
+    // Round 21 (FYXZTP): a whisper that calls someone a child ("the cabin boy, the ten-year-old") protects them.
+    try { this.noteProtected(text, 'a whisper'); } catch (e) { console.error('[floor] could not read the whisper for who it protects:', e); }
     if (this.pendingWhisperResolve && this.pendingWhisperCharacterId === targetId) {
       const resolve = this.pendingWhisperResolve;
       this.pendingWhisperResolve = null;
@@ -3737,17 +3808,51 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Capitalised words that are never a character's name. */
 const NOT_A_PC_NAME = new Set(['the', 'a', 'an', 'i', 'it', 'in', 'on', 'at', 'and', 'but', 'or', 'my', 'our', 'their', 'they', 'she', 'he', 'we', 'you', 'this', 'that', 'these', 'those', 'there', 'here', 'premise', 'influences', 'please', 'gentle', 'no', 'yes', 'so', 'then', 'when', 'while', 'if', 'city', 'mom', 'dad']);
 
+/** Titles a PC's name can carry in the host's words or the story ("Sir Aldric"): part of the name, never a name. */
+const PC_TITLE = String.raw`(?:Sir|Dame|Lady|Lord|Captain|Master|Mistress|Mr|Mrs|Ms|Mx|Dr|Doctor|Professor|Father|Mother|Brother|Sister|Uncle|Aunt|Auntie|Grandma|Grandpa)`;
+const PC_TITLES = new Set(PC_TITLE.slice(3, -1).split('|').map(t => t.toLowerCase()));
+/** A host sentence that says who the players' characters are ("Two adults: …", "I'm playing Mara", "the PCs are …"). */
+const PC_CUE = /\b(?:I['’]m\s+playing|I\s+play|we['’]re\s+playing|we\s+play|playing\s+as|my\s+character|our\s+characters|(?:the\s+)?(?:PCs?|player\s+characters?|protagonists?|heroes|party)\b|(?:two|three|four|five)\s+(?:adults|kids|children|characters|players|heroes|friends|siblings|sisters|brothers|women|men|people|companions|travell?ers))/i;
+
 /**
- * The players' own characters, as far as anyone knows before they are made:
- * names the host used in the setup chat that the world's premise uses too,
- * and that are no NPC, place or item ("Liz and Biz have arrived in…").
+ * The players' own characters, as far as anyone knows before they are made
+ * (round 21, FYXZTP): the names on the sheets and drafts, and the names the
+ * host gave AS the players' characters — with their pronouns ("Liz
+ * (she/her)"), or listed in a sentence about who the PCs are ("Two adults:
+ * Mara, a hard-bitten smuggler, and Sir Aldric, a disgraced knight"). Never
+ * a word the host and the premise merely share: live, the ship "Widow's Due"
+ * gave "Widow" and "Due", and the reader got "the *your companion's your
+ * companion*'s hold". A word of a multi-word proper noun is never one, nor
+ * is a title, an NPC, a place or an item.
  */
-export function partyNamesForIntroduction(seed: WorldSeed, hostMessages: string[]): string[] {
-  const words = (t: string) => new Set([...(t ?? '').matchAll(/(?<![\p{L}'’-])(\p{Lu}\p{Ll}+)(?:['’]s)?(?![\p{L}-])/gu)].map(m => m[1]!));
-  const host = words(hostMessages.join('\n'));
-  const premise = words(seed.premise ?? '');
+export function partyNamesForIntroduction(seed: WorldSeed, hostMessages: string[], sheetNames: string[] = []): string[] {
   const world = new Set([...seed.npcs.map(n => n.name), ...seed.locations.map(l => l.name), ...(seed.items ?? []).map(i => i.name)].flatMap(n => (n ?? '').split(/\s+/)).map(w => w.replace(/['’]s$/, '').replace(/[^\p{L}'’-]/gu, '').toLowerCase()));
-  return [...premise].filter(w => host.has(w) && !world.has(w.toLowerCase()) && !NOT_A_PC_NAME.has(w.toLowerCase()));
+  const ok = (w: string) => !!w && !world.has(w.toLowerCase()) && !NOT_A_PC_NAME.has(w.toLowerCase()) && !PC_TITLES.has(w.toLowerCase());
+  const out = new Set<string>();
+  for (const full of sheetNames) {
+    const name = (full ?? '').trim();
+    if (!name) continue;
+    const words = name.split(/\s+/).map(w => w.replace(/[^\p{L}'’-]/gu, '')).filter(w => /^\p{Lu}/u.test(w) && ok(w));
+    if (words.length > 1) out.add(words.join(' '));
+    for (const w of words) out.add(w);
+  }
+  // One name, standing alone: not inside a multi-word proper noun ("the Widow's Due").
+  const NAME = String.raw`(?<![\p{L}'’-])(?<!\p{Lu}[\p{L}'’-]*(?:['’]s)?\s)(?:${PC_TITLE}\s+)?(\p{Lu}\p{Ll}+)(?![\p{L}'’-])(?!(?:['’]s)?\s+\p{Lu}\p{Ll})`;
+  for (const message of hostMessages) {
+    // "Liz (she/her)": a name given with its pronouns.
+    for (const m of (message ?? '').matchAll(new RegExp(String.raw`${NAME}\s*\(\s*(?:she|he|they|xe|ze|it|any)\s*\/`, 'gu'))) if (ok(m[1]!)) out.add(m[1]!);
+    // A sentence about who the PCs are: each name in it that stands as a list item.
+    for (const sentence of splitSentences(message ?? '')) {
+      if (!PC_CUE.test(sentence)) continue;
+      for (const m of sentence.matchAll(new RegExp(String.raw`${NAME}(?=\s*(?:,|\(|;|:|\s+and\b|\s+&|[.!?]|$))`, 'gu'))) {
+        const before = sentence.slice(0, m.index);
+        // Not a sentence's first word ("Two adults:"), and never "the X" (a thing, not a person).
+        if (!before.trim() || /\b(?:the|a|an)\s+$/i.test(before)) continue;
+        if (ok(m[1]!)) out.add(m[1]!);
+      }
+    }
+  }
+  return [...out];
 }
 
 /**
@@ -3756,20 +3861,27 @@ export function partyNamesForIntroduction(seed: WorldSeed, hostMessages: string[
  * Live (NUMMRL): the host, who plays Liz, read "You and Liz stand in the
  * middle of the intersection". "You and Liz" is "You and your companion";
  * "Liz and Biz" (every one of them) is "you and your companion"; any other
- * mention is "your companion".
+ * mention is "your companion". Round 21 (FYXZTP): a title goes with the
+ * name ("Sir Aldric"), and a word inside a multi-word proper noun ("the
+ * Widow's Due") is never swapped.
  */
 function readerNotNamed(text: string, names: string[]): string {
-  const clean = names.map(n => n.trim()).filter(Boolean);
+  const clean = [...new Set(names.map(n => n.trim()).filter(Boolean))].sort((a, b) => b.length - a.length);
   if (clean.length === 0 || !text) return text;
-  const alt = `(?:${clean.map(esc).join('|')})`;
+  // One of the names, with its title, standing alone — not a word of a longer proper noun.
+  const lone = String.raw`(?<![\p{L}'’-])(?<!\p{Lu}[\p{L}'’-]*(?:['’]s)?\s)`;
+  const core = String.raw`(?:${PC_TITLE}\s+)?(?:${clean.map(esc).join('|')})(?![\p{L}-])`;
+  const notFollowed = String.raw`(?!(?:['’]s)?\s+\p{Lu}\p{Ll})`;
+  const alt = `${lone}${core}${notFollowed}`;
+  const bare = `${core}${notFollowed}`;
   const companion = clean.length > 2 ? 'your companions' : 'your companion';
   let out = text;
-  if (clean.length >= 2) out = out.replace(new RegExp(`\\b${alt}(?:,\\s*${alt})*,?\\s+and\\s+${alt}\\b`, 'g'), `you and ${companion}`);
+  if (clean.length >= 2) out = out.replace(new RegExp(String.raw`${alt}(?:,\s*${bare})*,?\s+and\s+${bare}`, 'gu'), `you and ${companion}`);
   out = out
-    .replace(new RegExp(`\\b(You|you)\\s+and\\s+${alt}\\b`, 'g'), `$1 and your companion`)
-    .replace(new RegExp(`\\b${alt}\\s+and\\s+you\\b`, 'g'), 'your companion and you')
-    .replace(new RegExp(`\\b${alt}['’]s\\b`, 'g'), "your companion's")
-    .replace(new RegExp(`\\b${alt}\\b`, 'g'), 'your companion')
+    .replace(new RegExp(String.raw`\b(You|you)\s+and\s+${bare}`, 'gu'), `$1 and your companion`)
+    .replace(new RegExp(String.raw`${alt}\s+and\s+you\b`, 'gu'), 'your companion and you')
+    .replace(new RegExp(String.raw`${lone}${core}['’]s(?!\s+\p{Lu}\p{Ll})\b`, 'gu'), "your companion's")
+    .replace(new RegExp(alt, 'gu'), 'your companion')
     .replace(/(^|[.!?…]["”’']?\s+|\n\s*|["“]\s*)(you|your)\b/g, (_m, lead: string, w: string) => `${lead}${w.charAt(0).toUpperCase()}${w.slice(1)}`);
   if (out !== text) console.log(`[world-introduction] the players' characters not named: ${clean.join(', ')}`);
   return out;
