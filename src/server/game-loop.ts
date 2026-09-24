@@ -197,7 +197,7 @@ export class GameLoop {
    */
   private sendToOwner(characterId: string, raw: ServerMessage): void {
     const msg = this.guardMessage(raw);
-    if (msg.type === 'character-thought') {
+    if (msg.type === 'character-thought' || msg.type === 'scene-stats') {
       try {
         const token = getSessionTokenForCharacter(this.db, this.campaignId, characterId);
         if (token) appendReplayEntry(this.db, this.campaignId, msg, token);
@@ -1766,15 +1766,25 @@ export class GameLoop {
     // scene's "[Previous scene]" line all carry the same repaired text.
     const summary = await this.checkedProse(rawSummary);
     if (summary === null) return;
-    const whisperStats = Array.from(this.sceneWhisperStats.values()).map(s => ({
-      name: s.name,
-      followed: s.followed,
-      partial: s.partial,
-      ignored: s.ignored,
-      trustDelta: Math.round((s.trustEnd - s.trustStart) * 100) / 100,
-    }));
     if (!(await this.pace())) return;
-    this.broadcastFn({ type: 'scene-end', summary, sceneNumber: this.state.currentScene, whisperStats: whisperStats.length > 0 ? whisperStats : undefined });
+    // The summary is public; each character's whisper record (how often they
+    // heeded the voice, how trust moved) is their owner's alone — the same
+    // owner-only rule as the status line and the thoughts. Broadcasting the
+    // stats showed every seat every character's trust delta.
+    this.broadcastFn({ type: 'scene-end', summary, sceneNumber: this.state.currentScene });
+    for (const [characterId, s] of this.sceneWhisperStats) {
+      this.sendToOwner(characterId, {
+        type: 'scene-stats',
+        sceneNumber: this.state.currentScene,
+        whisperStats: [{
+          name: s.name,
+          followed: s.followed,
+          partial: s.partial,
+          ignored: s.ignored,
+          trustDelta: Math.round((s.trustEnd - s.trustStart) * 100) / 100,
+        }],
+      });
+    }
 
     this.db.prepare('INSERT INTO scenes (id, campaign_id, scene_number, transcript, summary) VALUES (?, ?, ?, ?, ?)')
       .run(randomBytes(16).toString('hex'), this.campaignId, this.state.currentScene, JSON.stringify(this.transcript), summary);

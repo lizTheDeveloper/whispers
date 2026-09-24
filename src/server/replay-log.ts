@@ -94,6 +94,9 @@ export function loadReplayLog(
         delete entry.innerThought;
         delete entry.whisperInfluence;
       }
+      // Likewise scene-end rows written before the influence card became
+      // owner-only (scene-stats) carried every character's whisper record.
+      if (entry.type === 'scene-end') delete entry.whisperStats;
       entries.push(entry);
     } catch {
       // A corrupt row is a missing display line, not a crashed rejoin.

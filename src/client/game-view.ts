@@ -207,8 +207,16 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
     const header = appendProse(msg.summary, 'system');
     header.prepend(document.createTextNode(`--- Scene ${msg.sceneNumber} End ---`), document.createElement('br'));
 
-    const stats = msg.whisperStats;
-    if (stats && stats.length > 0) {
+    // Rows from before the influence card became owner-only may still carry
+    // stats; current servers send them separately, to the owner, as scene-stats.
+    if (msg.whisperStats) renderStatsCard(msg.whisperStats);
+
+    const sceneImage = root.querySelector('#scene-image') as HTMLElement;
+    sceneImage.style.display = 'none';
+  }
+  ws.on('scene-end', (msg) => { if (msg.type === 'scene-end') renderSceneEnd(msg); });
+  function renderStatsCard(stats: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }>): void {
+    if (stats.length > 0) {
         const card = document.createElement('div');
         card.className = 'narration-entry whisper-stats-card';
 
@@ -256,10 +264,8 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
       log.scrollTop = log.scrollHeight;
     }
 
-    const sceneImage = root.querySelector('#scene-image') as HTMLElement;
-    sceneImage.style.display = 'none';
   }
-  ws.on('scene-end', (msg) => { if (msg.type === 'scene-end') renderSceneEnd(msg); });
+  ws.on('scene-stats', (msg) => { if (msg.type === 'scene-stats') renderStatsCard(msg.whisperStats); });
 
   ws.on('scene-image', (msg) => {
     if (msg.type !== 'scene-image') return;
@@ -790,6 +796,7 @@ export function renderGameView(root: HTMLElement, ws: WsClient, isHost: boolean,
         case 'action-taken': renderActionTaken(entry); break;
         case 'character-thought': renderThought(entry); break;
         case 'scene-end': renderSceneEnd(entry); break;
+        case 'scene-stats': renderStatsCard(entry.whisperStats); break;
         case 'whisper-echo': appendLog(`You whisper: "${entry.text}"`, 'whisper'); break;
         case 'revoked-note': appendLog(entry.text, 'system'); break;
       }

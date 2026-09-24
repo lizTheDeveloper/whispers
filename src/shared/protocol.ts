@@ -54,6 +54,9 @@ export type ReplayEntry =
   | { type: 'action-taken'; characterId: string; characterName: string; action: string; spokenWords?: string | null; innerThought?: string; whisperInfluence?: WhisperInfluence }
   | { type: 'character-thought'; characterId: string; characterName: string; innerThought: string; whisperInfluence: WhisperInfluence }
   | { type: 'scene-end'; summary: string; sceneNumber: number; whisperStats?: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
+  // Owner-only: the seat's own character's whisper record for the scene just
+  // ended (the "Your Influence This Scene" card). Never broadcast.
+  | { type: 'scene-stats'; sceneNumber: number; whisperStats: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
   | { type: 'whisper-echo'; text: string }
   | { type: 'revoked-note'; text: string };
 
@@ -103,6 +106,9 @@ export type ServerMessage =
   | { type: 'resolution'; text: string }
   | { type: 'dm-question'; question: string }
   | { type: 'scene-end'; summary: string; sceneNumber: number; whisperStats?: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
+  // Owner-only: the seat's own character's whisper record for the scene just
+  // ended (the "Your Influence This Scene" card). Never broadcast.
+  | { type: 'scene-stats'; sceneNumber: number; whisperStats: Array<{ name: string; followed: number; partial: number; ignored: number; trustDelta: number }> }
   | { type: 'character-state-update'; characterId: string; state: CharacterState }
   | { type: 'dm-settings'; presetName: string; presetPrompt: string; dmCustomPrompt: string | null; dmInstructions: string | null; materials: import('./types.js').CampaignMaterial[]; uploadToken: string }
   | { type: 'dm-chat-reply'; text: string; done: boolean }
