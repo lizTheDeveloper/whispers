@@ -104,6 +104,12 @@ export function renderLobby(root: HTMLElement, ws: WsClient, prefillJoinCode?: s
           <button id="join-btn">Join</button>
         </div>
       </div>
+
+      <p class="support-links">
+        <a href="https://buy.stripe.com/3cI14m0sy3rZf418Cd6c00s" target="_blank" rel="noopener" data-umami-event="support-click">Support $20+</a>
+        <span class="support-sep">·</span>
+        <a href="https://www.patreon.com/lizthedeveloper" target="_blank" rel="noopener" class="support-secondary">or any amount on Patreon</a>
+      </p>
     </div>
   `;
 

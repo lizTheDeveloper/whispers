@@ -76,6 +76,17 @@ h1, h2, h3 {
   letter-spacing: 0.02em;
 }
 
+.support-links {
+  text-align: center;
+  margin-top: 2rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+.support-links a { color: var(--ember); text-decoration: none; }
+.support-links a:hover { text-decoration: underline; }
+.support-links a.support-secondary { color: var(--text-dim); }
+.support-sep { margin: 0 0.4rem; }
+
 .ws-status {
   text-align: center;
   font-size: 0.8rem;
