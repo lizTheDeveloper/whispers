@@ -27,6 +27,11 @@ services:
       # are kept in the outbox and delivered once it is set.
       CHILD_SAFETY_INGEST_URL: http://raising-intelligences:3000/api/internal/child-safety/evidence
       CHILD_SAFETY_INGEST_TOKEN: ${CHILD_SAFETY_INGEST_TOKEN:-}
+      # Dead-lettered evidence (a permanent refusal from the vault) alerts this
+      # Matrix room. Token and room in /opt/whispers/.env (VaultWarden: the
+      # ops alert bot). Never carries content.
+      MATRIX_ALERT_TOKEN: ${MATRIX_ALERT_TOKEN:-}
+      MATRIX_ALERT_ROOM: ${MATRIX_ALERT_ROOM:-}
       # Only Traefik may set X-Forwarded-For: its fixed address on llm-relay
       # (it has no forwardedHeaders.trustedIPs, so it overwrites any
       # client-sent header). Nothing on the shared coolify bridge is trusted.

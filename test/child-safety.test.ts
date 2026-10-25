@@ -9,7 +9,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { clientIp, buildTrustedList, normalizeIp } from '../src/server/child-safety/trusted-ip.js';
 import { setSexualFloorHandler, resetSexualFloorSink, noteSexualFloor, redactLog, redactLine, installLogRedaction, isWithheld, passageWindow, type SexualFloorFlag } from '../src/server/child-safety/sink.js';
-import { enqueueEvidence, deliverDue, backoffMs, type EvidenceBody } from '../src/server/child-safety/outbox.js';
+import { enqueueEvidence, deliverDue, backoffMs, setDeadLetterAlert, INGEST_CONTENT_CAP, type EvidenceBody } from '../src/server/child-safety/outbox.js';
+import { createHash } from 'node:crypto';
 import { ensureChildSafetyTables, buildEvidence, recordSeatIp, runInSafetyScope, withSafetyScope, fileFlag, seatId, purgeIpLog, resetRateLimit, RATE_MAX, RATE_WINDOW_MS } from '../src/server/child-safety/reporter.js';
 import { floorBackstop, withoutFloorBreaches, sexualFloorSentences } from '../src/server/safety-floor.js';
 import { parseToneVerdict, gateGentleTone } from '../src/server/tone-gate.js';
@@ -203,6 +204,38 @@ describe('the outbox', () => {
     expect(r.pending).toBe(0);
   });
 
+  it('a flag over RI\'s limit is capped, its original\'s hash recorded, and the original kept in the row', async () => {
+    const big = 'F'.repeat(INGEST_CONTENT_CAP + 1000);
+    enqueueEvidence(db, body({ content: big, externalRef: 'big' }), 'tok', 0);
+    const row = db.prepare("SELECT full_content FROM child_safety_outbox WHERE external_ref = 'big'").get() as { full_content: string };
+    expect(row.full_content).toBeTruthy();
+    expect(row.full_content).not.toContain('FFFF'); // sealed
+    const sent: any[] = [];
+    const ok = (async (_u: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
+    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: ok, timeoutMs: 1000 }, 1);
+    expect(sent[0].content.length).toBe(INGEST_CONTENT_CAP);
+    expect(sent[0].contentTruncated).toEqual({ originalSha256: createHash('sha256').update(big).digest('hex'), originalLength: big.length });
+  });
+
+  it('a permanent 4xx dead-letters the record and alerts; 429 and 5xx keep retrying', async () => {
+    const alerts: string[] = [];
+    setDeadLetterAlert(async t => { alerts.push(t); });
+    enqueueEvidence(db, body({ externalRef: 'bad' }), 'tok', 0);
+    enqueueEvidence(db, body({ externalRef: 'busy' }), 'tok', 0);
+    const f = (async (_u: string, init: RequestInit) => new Response('{}', { status: JSON.parse(init.body as string).externalRef === 'bad' ? 422 : 429 })) as unknown as typeof fetch;
+    const r = await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: f, timeoutMs: 1000 }, 1);
+    expect(r).toMatchObject({ deadLettered: 1, failed: 1, pending: 1 });
+    const dead = db.prepare("SELECT dead_at, last_error FROM child_safety_outbox WHERE external_ref = 'bad'").get() as { dead_at: number; last_error: string };
+    expect(dead.dead_at).toBe(1);
+    expect(dead.last_error).toBe('HTTP 422');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain('dead-lettered');
+    expect(alerts[0]).not.toContain('sexual'); // no content in alerts
+    // The dead record is never retried.
+    const r2 = await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: f, timeoutMs: 1000 }, 1e15);
+    expect(r2.deadLettered).toBe(0);
+  });
+
   it('backoff is capped at six hours', () => {
     expect(backoffMs(1)).toBe(30_000);
     expect(backoffMs(40)).toBe(6 * 60 * 60 * 1000);
@@ -329,13 +362,20 @@ describe('who the case names', () => {
     expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(RATE_MAX);
     const counters = counterRows();
     expect(counters.map(r => [r.rate_key.split(':')[0], r.count])).toEqual([['ip', 30], ['seat', 30]]);
-    expect(JSON.parse(counters[0]!.hashes)).toHaveLength(30);
+    expect(JSON.parse(counters[0]!.hashes)).toHaveLength(30 - 10); // the first 10 are kept in full
     expect(JSON.parse(counters[0]!.hashes)[0]).toMatch(/^[0-9a-f]{64}$/);
     // Before the window closes only the cases go out; after, one burst record per key.
     expect(await deliverAll(t0 + 100)).toHaveLength(RATE_MAX);
     const bursts = await deliverAll(6 * RATE_WINDOW_MS);
     expect(bursts).toHaveLength(2);
     expect(bursts.every(b => b.recordKind === 'suppressed_burst' && b.content === undefined && b.suppressedBurst.count === 30)).toBe(true);
+    for (const b of bursts) {
+      expect(b.suppressedBurst.samples).toHaveLength(10);
+      expect(b.suppressedBurst.sha256).toHaveLength(20);
+      expect(b.suppressedBurst.samples[0].content).toBe(`${FIXTURE} #${RATE_MAX}`);
+      expect(b.suppressedBurst.samples[0].identifiers.find((i: any) => i.kind === 'whispers_seat' && !i.role).value).toBe(seatId('p2-tok'));
+      expect(b.suppressedBurst.samples[0].ipAddress).toBe('198.51.100.7');
+    }
     const seatBurst = bursts.find(b => b.suppressedBurst.key.kind === 'whispers_seat');
     const ipBurst = bursts.find(b => b.suppressedBurst.key.kind === 'ip');
     expect(seatBurst.suppressedBurst.key.value).toBe(seatId('p2-tok'));
@@ -346,15 +386,23 @@ describe('who the case names', () => {
     expect(counterRows()).toHaveLength(0);
   });
 
-  it('a seat under its cap behind an IP that is over is counted on the IP key only — never under the other seat', async () => {
+  it('a seat under its cap behind an IP that is over keeps its seat: counted on both keys, each sample with its own sender', async () => {
     const shared = '198.51.100.51';
     const t0 = 5 * RATE_WINDOW_MS + 1000;
     for (let i = 0; i < RATE_MAX; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} ann #${i}`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: shared }, now: t0 + i });
     fileFlag(db, { ...flag, items: [`${FIXTURE} bo`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: shared }, now: t0 + 500 });
-    expect(counterRows().map(r => [r.rate_key, r.count])).toEqual([[`ip:${shared}`, 1]]);
+    expect(counterRows().map(r => [r.rate_key.split(':')[0], r.count])).toEqual([['ip', 1], ['seat', 1]]);
     const bursts = (await deliverAll(6 * RATE_WINDOW_MS)).filter(b => b.recordKind === 'suppressed_burst');
-    expect(bursts).toHaveLength(1);
-    expect(bursts[0].identifiers).toEqual([{ kind: 'ip', value: shared, verified: true }]);
+    expect(bursts).toHaveLength(2);
+    const ipBurst = bursts.find(b => b.suppressedBurst.key.kind === 'ip');
+    const seatBurst = bursts.find(b => b.suppressedBurst.key.kind === 'whispers_seat');
+    expect(ipBurst.identifiers).toEqual([{ kind: 'ip', value: shared, verified: true }]);
+    expect(seatBurst.suppressedBurst.key.value).toBe(seatId('p2-tok')); // Bo's own seat, never Ann's
+    for (const b of [ipBurst, seatBurst]) {
+      const sender = b.suppressedBurst.samples[0].identifiers.find((i: any) => i.kind === 'whispers_seat' && !i.role);
+      expect(sender.value).toBe(seatId('p2-tok'));
+      expect(b.suppressedBurst.samples[0].content).toBe(`${FIXTURE} bo`);
+    }
   });
 
   it('a 1,000-flag burst: the counter is right and keeps at most 200 hashes', () => {
@@ -364,7 +412,7 @@ describe('who the case names', () => {
     expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(RATE_MAX);
     for (const r of counterRows()) {
       expect(r.count).toBe(1000 - RATE_MAX);
-      expect(JSON.parse(r.hashes)).toHaveLength(200);
+      expect(JSON.parse(r.hashes)).toHaveLength(200); // after the 10 kept in full
       expect(r.first_at).toBe(t0 + RATE_MAX);
       expect(r.last_at).toBe(t0 + 999);
     }

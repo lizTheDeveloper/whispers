@@ -268,8 +268,9 @@ export function fileFlag(db: Database.Database, flag: SexualFloorFlag, opts: { i
       const keys = rateKeys(db, body, s?.campaignId() ?? null).map(k => ({ ...k, w: windowFor(k.key, now) }));
       const over = keys.filter(k => k.w.count >= RATE_MAX);
       if (over.length > 0) {
-        const sha = contentSha256(body.content ?? '');
-        for (const k of over) countSuppressed(db, { rateKey: k.key, windowStart: k.w.start, windowEnd: k.w.start + RATE_WINDOW_MS, identity: k.identity, contentSha256: sha, at: now });
+        // Counted against EVERY key of the flag (its seat and its IP), each
+        // counter keeping the flag itself — its content and its own sender.
+        for (const k of keys) countSuppressed(db, { rateKey: k.key, windowStart: k.w.start, windowEnd: k.w.start + RATE_WINDOW_MS, identity: k.identity, flag: body, at: now });
         console.warn(`[child-safety] safety-floor flag (${flag.detector}) over the case cap for ${over.map(k => k.key.split(':')[0]).join(' and ')}: counted for a suppressed-burst record, no separate case`);
         return body;
       }
