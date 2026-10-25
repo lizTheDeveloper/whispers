@@ -101,6 +101,33 @@ describe('POST /api/campus-pass', () => {
     } finally { Object.assign(console, orig); }
   });
 
+  it('a malformed JSON body is refused like any bad pass, and never logged', async () => {
+    const lines: string[] = [];
+    const orig = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+    for (const k of ['log', 'warn', 'error', 'info'] as const) console[k] = (...a: unknown[]) => { lines.push(a.map(a => (a instanceof Error ? `${a.message} ${a.stack}` : String(a))).join(' ')); };
+    const stderr: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => { stderr.push(String(chunk)); return origWrite(chunk as string, ...(rest as [])); }) as typeof process.stderr.write;
+    try {
+      const pass = signPass(claimsFor(), keys.privateKeyB64);
+      const res = await fetch(`${base()}/api/campus-pass`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': freshIp() },
+        body: `{"pass": "${pass}"`,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'pass_refused' });
+      const all = lines.join('\n') + stderr.join('');
+      expect(all).not.toContain('cps.');
+    } finally { Object.assign(console, orig); process.stderr.write = origWrite; }
+  });
+
+  it('a malformed JSON body elsewhere still gets a plain 400', async () => {
+    const res = await fetch(`${base()}/api/campaigns/x/materials-not-a-route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad' });
+    expect(res.status).toBe(400);
+    expect(await res.text()).not.toContain('{bad');
+  });
+
   it('rate-limits one IP to 30 exchanges a minute', async () => {
     const ip = freshIp();
     const statuses: number[] = [];
