@@ -203,6 +203,38 @@ describe('the outbox', () => {
     expect(r.pending).toBe(0);
   });
 
+  it('a case over RI\'s content limit goes as linked parts, nothing cut', async () => {
+    const big = `${'A'.repeat(100_000)}${'B'.repeat(100_000)}`;
+    enqueueEvidence(db, body({ content: big, externalRef: 'big' }), 'tok', 0);
+    const sent: any[] = [];
+    const ok = (async (_u: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
+    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: ok, timeoutMs: 1000 }, 1);
+    expect(sent.length).toBe(3);
+    expect(sent.every(b => b.content.length <= 90_000)).toBe(true);
+    expect(sent.map(b => b.externalRef)).toEqual(['big:p1', 'big:p2', 'big:p3']);
+    expect(sent.map(b => b.content.replace(/^\[part \d(, the last)?\] /, '')).join('')).toBe(big);
+  });
+
+  it('a retry after a partial delivery resends only the missing parts', async () => {
+    const big = 'C'.repeat(300_000); // 4 parts
+    enqueueEvidence(db, body({ content: big, externalRef: 'big2' }), 'tok', 0);
+    const sent: string[] = [];
+    let failAt = 3;
+    const flaky = (async (_u: string, init: RequestInit) => {
+      const b = JSON.parse(init.body as string);
+      if (sent.length + 1 === failAt) { failAt = -1; return new Response('down', { status: 503 }); }
+      sent.push(b.externalRef);
+      return new Response('{}', { status: 201 });
+    }) as unknown as typeof fetch;
+    let r = await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: flaky, timeoutMs: 1000 }, 1);
+    expect(r.failed).toBe(1);
+    expect(sent).toEqual(['big2:p1', 'big2:p2']);
+    expect((db.prepare("SELECT parts_done FROM child_safety_outbox WHERE external_ref = 'big2'").get() as { parts_done: number }).parts_done).toBe(2);
+    r = await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: flaky, timeoutMs: 1000 }, 10 * 60 * 60 * 1000);
+    expect(sent).toEqual(['big2:p1', 'big2:p2', 'big2:p3', 'big2:p4']);
+    expect(r.delivered).toBe(1);
+  });
+
   it('backoff is capped at six hours', () => {
     expect(backoffMs(1)).toBe(30_000);
     expect(backoffMs(40)).toBe(6 * 60 * 60 * 1000);
@@ -298,13 +330,46 @@ describe('who the case names', () => {
     expect(sent).toHaveLength(RATE_MAX);
     await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, 6 * RATE_WINDOW_MS);
     const summary = sent.slice(RATE_MAX).map(b => b.content).join('\n');
-    expect(summary).toContain('60 safety-floor flags');
-    expect(summary).toContain('50 in full, 10 more');
+    expect(summary).toContain('60 safety-floor flags from this sender');
+    expect(summary).toContain('50 in full, 10 as SHA-256 + time');
+    expect(summary).toContain(`whispers_seat=${seatId('p2-tok')} (verified)`);
     for (let i = RATE_MAX; i < RATE_MAX + 50; i++) expect(summary).toContain(`${FIXTURE} #${i}\n`);
     expect(summary.match(/sha256 [0-9a-f]{64}/g)).toHaveLength(10);
     expect(summary).not.toContain(`${FIXTURE} #${RATE_MAX + 55}\n`);
     // Delivered: the summary and every member row are gone together.
     expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(0);
+  });
+
+  it('rate limit: two seats behind one IP get two summaries, each under its own identity', async () => {
+    const shared = '198.51.100.50';
+    const t0 = 5 * RATE_WINDOW_MS + 1000;
+    // Ann fills the IP's quota; then both keep sending.
+    for (let i = 0; i < RATE_MAX + 2; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} ann #${i}`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: shared }, now: t0 + i });
+    for (let i = 0; i < 3; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} bo #${i}`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: shared }, now: t0 + 100 + i });
+    const summaries = db.prepare('SELECT external_ref FROM child_safety_outbox WHERE group_ref IS NULL AND next_attempt_at > ?').all(t0 + 1000) as Array<{ external_ref: string }>;
+    expect(summaries).toHaveLength(2);
+    const sent: any[] = [];
+    const capture = (async (_u: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
+    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, 7 * RATE_WINDOW_MS);
+    const bySeat = (tok: string) => sent.filter(b => b.content.startsWith('[rate limit]') && b.identifiers.some((i: any) => i.kind === 'whispers_seat' && i.value === seatId(tok) && !i.role));
+    expect(bySeat('host-tok')).toHaveLength(1);
+    expect(bySeat('p2-tok')).toHaveLength(1);
+    expect(bySeat('p2-tok')[0].content).toContain('bo #0');
+    expect(bySeat('p2-tok')[0].content).not.toContain('ann #');
+    expect(bySeat('host-tok')[0].content).not.toContain('bo #');
+    expect(bySeat('p2-tok')[0].content).toContain(`whispers_seat=${seatId('p2-tok')} (verified)`);
+  });
+
+  it('rate limit: a 1,000-flag burst stays within the row caps, and the counter is right', () => {
+    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
+    const t0 = 5 * RATE_WINDOW_MS + 1000;
+    for (let i = 0; i < 1000; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} burst #${i}`] }, { scope: sc, now: t0 + i });
+    const rows = (db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c;
+    expect(rows).toBe(RATE_MAX + 1 + 50 + 200);
+    const summary = db.prepare('SELECT suppressed_count, first_suppressed_at, last_suppressed_at FROM child_safety_outbox WHERE group_ref IS NULL AND next_attempt_at > ?').get(t0 + 1000) as { suppressed_count: number; first_suppressed_at: number; last_suppressed_at: number };
+    expect(summary.suppressed_count).toBe(1000 - RATE_MAX - 250);
+    expect(summary.first_suppressed_at).toBe(t0 + RATE_MAX + 250);
+    expect(summary.last_suppressed_at).toBe(t0 + 999);
   });
 
   it('rate limit: another seat on another IP is not limited by this one', () => {

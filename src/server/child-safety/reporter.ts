@@ -257,9 +257,11 @@ export function fileFlag(db: Database.Database, flag: SexualFloorFlag, opts: { i
     if (over >= 0 && !opts.isTest) {
       const w = ws[over]!;
       w.suppressed++;
-      const summaryRef = contentSha256(`suppressed\n${keys[over]}\n${w.start}`).slice(0, 40);
+      // One summary per sender — seat AND IP — so a different seat behind the
+      // same IP is never filed under someone else's identity.
+      const summaryRef = contentSha256(`suppressed\n${keys.join('|')}\n${w.start}`).slice(0, 40);
       const r = holdSuppressed(db, { summaryRef, flag: body, deliverAt: w.start + RATE_WINDOW_MS, now });
-      console.warn(`[child-safety] safety-floor flag (${flag.detector}, ${flag.label}) over the rate limit for ${keys[over]!.split(':')[0]}: held ${r.full ? 'in full' : 'as hash + time'} with summary ${summaryRef.slice(0, 16)} (${r.held} held this window), delivered when the window closes`);
+      console.warn(`[child-safety] safety-floor flag (${flag.detector}, ${flag.label}) over the rate limit for ${keys[over]!.split(':')[0]}: held (${r === 'full' ? 'in full' : r === 'hash' ? 'as hash + time' : 'counted only'}) under summary ${summaryRef.slice(0, 16)}, delivered when the window closes`);
       return body;
     }
     for (const w of ws) w.count++;
