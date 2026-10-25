@@ -316,8 +316,19 @@ function deadLetter(db: Database.Database, row: { id: number; external_ref: stri
   void deadLetterAlert(text).catch(e => console.error('[child-safety] dead-letter alert failed:', e instanceof Error ? e.message : e));
 }
 
-/** One pass: closed burst counters into the outbox, then a page of due records posted. Never throws. */
-export async function deliverDue(db: Database.Database, cfg: OutboxConfig, now = Date.now()): Promise<DeliveryResult> {
+let passChain: Promise<unknown> = Promise.resolve();
+/**
+ * One pass: closed burst counters into the outbox, then a page of due
+ * records posted. Never throws. Passes are serialised process-wide (the
+ * worker, a kick, the synthetic hook), so no record is posted twice at once.
+ */
+export function deliverDue(db: Database.Database, cfg: OutboxConfig, now = Date.now()): Promise<DeliveryResult> {
+  const p = passChain.then(() => deliverDueOnce(db, cfg, now));
+  passChain = p.catch(() => {});
+  return p;
+}
+
+async function deliverDueOnce(db: Database.Database, cfg: OutboxConfig, now: number): Promise<DeliveryResult> {
   const result: DeliveryResult = { delivered: 0, failed: 0, deadLettered: 0, pending: 0, caseIds: [] };
   try { flushSuppressed(db, now, cfg.token ?? envToken()); } catch (e) { console.error('[child-safety] could not flush suppressed-burst counters:', e instanceof Error ? e.message : e); }
   const rows = db.prepare('SELECT id, external_ref, key_id, payload, attempts FROM child_safety_outbox WHERE next_attempt_at <= ? AND dead_at IS NULL ORDER BY id LIMIT ?').all(now, PAGE) as Array<{ id: number; external_ref: string; key_id: string; payload: string; attempts: number }>;
