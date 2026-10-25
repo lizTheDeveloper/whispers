@@ -116,6 +116,18 @@ export function enqueueEvidence(db: Database.Database, body: EvidenceBody, token
   return r.changes > 0;
 }
 
+/**
+ * Insert or replace a case that is held until `deliverAt` (the rate limit's
+ * "N more suppressed" summary, updated as the count grows). Once it has been
+ * tried it is left alone.
+ */
+export function upsertHeldEvidence(db: Database.Database, body: EvidenceBody, deliverAt: number, token: string | undefined = process.env.CHILD_SAFETY_INGEST_TOKEN || undefined, now = Date.now()): void {
+  const { keyId, payload } = seal(body, token);
+  db.prepare(`INSERT INTO child_safety_outbox (external_ref, key_id, payload, next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(external_ref) DO UPDATE SET key_id = excluded.key_id, payload = excluded.payload WHERE child_safety_outbox.attempts = 0`)
+    .run(body.externalRef, keyId, payload, deliverAt, now);
+}
+
 /** Backoff after `attempts` failures: 30s, 1m, 2m, … capped at 6h. */
 export function backoffMs(attempts: number): number {
   return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 6 * 60 * 60 * 1000);

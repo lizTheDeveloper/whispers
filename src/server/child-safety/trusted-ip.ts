@@ -11,12 +11,13 @@ import { BlockList, isIP } from 'node:net';
  * client, whatever the header says.
  *
  * Trusted proxies: TRUSTED_PROXIES (comma-separated IPs or CIDRs). The
- * default is loopback plus the private ranges Docker networks use — in
- * production Traefik reaches the container over the `coolify` bridge, and
- * Traefik (no forwardedHeaders.trustedIPs) drops any X-Forwarded-For the
- * client sent and writes its own.
+ * default is loopback only (local dev behind Vite's proxy). In production it
+ * is exactly Traefik's fixed address on the llm-relay network
+ * (docker-compose.prod.yml) — never a shared bridge, where any container
+ * could forge a client IP. Traefik (no forwardedHeaders.trustedIPs) drops any
+ * X-Forwarded-For the client sent and writes its own.
  */
-const DEFAULT_TRUSTED = ['127.0.0.0/8', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'];
+const DEFAULT_TRUSTED = ['127.0.0.0/8', '::1/128'];
 
 export function normalizeIp(raw: string | null | undefined): string | null {
   if (!raw) return null;

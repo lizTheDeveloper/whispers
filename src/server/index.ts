@@ -44,7 +44,6 @@ import { checkCharacterReadiness, checkInterviewReadiness } from './character-re
 import { appendReplayEntry, loadReplayLog } from './replay-log.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { requestClientIp } from './child-safety/trusted-ip.js';
-import { installLogRedaction } from './child-safety/sink.js';
 import { startOutbox, deliverDue, outboxConfigFromEnv } from './child-safety/outbox.js';
 import { ensureChildSafetyTables, installChildSafetyReporter, runInSafetyScope, recordSeatIp, purgeIpLog, fileFlag, type ContextTurn } from './child-safety/reporter.js';
 import { floorBackstop } from './safety-floor.js';
@@ -80,8 +79,7 @@ app.get('/healthz', (_req, res) => { res.json({ status: 'ok' }); });
 // ─── Child safety (child-safety/*.ts) ───────────────────────────────────────
 // Every safety-floor flag for sexual content involving a minor is filed in
 // the studio's child-safety evidence vault (Raising Intelligences) through a
-// durable outbox; the flagged text is kept out of this server's logs.
-installLogRedaction();
+// durable outbox; the call sites that log flagged text withhold it (sink.ts).
 ensureChildSafetyTables(getDb());
 installChildSafetyReporter(getDb);
 if (!process.env.VITEST) {
@@ -121,7 +119,7 @@ app.post('/api/internal/child-safety/synthetic', async (req, res) => {
     const body = runInSafetyScope({
       campaignId: () => campaignId, seatToken: () => session.token, requestIp: ip, userAgent: ua, where: 'synthetic test hook',
       context: () => [{ speaker: 'system', content: 'SYNTHETIC TEST CONTEXT — no real conversation.', at: Date.now() }],
-    }, () => fileFlag(db, { content: `${SYNTHETIC_FIXTURE} ${randomBytes(4).toString('hex')}`, detector: 'backstop', label: 'synthetic test', origin: 'human' }, { isTest: true }));
+    }, () => fileFlag(db, { items: [`${SYNTHETIC_FIXTURE} ${randomBytes(4).toString('hex')}`], detector: 'backstop', label: 'synthetic test', origin: 'human' }, { isTest: true }));
     if (!body) { res.status(500).json({ error: 'could not queue' }); return; }
     const delivery = await deliverDue(db, outboxConfigFromEnv());
     res.json({ queued: body.externalRef, ipAddress: body.ipAddress, gameRef: body.gameRef, delivery });
@@ -132,10 +130,24 @@ app.post('/api/internal/child-safety/synthetic', async (req, res) => {
   }
 });
 
+/** Caps on what the floor's player-text check reads from one message. */
+const PLAYER_TEXT_MAX_STRINGS = 40;
+const PLAYER_TEXT_MAX_STRING = 4000;
+const PLAYER_TEXT_MAX_TOTAL = 16_000;
+
+/**
+ * One message's player text for the floor check, capped in count and size,
+ * as one text — so a message files at most one case, however many of its
+ * sentences cross the floor.
+ */
+export function playerTextForFloor(msg: unknown): string {
+  return playerTextIn(msg).slice(0, PLAYER_TEXT_MAX_STRINGS).map(t => t.slice(0, PLAYER_TEXT_MAX_STRING)).join('\n').slice(0, PLAYER_TEXT_MAX_TOTAL);
+}
+
 /** Free text a player typed, from any client message (not ids, codes or tokens). */
 const NOT_PLAYER_TEXT = new Set(['type', 'joinCode', 'sessionToken', 'characterId', 'dmPreset', 'systemId', 'scenarioId', 'rating', 'role', 'tableRole']);
 function playerTextIn(value: unknown, key = '', out: string[] = [], depth = 0): string[] {
-  if (depth > 6 || NOT_PLAYER_TEXT.has(key)) return out;
+  if (depth > 6 || NOT_PLAYER_TEXT.has(key) || out.length >= PLAYER_TEXT_MAX_STRINGS) return out;
   if (typeof value === 'string') { if (value.trim()) out.push(value); }
   else if (Array.isArray(value)) value.forEach(v => playerTextIn(v, key, out, depth + 1));
   else if (value && typeof value === 'object') for (const [k, v] of Object.entries(value)) playerTextIn(v, k, out, depth + 1);
@@ -201,7 +213,10 @@ if (existsSync(clientDir)) {
 }
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+// maxPayload: the largest real message (an accepted world seed, a character
+// sheet) is a few tens of KiB; nothing bigger is worth parsing or scanning.
+export const WS_MAX_PAYLOAD = 256 * 1024;
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: WS_MAX_PAYLOAD });
 
 interface ConnectedPlayer {
   /** The seat's live socket: private sends go here. */
@@ -751,7 +766,8 @@ wss.on('connection', (ws, req) => {
       // The player's own words are checked for the floor's sexual criterion
       // too (deterministic pass only); a hit is filed with this seat as sender.
       try {
-        for (const text of playerTextIn(msg)) floorBackstop(text, { label: `a ${msg.type} message (player's own words)`, origin: 'human' });
+        const text = playerTextForFloor(msg);
+        if (text) floorBackstop(text, { label: `a ${msg.type} message (player's own words)`, origin: 'human' });
       } catch (e) { console.error('[child-safety] player-text check failed:', e instanceof Error ? e.message : e); }
       try {
         await handleMessage(msg);

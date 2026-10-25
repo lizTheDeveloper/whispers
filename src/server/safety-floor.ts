@@ -30,7 +30,7 @@
  */
 import { childrenInParty, type PartyMember } from './agents/dm.js';
 import { splitSentences } from './sentences.js';
-import { noteSexualFloor, redactLog } from './child-safety/sink.js';
+import { noteSexualFloor, redactLog, passageWindow } from './child-safety/sink.js';
 
 const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen'];
 const AGE = new RegExp(String.raw`\b(\d{1,3}|${NUMBER_WORDS.join('|')})[- ]years?[- ]old\b`, 'gi');
@@ -677,9 +677,12 @@ export function floorBackstop(text: string, ctx: FloorContext = {}): string[] {
   if (!text?.trim()) return [];
   const minors = protectedNames(ctx.minors);
   const found = splitSentences(text).filter(s => sentenceBreaches(s, minors));
-  // Sexual content involving a minor goes to the child-safety evidence vault.
-  for (const s of found) {
-    if (sexualBreach(s, minors)) noteSexualFloor({ content: s, detector: 'backstop', label: ctx.label ?? 'text', origin: ctx.origin ?? 'ai', ...(s.trim() !== text.trim() ? { passage: text } : {}) });
+  // Sexual content involving a minor goes to the child-safety evidence vault:
+  // one case for the whole text, listing every flagged sentence.
+  const sexual = found.filter(s => sexualBreach(s, minors));
+  if (sexual.length > 0) {
+    const whole = sexual.length === 1 && sexual[0]!.trim() === text.trim();
+    noteSexualFloor({ items: sexual, detector: 'backstop', label: ctx.label ?? 'text', origin: ctx.origin ?? 'ai', ...(whole ? {} : { passage: passageWindow(text, sexual) }) });
   }
   return found;
 }

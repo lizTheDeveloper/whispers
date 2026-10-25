@@ -21,6 +21,7 @@ import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
 import { LineRotation, invokeLines, compelLines, gentleCompelLines, gentleAdultCompelLines, appendBeat, withoutStockBeats } from './template-lines.js';
 import { runInSafetyScope, withSafetyScope, type ContextTurn } from './child-safety/reporter.js';
+import { redactLog } from './child-safety/sink.js';
 import { gateGentleTone, gateChildOptions, gateChildThought, type ToneJudge, type ToneListJudge, type ToneKind } from './tone-gate.js';
 import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet, partyRolesLine } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
@@ -2169,7 +2170,7 @@ export class GameLoop {
       const floorCtx = { minors: this.minorNames() };
       proposals.actions = proposals.actions.filter(a => {
         if (floorBackstop(a.description, floorCtx).length === 0) return true;
-        console.warn(`[floor] options (${character.definition.name}): dropped "${a.description.slice(0, 160)}"`);
+        console.warn(`[floor] options (${character.definition.name}): dropped "${redactLog(a.description).slice(0, 160)}"`);
         return false;
       });
     }

@@ -8,9 +8,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { clientIp, buildTrustedList, normalizeIp } from '../src/server/child-safety/trusted-ip.js';
-import { setSexualFloorHandler, resetSexualFloorSink, noteSexualFloor, redactLine, redactLog, type SexualFloorFlag } from '../src/server/child-safety/sink.js';
+import { setSexualFloorHandler, resetSexualFloorSink, noteSexualFloor, redactLog, isWithheld, passageWindow, type SexualFloorFlag } from '../src/server/child-safety/sink.js';
 import { enqueueEvidence, deliverDue, backoffMs, type EvidenceBody } from '../src/server/child-safety/outbox.js';
-import { ensureChildSafetyTables, buildEvidence, recordSeatIp, runInSafetyScope, withSafetyScope, fileFlag, seatId, purgeIpLog } from '../src/server/child-safety/reporter.js';
+import { ensureChildSafetyTables, buildEvidence, recordSeatIp, runInSafetyScope, withSafetyScope, fileFlag, seatId, purgeIpLog, resetRateLimit, RATE_MAX, RATE_WINDOW_MS } from '../src/server/child-safety/reporter.js';
 import { floorBackstop, withoutFloorBreaches, sexualFloorSentences } from '../src/server/safety-floor.js';
 import { parseToneVerdict, gateGentleTone } from '../src/server/tone-gate.js';
 import { migrate } from '../src/server/db.js';
@@ -26,6 +26,14 @@ function memDb(): Database.Database {
 }
 
 describe('trusted client IP', () => {
+  it('by default trusts loopback only — never a shared Docker bridge', () => {
+    const def = buildTrustedList('');
+    expect(clientIp('172.19.0.4', '203.0.113.5', def)).toBe('172.19.0.4');
+    expect(clientIp('127.0.0.1', '203.0.113.5', def)).toBe('203.0.113.5');
+    const prod = buildTrustedList('172.30.42.3/32');
+    expect(clientIp('172.30.42.3', '203.0.113.5', prod)).toBe('203.0.113.5');
+    expect(clientIp('172.30.42.4', '203.0.113.5', prod)).toBe('172.30.42.4');
+  });
   const list = buildTrustedList('127.0.0.0/8,10.0.0.0/8');
   it('ignores X-Forwarded-For from a peer that is not a trusted proxy', () => {
     expect(clientIp('203.0.113.5', '198.51.100.1', list)).toBe('203.0.113.5');
@@ -56,17 +64,27 @@ describe('the floor reports its sexual criterion, and only that', () => {
   it('a sexual breach is reported with its label and origin; violence is not', () => {
     expect(floorBackstop(`${FIXTURE} ${VIOLENCE}`, { label: 'narration', origin: 'ai' })).toHaveLength(2);
     expect(flags).toHaveLength(1);
-    expect(flags[0]).toMatchObject({ content: FIXTURE, detector: 'backstop', label: 'narration', origin: 'ai' });
+    expect(flags[0]).toMatchObject({ items: [FIXTURE], detector: 'backstop', label: 'narration', origin: 'ai' });
     expect(flags[0]!.passage).toContain(VIOLENCE);
+  });
+  it('one text with many flagged sentences files ONE flag listing them all, with a bounded passage', () => {
+    const filler = 'The lantern flickers over the long quiet road. '.repeat(400);
+    const many = Array.from({ length: 30 }, (_, i) => `TEST FIXTURE ${i}: the word sexual near the word child.`);
+    floorBackstop(`${filler}${many.join(' ')}${filler}`, { label: 'a dm-chat message', origin: 'human' });
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.items).toHaveLength(30);
+    expect(flags[0]!.passage!.length).toBeLessThanOrEqual(4100);
   });
   it('withoutFloorBreaches reports under its label, and its log line withholds the text', () => {
     const lines: string[] = [];
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { lines.push(a.join(' ')); };
-    try { withoutFloorBreaches(FIXTURE, {}, 'thought (Pip)'); } finally { console.warn = orig; }
+    try { withoutFloorBreaches(`${FIXTURE} ${VIOLENCE}`, {}, 'thought (Pip)'); } finally { console.warn = orig; }
     expect(flags[0]!.label).toBe('thought (Pip)');
     expect(lines.join('\n')).not.toContain('the word sexual');
     expect(lines.join('\n')).toContain('[withheld: child-safety evidence');
+    // The violence line (not a sexual flag) is still logged as it was.
+    expect(lines.join('\n')).toContain(VIOLENCE);
   });
   it('sexualFloorSentences is pure', () => {
     expect(sexualFloorSentences(FIXTURE)).toEqual([FIXTURE]);
@@ -80,7 +98,7 @@ describe('the floor reports its sexual criterion, and only that', () => {
   it('gateGentleTone files the judge\'s sexual-floor phrases', async () => {
     const judge = async () => ({ flagged: true, phrases: ['near the word'], floor: ['near the word'], floorSexual: ['near the word'] });
     await gateGentleTone({ kind: 'narration', first: 'A quiet scene, near the word.', textOf: v => v, regenerate: async () => 'A quiet scene.', soften: v => v, judge, label: 'scene 1' });
-    expect(flags.some(f => f.detector === 'judge' && f.content === 'near the word' && f.label.includes('scene 1'))).toBe(true);
+    expect(flags.some(f => f.detector === 'judge' && f.items[0] === 'near the word' && f.label.includes('scene 1'))).toBe(true);
   });
   it('a throwing handler never breaks the game', () => {
     setSexualFloorHandler(() => { throw new Error('boom'); });
@@ -90,13 +108,30 @@ describe('the floor reports its sexual criterion, and only that', () => {
 
 describe('log redaction', () => {
   beforeEach(() => resetSexualFloorSink());
-  it('withholds reported content wherever a log line carries it, quoted or truncated', () => {
-    noteSexualFloor({ content: FIXTURE, detector: 'backstop', label: 'x', origin: 'ai' });
-    expect(redactLine(`[floor] x: caught "${FIXTURE}"`)).not.toContain('sexual');
-    expect(redactLine(`[floor] x: caught "${FIXTURE.slice(0, 30)}"`)).not.toContain('the word sexual');
-    expect(redactLine(`plain ${FIXTURE} trailing`)).not.toContain('sexual');
-    expect(redactLine('[tone-gate] narration: ok (12ms)')).toBe('[tone-gate] narration: ok (12ms)');
-    expect(redactLog('child')).toBe('child'); // short words are not withheld
+  it('withholds exactly what was reported, and nothing else', () => {
+    noteSexualFloor({ items: [FIXTURE], detector: 'backstop', label: 'x', origin: 'ai' });
+    expect(redactLog(FIXTURE)).toMatch(/^\[withheld: child-safety evidence [0-9a-f]{12}\]$/);
+    expect(redactLog(`  ${FIXTURE.toUpperCase()} `)).toContain('[withheld'); // normalised exact match
+    // Unrelated lines, and lines that merely contain or are contained in it, are untouched.
+    expect(redactLog('[tone-gate] narration: ok (12ms)')).toBe('[tone-gate] narration: ok (12ms)');
+    expect(redactLog(`prefix ${FIXTURE}`)).toBe(`prefix ${FIXTURE}`);
+    expect(redactLog('the word sexual')).toBe('the word sexual');
+  });
+  it('short strings are never stored or withheld, so a player cannot hide common words', () => {
+    noteSexualFloor({ items: ['the child', 'and'], detector: 'backstop', label: 'x', origin: 'human' });
+    expect(isWithheld('the child')).toBe(false);
+    expect(redactLog('and')).toBe('and');
+  });
+  it('long content is matched by its capped normal form', () => {
+    const long = `TEST FIXTURE ${'x'.repeat(5000)}`;
+    noteSexualFloor({ items: [long], detector: 'backstop', label: 'x', origin: 'ai' });
+    expect(isWithheld(long)).toBe(true);
+  });
+  it('passageWindow keeps only the text around the flagged items', () => {
+    const p = `${'a'.repeat(3000)} FLAGGED ITEM ${'b'.repeat(3000)}`;
+    const w = passageWindow(p, ['FLAGGED ITEM']);
+    expect(w).toContain('FLAGGED ITEM');
+    expect(w.length).toBeLessThan(900);
   });
 });
 
@@ -153,8 +188,9 @@ describe('who the case names', () => {
   let db: Database.Database;
   const seat = (token: string, name: string, isHost: boolean, characterId: string | null = null) =>
     db.prepare('INSERT INTO campaign_sessions (token, campaign_id, join_code, player_name, is_host, character_id) VALUES (?, ?, ?, ?, ?, ?)').run(token, 'g1', 'JC', name, isHost ? 1 : 0, characterId);
-  const flag: SexualFloorFlag = { content: FIXTURE, detector: 'backstop', label: 'test', origin: 'ai' };
+  const flag: SexualFloorFlag = { items: [FIXTURE], detector: 'backstop', label: 'test', origin: 'ai' };
   beforeEach(() => {
+    resetRateLimit();
     db = memDb();
     db.prepare("INSERT INTO campaigns (id, join_code, name, dm_preset, system_id) VALUES ('g1', 'JC', 'G', 'chronicler', 'fate-core')").run();
     seat('host-tok', 'Ann', true);
@@ -208,10 +244,38 @@ describe('who the case names', () => {
         const b = fileFlag(db, flag);
         seen.push(b?.ipAddress ?? null);
       });
-      seen.push(fileFlag(db, { ...flag, content: `${FIXTURE} 2` })?.ipAddress ?? null);
+      seen.push(fileFlag(db, { ...flag, items: [`${FIXTURE} 2`] })?.ipAddress ?? null);
     });
     expect(seen).toEqual(['203.0.113.2', null]);
     expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(2);
+  });
+
+  it('the same text filed twice is one case and counts once', () => {
+    const s = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
+    fileFlag(db, flag, { scope: s });
+    fileFlag(db, flag, { scope: s });
+    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(1);
+  });
+
+  it('rate limit: past RATE_MAX cases a seat files one held "N more suppressed" case, never silence', () => {
+    const s = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
+    const t0 = 5 * RATE_WINDOW_MS + 1000;
+    for (let i = 0; i < RATE_MAX + 3; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} #${i}`] }, { scope: s, now: t0 + i });
+    const rows = db.prepare('SELECT external_ref, next_attempt_at FROM child_safety_outbox ORDER BY id').all() as Array<{ external_ref: string; next_attempt_at: number }>;
+    expect(rows).toHaveLength(RATE_MAX + 1);
+    const held = rows[RATE_MAX]!;
+    expect(held.next_attempt_at).toBe(5 * RATE_WINDOW_MS + RATE_WINDOW_MS);
+    // The held summary says how many were suppressed and keeps the latest text.
+    let summary: any = null;
+    const capture = (async (_u: string, init: RequestInit) => { const b = JSON.parse(init.body as string); if (b.content.startsWith('[rate limit]')) summary = b; return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
+    return (async () => {
+      await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, 7 * RATE_WINDOW_MS);
+      expect(summary.content).toContain('3 more safety-floor flags from this seat were suppressed');
+      expect(summary.content).toContain(`${FIXTURE} #${RATE_MAX + 2}`);
+      // Another IP on another seat is not limited by this one.
+      fileFlag(db, { ...flag, items: [`${FIXTURE} other`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: '198.51.100.8' }, now: t0 + 50 });
+      expect((db.prepare("SELECT COUNT(*) AS c FROM child_safety_outbox WHERE payload NOT LIKE '%rate limit%'").get() as { c: number }).c).toBe(1);
+    })();
   });
 
   it('the IP log keeps one row per seat, IP and user agent, and purges after 90 days', () => {
