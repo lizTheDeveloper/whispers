@@ -23,8 +23,10 @@ import type Database from 'better-sqlite3';
  * "suppressed_burst" record under that key's own identity.
  *
  * Rows are AES-256-GCM encrypted with a key derived from the ingest token.
- * With no token configured a row is stored with key id "none" — keeping the
- * evidence beats losing it — and the worker logs an error every pass.
+ * Content is never stored unencrypted: with no token the evidence path fails
+ * closed (nothing is persisted, the worker does not start, and an alert goes
+ * out). Only tests, or a dev box that sets CHILD_SAFETY_PLAINTEXT_DEV=1, get
+ * a clearly marked plaintext mode (key id "plaintext-dev").
  */
 
 export interface EvidenceIdentifier {
@@ -136,9 +138,21 @@ function keyFor(token: string): { id: string; key: Buffer } {
   return { id: createHash('sha256').update(key).digest('hex').slice(0, 12), key };
 }
 
+/** Plaintext storage only in tests or with an explicit dev opt-in — never by default. */
+export function plaintextAllowed(): boolean {
+  return !!process.env.VITEST || process.env.NODE_ENV === 'test' || process.env.CHILD_SAFETY_PLAINTEXT_DEV === '1';
+}
+
+export class EvidenceKeyMissingError extends Error {
+  constructor() { super('CHILD_SAFETY_INGEST_TOKEN is not set: evidence is never stored unencrypted, so the evidence path is off'); this.name = 'EvidenceKeyMissingError'; }
+}
+
 function seal(body: unknown, token: string | undefined): { keyId: string; payload: string } {
   const json = JSON.stringify(body);
-  if (!token) return { keyId: 'none', payload: json };
+  if (!token) {
+    if (!plaintextAllowed()) throw new EvidenceKeyMissingError();
+    return { keyId: 'plaintext-dev', payload: json };
+  }
   const { id, key } = keyFor(token);
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -147,7 +161,7 @@ function seal(body: unknown, token: string | undefined): { keyId: string; payloa
 }
 
 function open<T = EvidenceBody>(keyId: string, payload: string, token: string | undefined): T {
-  if (keyId === 'none') return JSON.parse(payload);
+  if (keyId === 'plaintext-dev' || keyId === 'none') return JSON.parse(payload);
   if (!token) throw new Error('no ingest token to decrypt the pending case');
   const { id, key } = keyFor(token);
   if (id !== keyId) throw new Error(`pending case was sealed with key ${keyId}, the current token's key is ${id}`);
@@ -367,7 +381,14 @@ export function startOutbox(db: Database.Database, cfg: OutboxConfig = outboxCon
       running = false;
     }
   };
-  if (!cfg.token) console.error('[child-safety] CHILD_SAFETY_INGEST_TOKEN is not set — flags are kept in the outbox but cannot be delivered');
+  if (!cfg.token && !plaintextAllowed()) {
+    // Fail closed: no key, no evidence path (seal() refuses to persist too).
+    const text = '[child-safety] CHILD_SAFETY_INGEST_TOKEN is not set — the child-safety evidence path is OFF (evidence is never stored unencrypted). Set the token and restart.';
+    console.error(text);
+    void deadLetterAlert(text).catch(() => {});
+    return () => {};
+  }
+  if (!cfg.token) console.error('[child-safety] PLAINTEXT DEV MODE: no CHILD_SAFETY_INGEST_TOKEN — evidence is stored unencrypted and cannot be delivered');
   kick = () => { void pass(); };
   const timer = setInterval(() => { void pass(); }, intervalMs);
   timer.unref?.();

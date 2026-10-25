@@ -263,20 +263,21 @@ export function fileFlag(db: Database.Database, flag: SexualFloorFlag, opts: { i
     // The same text checked again (a re-check, a second draft) is the same
     // case: it neither files twice nor counts against the rate limit.
     if (filedRefs.has(body.externalRef)) return body;
-    rememberRef(body.externalRef);
-    if (!opts.isTest) {
-      const keys = rateKeys(db, body, s?.campaignId() ?? null).map(k => ({ ...k, w: windowFor(k.key, now) }));
-      const over = keys.filter(k => k.w.count >= RATE_MAX);
-      if (over.length > 0) {
-        // Counted against EVERY key of the flag (its seat and its IP), each
-        // counter keeping the flag itself — its content and its own sender.
-        for (const k of keys) countSuppressed(db, { rateKey: k.key, windowStart: k.w.start, windowEnd: k.w.start + RATE_WINDOW_MS, identity: k.identity, flag: body, at: now });
-        console.warn(`[child-safety] safety-floor flag (${flag.detector}) over the case cap for ${over.map(k => k.key.split(':')[0]).join(' and ')}: counted for a suppressed-burst record, no separate case`);
-        return body;
-      }
-      for (const k of keys) k.w.count++;
+    const keys = opts.isTest ? [] : rateKeys(db, body, s?.campaignId() ?? null).map(k => ({ ...k, w: windowFor(k.key, now) }));
+    const over = keys.filter(k => k.w.count >= RATE_MAX);
+    if (over.length > 0) {
+      // Counted against EVERY key of the flag (its seat and its IP), each
+      // counter keeping the flag itself — its content and its own sender.
+      for (const k of keys) countSuppressed(db, { rateKey: k.key, windowStart: k.w.start, windowEnd: k.w.start + RATE_WINDOW_MS, identity: k.identity, flag: body, at: now });
+      rememberRef(body.externalRef); // only once it is stored
+      console.warn(`[child-safety] safety-floor flag (${flag.detector}) over the case cap for ${over.map(k => k.key.split(':')[0]).join(' and ')}: counted for a suppressed-burst record, no separate case`);
+      return body;
     }
     const queued = enqueueEvidence(db, body, undefined, now);
+    // Counted and remembered only once stored: a failed insert is retried the
+    // next time the flag is raised, and does not use up the sender's cap.
+    for (const k of keys) k.w.count++;
+    rememberRef(body.externalRef);
     console.warn(`[child-safety] safety-floor flag (${flag.detector}) ${queued ? 'queued for the evidence vault' : 'already queued'}: evidence ${body.externalRef.slice(0, 16)}`);
     return body;
   } catch (e) {

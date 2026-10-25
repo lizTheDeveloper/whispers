@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { clientIp, buildTrustedList, normalizeIp } from '../src/server/child-safety/trusted-ip.js';
 import { setSexualFloorHandler, resetSexualFloorSink, noteSexualFloor, redactLog, redactLine, installLogRedaction, isWithheld, passageWindow, type SexualFloorFlag } from '../src/server/child-safety/sink.js';
-import { enqueueEvidence, deliverDue, backoffMs, setDeadLetterAlert, INGEST_CONTENT_CAP, type EvidenceBody } from '../src/server/child-safety/outbox.js';
+import { enqueueEvidence, deliverDue, backoffMs, setDeadLetterAlert, startOutbox, EvidenceKeyMissingError, INGEST_CONTENT_CAP, type EvidenceBody } from '../src/server/child-safety/outbox.js';
 import { createHash } from 'node:crypto';
 import { ensureChildSafetyTables, buildEvidence, recordSeatIp, runInSafetyScope, withSafetyScope, fileFlag, seatId, purgeIpLog, resetRateLimit, RATE_MAX, RATE_WINDOW_MS } from '../src/server/child-safety/reporter.js';
 import { floorBackstop, withoutFloorBreaches, sexualFloorSentences } from '../src/server/safety-floor.js';
@@ -236,6 +236,24 @@ describe('the outbox', () => {
     expect(r2.deadLettered).toBe(0);
   });
 
+  it('production with no key: nothing is persisted unencrypted, the worker does not start, and an alert goes out', () => {
+    const saved = { VITEST: process.env.VITEST, NODE_ENV: process.env.NODE_ENV };
+    delete process.env.VITEST;
+    process.env.NODE_ENV = 'production';
+    const alerts: string[] = [];
+    setDeadLetterAlert(async t => { alerts.push(t); });
+    try {
+      expect(() => enqueueEvidence(db, body({ externalRef: 'nokey' }), undefined, 0)).toThrow(EvidenceKeyMissingError);
+      expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(0);
+      const stop = startOutbox(db, { url: 'u', token: undefined, fetchImpl: fetch, timeoutMs: 1000 }, 60_000);
+      stop();
+      expect(alerts.some(a => a.includes('evidence path is OFF'))).toBe(true);
+    } finally {
+      process.env.VITEST = saved.VITEST;
+      process.env.NODE_ENV = saved.NODE_ENV;
+    }
+  });
+
   it('backoff is capped at six hours', () => {
     expect(backoffMs(1)).toBe(30_000);
     expect(backoffMs(40)).toBe(6 * 60 * 60 * 1000);
@@ -306,6 +324,15 @@ describe('who the case names', () => {
     });
     expect(seen).toEqual(['203.0.113.2', null]);
     expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(2);
+  });
+
+  it('a failed insert is not remembered: the same flag raised again is stored', () => {
+    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
+    db.exec('ALTER TABLE child_safety_outbox RENAME TO child_safety_outbox_gone');
+    expect(fileFlag(db, flag, { scope: sc })).toBeNull();
+    db.exec('ALTER TABLE child_safety_outbox_gone RENAME TO child_safety_outbox');
+    expect(fileFlag(db, flag, { scope: sc })).not.toBeNull();
+    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(1);
   });
 
   it('the same text filed twice is one case and counts once', () => {
