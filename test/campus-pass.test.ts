@@ -1,15 +1,21 @@
 // Campus launch passes (web cabinets): every check the cabinet contract
 // requires of a game server, each refusing on its own.
-import { describe, it, expect, beforeEach } from 'vitest';
-import { verifyCampusPass, resetSeenJtis, CAMPUS_PASS_PUBLIC_KEY } from '../src/server/campus-pass.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { verifyCampusPass, consumePassJti, CAMPUS_PASS_PUBLIC_KEY } from '../src/server/campus-pass.js';
+import { migrate } from '../src/server/db.js';
 import { newCampusKeyPair, claimsFor, signPass } from './lib/campus-pass-fixture.js';
 
 const keys = newCampusKeyPair();
 const other = newCampusKeyPair();
 const NOW = 1_800_000_000_000;
-const opts = (o: Partial<{ nowMs: number; audience: string }> = {}) => ({ publicKeyB64: keys.publicKeyB64, audience: 'whispers', nowMs: NOW, ...o });
+let db: Database.Database;
+const opts = (o: Partial<{ nowMs: number; audience: string; db: Database.Database }> = {}) => ({ publicKeyB64: keys.publicKeyB64, audience: 'whispers', nowMs: NOW, db, ...o });
 
-beforeEach(() => resetSeenJtis());
+beforeEach(() => { db = new Database(':memory:'); migrate(db); });
 
 describe('verifyCampusPass', () => {
   it('accepts a valid pass and returns sub, name and jti only', () => {
@@ -91,6 +97,43 @@ describe('verifyCampusPass', () => {
     expect(verifyCampusPass(t, opts({ nowMs: NOW + 1000 }))).toBeNull();
   });
 
+  it('a replay is refused by a fresh process on the same database (restart, second process)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'whispers-jti-'));
+    try {
+      const file = join(dir, 'w.db');
+      const first = new Database(file); migrate(first);
+      const t = signPass(claimsFor({}, NOW), keys.privateKeyB64);
+      expect(verifyCampusPass(t, opts({ db: first }))).not.toBeNull();
+      first.close();
+      // a freshly loaded verifier module: nothing carried over in memory
+      vi.resetModules();
+      const fresh = await import('../src/server/campus-pass.js');
+      const second = new Database(file); migrate(second);
+      expect(fresh.verifyCampusPass(t, opts({ db: second }))).toBeNull();
+      // control: the same fresh module accepts an unseen pass
+      expect(fresh.verifyCampusPass(signPass(claimsFor({}, NOW), keys.privateKeyB64), opts({ db: second }))).not.toBeNull();
+      // a different connection open at the same time sees it too
+      const third = new Database(file);
+      expect(verifyCampusPass(t, opts({ db: third }))).toBeNull();
+      second.close(); third.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('consumePassJti: true once per jti, and expired rows are pruned', () => {
+    const jti = 'a'.repeat(32);
+    expect(consumePassJti(db, jti, NOW + 1000, NOW)).toBe(true);
+    expect(consumePassJti(db, jti, NOW + 1000, NOW)).toBe(false);
+    expect(consumePassJti(db, 'b'.repeat(32), NOW + 5000, NOW + 2000)).toBe(true);
+    const rows = db.prepare('SELECT jti FROM campus_pass_jti').all() as Array<{ jti: string }>;
+    expect(rows.map(r => r.jti)).toEqual(['b'.repeat(32)]);
+  });
+
+  it('refuses a pass whose exp is not after iat', () => {
+    const iat = Math.floor(NOW / 1000);
+    expect(verifyCampusPass(signPass(claimsFor({ iat, exp: iat }, NOW), keys.privateKeyB64), opts())).toBeNull();
+    expect(verifyCampusPass(signPass(claimsFor({ iat: iat + 20, exp: iat + 10 }, NOW), keys.privateKeyB64), opts())).toBeNull();
+  });
+
   it('a refused pass does not burn its jti', () => {
     const c = claimsFor({}, NOW);
     expect(verifyCampusPass(signPass(c, keys.privateKeyB64), opts({ audience: 'other' }))).toBeNull();
@@ -111,10 +154,10 @@ describe('verifyCampusPass', () => {
     const prev = process.env.CAMPUS_PASS_PUBLIC_KEY;
     process.env.CAMPUS_PASS_PUBLIC_KEY = keys.publicKeyB64;
     try {
-      expect(verifyCampusPass(signPass(claimsFor({}, NOW), keys.privateKeyB64), { audience: 'whispers', nowMs: NOW })).not.toBeNull();
+      expect(verifyCampusPass(signPass(claimsFor({}, NOW), keys.privateKeyB64), { audience: 'whispers', nowMs: NOW, db })).not.toBeNull();
       delete process.env.CAMPUS_PASS_PUBLIC_KEY;
       // the pinned production key did not sign it
-      expect(verifyCampusPass(signPass(claimsFor({}, NOW), keys.privateKeyB64), { audience: 'whispers', nowMs: NOW })).toBeNull();
+      expect(verifyCampusPass(signPass(claimsFor({}, NOW), keys.privateKeyB64), { audience: 'whispers', nowMs: NOW, db })).toBeNull();
     } finally {
       if (prev === undefined) delete process.env.CAMPUS_PASS_PUBLIC_KEY; else process.env.CAMPUS_PASS_PUBLIC_KEY = prev;
     }

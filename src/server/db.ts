@@ -367,6 +367,8 @@ export function migrate(db: Database.Database): void {
       expires_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_campus_identities_expires ON campus_identities(expires_at);
+    -- Consumed campus pass jtis (replay guard), until each pass expires.
+    CREATE TABLE IF NOT EXISTS campus_pass_jti (jti TEXT PRIMARY KEY, exp_ms INTEGER NOT NULL);
   `);
 
   const charCols = db.pragma('table_info(characters)') as Array<{ name: string }>;

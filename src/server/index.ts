@@ -77,6 +77,14 @@ const app = express();
 // Web cabinets: first, so every response (API, static, 404) may be framed by campus.
 app.use(cabinetFraming);
 app.use(express.json());
+// A body express.json() cannot parse: a plain 400, never the parser's error
+// (its message quotes the body — for /api/campus-pass, a launch pass — and
+// Express's default handler would log it).
+app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if ((err as { type?: string } | null)?.type !== 'entity.parse.failed') { next(err); return; }
+  if (req.path === '/api/campus-pass') { res.status(400).json({ error: 'pass_refused' }); return; }
+  res.status(400).json({ error: 'Malformed JSON body' });
+});
 
 const uploadTokens = new Map<string, { campaignId: string; expires: number }>();
 
@@ -148,7 +156,7 @@ app.post('/api/campus-pass', (req, res) => {
   const ip = requestClientIp(req) ?? 'unknown';
   if (!campusPassLimiter(ip)) { res.status(429).json({ error: 'rate_limited' }); return; }
   const pass = (req.body as { pass?: unknown } | undefined)?.pass;
-  const who = typeof pass === 'string' ? verifyCampusPass(pass, { audience: 'whispers' }) : null;
+  const who = typeof pass === 'string' ? verifyCampusPass(pass, { audience: 'whispers', db: getDb() }) : null;
   if (!who) { res.status(400).json({ error: 'pass_refused' }); return; }
   const identity = createCampusIdentity(getDb(), { sub: who.sub, name: who.name });
   console.log(`[campus] pass ${who.jti} exchanged for a campus identity`);

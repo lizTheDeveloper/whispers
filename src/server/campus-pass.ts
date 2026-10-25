@@ -11,6 +11,7 @@
  * it — log its jti.
  */
 import { createPublicKey, verify } from 'node:crypto';
+import type Database from 'better-sqlite3';
 
 /** Campus's pass-signing public key (base64 SPKI DER, Ed25519). Public, not a secret. */
 export const CAMPUS_PASS_PUBLIC_KEY = 'MCowBQYDK2VwAyEAdlhCkIVpnYHxsbzstbzg2DLS7x9Br8dhqCIFtoZuBXU=';
@@ -24,14 +25,14 @@ const B64URL_RE = /^[A-Za-z0-9_-]+$/;
 
 export interface CampusPassIdentity { sub: string; name: string; jti: string }
 
-/** jti → exp (ms). A jti is remembered until its pass expires. */
-const seenJtis = new Map<string, number>();
-
-/** For tests. */
-export function resetSeenJtis(): void { seenJtis.clear(); }
-
-function pruneSeen(nowMs: number): void {
-  for (const [jti, expMs] of seenJtis) if (expMs <= nowMs) seenJtis.delete(jti);
+/**
+ * Spend a jti: true the first time it is seen, false for a replay. Kept in
+ * SQLite (`campus_pass_jti`, created in db.ts migrate) so a restart or a
+ * second process still refuses a replay; a row lives until its pass expires.
+ */
+export function consumePassJti(db: Database.Database, jti: string, expMs: number, nowMs = Date.now()): boolean {
+  db.prepare('DELETE FROM campus_pass_jti WHERE exp_ms <= ?').run(nowMs);
+  return db.prepare('INSERT OR IGNORE INTO campus_pass_jti (jti, exp_ms) VALUES (?, ?)').run(jti, expMs).changes === 1;
 }
 
 export function campusPassPublicKey(): string {
@@ -40,11 +41,11 @@ export function campusPassPublicKey(): string {
 
 /**
  * Every check of the cabinet contract; null on any failure. A pass that
- * passes is consumed: its jti is refused from then until it expires.
+ * passes is consumed in `db`: its jti is refused from then until it expires.
  */
 export function verifyCampusPass(
   token: string,
-  opts: { publicKeyB64?: string; audience: string; nowMs?: number },
+  opts: { publicKeyB64?: string; audience: string; nowMs?: number; db: Database.Database },
 ): CampusPassIdentity | null {
   if (typeof token !== 'string' || !token.startsWith(CAMPUS_PASS_PREFIX)) return null;
   const parts = token.slice(CAMPUS_PASS_PREFIX.length).split('.');
@@ -65,10 +66,9 @@ export function verifyCampusPass(
     if (!Number.isInteger(c.iat) || !Number.isInteger(c.exp)) return null;
     const iat = c.iat as number;
     const exp = c.exp as number;
-    if (exp - iat > CAMPUS_PASS_MAX_TTL_S || !(nowS < exp) || iat > nowS + IAT_SKEW_S) return null;
-    pruneSeen(nowMs);
-    if (seenJtis.has(c.jti)) return null;
-    seenJtis.set(c.jti, exp * 1000);
+    if (!(exp > iat) || exp - iat > CAMPUS_PASS_MAX_TTL_S || !(nowS < exp) || iat > nowS + IAT_SKEW_S) return null;
+    // Last: only a pass that passed every other check uses up its jti.
+    if (!consumePassJti(opts.db, c.jti, exp * 1000, nowMs)) return null;
     return { sub: c.sub, name: c.name, jti: c.jti };
   } catch {
     return null;
