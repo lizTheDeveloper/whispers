@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { enqueueEvidence, holdSuppressed, ensureOutboxTables, type EvidenceBody, type EvidenceIdentifier } from './outbox.js';
+import { enqueueEvidence, countSuppressed, ensureOutboxTables, type EvidenceBody, type EvidenceIdentifier, type KeyIdentity } from './outbox.js';
 import { contentSha256, setSexualFloorHandler, type SexualFloorFlag } from './sink.js';
 
 /**
@@ -113,6 +113,11 @@ export interface BuildInput {
   model?: string;
 }
 
+/** A label for the reason text: no newlines or markup, short. */
+function safeLabel(s: string): string {
+  return s.replace(/[^\p{L} ()'’-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
 export function buildEvidence(db: Database.Database, input: BuildInput): EvidenceBody {
   const now = input.now ?? Date.now();
   const s = input.scope;
@@ -143,10 +148,6 @@ export function buildEvidence(db: Database.Database, input: BuildInput): Evidenc
     attribution = seats.length === 0 ? 'unknown: no seats on record' : `unknown: ${seats.length} human seats, AI-written text not tied to one of them — every seat is listed as a participant`;
   }
 
-  const seatName = (token: string) => {
-    const row = seats.find(r => r.token === token);
-    return row ? `${row.is_host ? 'host' : 'player'} "${row.player_name}"` : 'a seat no longer on record';
-  };
   const identifiers: EvidenceIdentifier[] = [];
   const role = (token: string): { role?: 'participant' } => (sender !== null && token === sender ? {} : { role: 'participant' });
   const tokens = new Set<string>([...seats.map(r => r.token), ...ips.map(r => r.session_token), ...(sender ? [sender] : [])]);
@@ -172,13 +173,13 @@ export function buildEvidence(db: Database.Database, input: BuildInput): Evidenc
   const context: ContextTurn[] = (() => {
     try { return (s?.context?.() ?? []).slice(-20); } catch { return []; }
   })();
-  const ipHistory = ips.map(r => `${r.ip} (${seatName(r.session_token)}${sender && r.session_token === sender ? ', FLAGGED SENDER' : ''}; ${r.event}; first ${new Date(r.first_at).toISOString()}, last ${new Date(r.last_at).toISOString()}; UA ${r.user_agent || 'none'})`);
-
+  // The reason is written from server-side facts only. Player-chosen text
+  // (names, labels) is sanitised, and no identity is ever put in it:
+  // attribution lives only in ipAddress, userAgent and identifiers.
   const reason = [
-    `Whispers safety floor: sexual content involving a minor or child character (${input.flag.items.length} flagged ${input.flag.items.length === 1 ? 'sentence or phrase' : 'sentences or phrases'}), detected by the ${input.flag.detector === 'judge' ? 'LLM floor judge' : 'deterministic floor backstop'} in ${input.flag.label}${s?.where ? ` (${s.where})` : ''}.`,
-    `Written by ${input.flag.origin === 'human' ? 'a human player (their own words)' : 'an AI agent (the game\'s LLM), steered by the players'}; the game removed it before anyone saw it${input.flag.origin === 'human' ? ' as story text' : ''}.`,
-    `Flagged sender: ${sender ? seatName(sender) : 'none'} — ${attribution}.`,
-    ipHistory.length ? `IP log for this game: ${ipHistory.join('; ')}.` : 'No IPs on record for this game.',
+    `Whispers safety floor: sexual content involving a minor or child character (${input.flag.items.length} flagged ${input.flag.items.length === 1 ? 'sentence or phrase' : 'sentences or phrases'}), detected by the ${input.flag.detector === 'judge' ? 'LLM floor judge' : 'deterministic floor backstop'} in ${safeLabel(input.flag.label)}${s?.where ? ` (${safeLabel(s.where)})` : ''}.`,
+    `Written by ${input.flag.origin === 'human' ? "a human player (the player's own words)" : "an AI agent (the game's LLM), steered by the players"}; the game removed it before anyone saw it${input.flag.origin === 'human' ? ' as story text' : ''}.`,
+    `Flagged sender: ${sender ? (seats.find(r => r.token === sender)?.is_host ? 'the host seat' : 'a player seat') : 'none'} — ${attribution}. Every seat and IP is in the identifiers.`,
   ].join(' ');
 
   const flagged = input.flag.items.join('\n');
@@ -194,6 +195,8 @@ export function buildEvidence(db: Database.Database, input: BuildInput): Evidenc
     model: input.model ?? (input.flag.detector === 'judge' ? 'whispers-floor-judge' : 'whispers-floor-backstop'),
     reason,
     gameRef: campaignId ? `whispers:${campaignId}` : null,
+    groupRef: campaignId ? `whispers:${campaignId}` : null,
+    recordKind: 'flag',
     ipAddress,
     userAgent,
     identifiers,
@@ -205,19 +208,21 @@ export function buildEvidence(db: Database.Database, input: BuildInput): Evidenc
 
 // ─── Rate limit ─────────────────────────────────────────────────────────────
 //
-// At most RATE_MAX cases per seat and per IP in each RATE_WINDOW_MS window.
-// Past that nothing is dropped silently: one held "N more suppressed" case
-// per seat (or IP) and window carries the count and the latest flagged text,
-// and is delivered when the window closes.
+// Separate counters per seat and per IP for each window. While a flag's seat
+// and IP are both under RATE_MAX cases this window it is filed as its own
+// case. When EITHER key is at its cap, no case: the flag is counted on each
+// key that is over (countSuppressed — count, first/last, hashes) and filed,
+// when the window closes, as one structured suppressed_burst record under
+// that exact key's own identity.
 
 export const RATE_WINDOW_MS = 10 * 60 * 1000;
-export const RATE_MAX = 5;
-const windows = new Map<string, { start: number; count: number; suppressed: number }>();
+export const RATE_MAX = 50;
+const windows = new Map<string, { start: number; count: number }>();
 
 function windowFor(key: string, now: number) {
   const start = now - (now % RATE_WINDOW_MS);
   let w = windows.get(key);
-  if (!w || w.start !== start) { w = { start, count: 0, suppressed: 0 }; windows.set(key, w); }
+  if (!w || w.start !== start) { w = { start, count: 0 }; windows.set(key, w); }
   if (windows.size > 10_000) for (const [k, v] of windows) if (v.start < start) windows.delete(k);
   return w;
 }
@@ -231,13 +236,21 @@ function rememberRef(ref: string): void {
 /** For tests. */
 export function resetRateLimit(): void { windows.clear(); filedRefs.clear(); }
 
-function rateKeys(body: EvidenceBody, s: SafetyScope | undefined): string[] {
-  const keys: string[] = [];
+/** The rate keys of a flag, each with its own identity (never another flag's). */
+function rateKeys(db: Database.Database, body: EvidenceBody, campaignId: string | null): Array<{ key: string; identity: KeyIdentity }> {
+  const keys: Array<{ key: string; identity: KeyIdentity }> = [];
   const seat = body.identifiers.find(i => i.kind === 'whispers_seat' && !i.role);
-  if (seat) keys.push(`seat:${seat.value}`);
-  const ip = body.ipAddress ?? s?.requestIp ?? null;
-  if (ip) keys.push(`ip:${ip}`);
-  if (keys.length === 0) keys.push(`game:${body.gameRef ?? 'none'}`);
+  if (seat) {
+    const name = body.identifiers.find(i => i.kind === 'whispers_player_name' && !i.role);
+    keys.push({ key: `seat:${seat.value}`, identity: { key: { kind: 'whispers_seat', value: seat.value }, gameRef: body.gameRef, groupRef: body.groupRef ?? null, ipAddress: null, identifiers: [{ kind: 'whispers_seat', value: seat.value, verified: true }, ...(name ? [{ kind: name.kind, value: name.value, verified: false }] : [])] } });
+  }
+  if (body.ipAddress) {
+    keys.push({ key: `ip:${body.ipAddress}`, identity: { key: { kind: 'ip', value: body.ipAddress }, gameRef: null, groupRef: `whispers:ip:${body.ipAddress}`, ipAddress: body.ipAddress, identifiers: [{ kind: 'ip', value: body.ipAddress, verified: true }] } });
+  }
+  if (keys.length === 0) {
+    const g = campaignId ? `whispers:${campaignId}` : 'none';
+    keys.push({ key: `game:${g}`, identity: { key: { kind: 'whispers_game', value: g }, gameRef: body.gameRef, groupRef: body.groupRef ?? null, ipAddress: null, identifiers: body.identifiers.map(i => ({ ...i, role: 'participant' as const })) } });
+  }
   return keys;
 }
 
@@ -251,22 +264,19 @@ export function fileFlag(db: Database.Database, flag: SexualFloorFlag, opts: { i
     // case: it neither files twice nor counts against the rate limit.
     if (filedRefs.has(body.externalRef)) return body;
     rememberRef(body.externalRef);
-    const keys = rateKeys(body, s);
-    const ws = keys.map(k => windowFor(k, now));
-    const over = ws.findIndex(w => w.count >= RATE_MAX);
-    if (over >= 0 && !opts.isTest) {
-      const w = ws[over]!;
-      w.suppressed++;
-      // One summary per sender — seat AND IP — so a different seat behind the
-      // same IP is never filed under someone else's identity.
-      const summaryRef = contentSha256(`suppressed\n${keys.join('|')}\n${w.start}`).slice(0, 40);
-      const r = holdSuppressed(db, { summaryRef, flag: body, deliverAt: w.start + RATE_WINDOW_MS, now });
-      console.warn(`[child-safety] safety-floor flag (${flag.detector}, ${flag.label}) over the rate limit for ${keys[over]!.split(':')[0]}: held (${r === 'full' ? 'in full' : r === 'hash' ? 'as hash + time' : 'counted only'}) under summary ${summaryRef.slice(0, 16)}, delivered when the window closes`);
-      return body;
+    if (!opts.isTest) {
+      const keys = rateKeys(db, body, s?.campaignId() ?? null).map(k => ({ ...k, w: windowFor(k.key, now) }));
+      const over = keys.filter(k => k.w.count >= RATE_MAX);
+      if (over.length > 0) {
+        const sha = contentSha256(body.content ?? '');
+        for (const k of over) countSuppressed(db, { rateKey: k.key, windowStart: k.w.start, windowEnd: k.w.start + RATE_WINDOW_MS, identity: k.identity, contentSha256: sha, at: now });
+        console.warn(`[child-safety] safety-floor flag (${flag.detector}) over the case cap for ${over.map(k => k.key.split(':')[0]).join(' and ')}: counted for a suppressed-burst record, no separate case`);
+        return body;
+      }
+      for (const k of keys) k.w.count++;
     }
-    for (const w of ws) w.count++;
     const queued = enqueueEvidence(db, body, undefined, now);
-    console.warn(`[child-safety] safety-floor flag (${flag.detector}, ${flag.label}) ${queued ? 'queued for the evidence vault' : 'already queued'}: evidence ${body.externalRef.slice(0, 16)}`);
+    console.warn(`[child-safety] safety-floor flag (${flag.detector}) ${queued ? 'queued for the evidence vault' : 'already queued'}: evidence ${body.externalRef.slice(0, 16)}`);
     return body;
   } catch (e) {
     console.error('[child-safety] could not queue a safety-floor flag:', e instanceof Error ? e.message : e);

@@ -203,38 +203,6 @@ describe('the outbox', () => {
     expect(r.pending).toBe(0);
   });
 
-  it('a case over RI\'s content limit goes as linked parts, nothing cut', async () => {
-    const big = `${'A'.repeat(100_000)}${'B'.repeat(100_000)}`;
-    enqueueEvidence(db, body({ content: big, externalRef: 'big' }), 'tok', 0);
-    const sent: any[] = [];
-    const ok = (async (_u: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
-    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: ok, timeoutMs: 1000 }, 1);
-    expect(sent.length).toBe(3);
-    expect(sent.every(b => b.content.length <= 90_000)).toBe(true);
-    expect(sent.map(b => b.externalRef)).toEqual(['big:p1', 'big:p2', 'big:p3']);
-    expect(sent.map(b => b.content.replace(/^\[part \d(, the last)?\] /, '')).join('')).toBe(big);
-  });
-
-  it('a retry after a partial delivery resends only the missing parts', async () => {
-    const big = 'C'.repeat(300_000); // 4 parts
-    enqueueEvidence(db, body({ content: big, externalRef: 'big2' }), 'tok', 0);
-    const sent: string[] = [];
-    let failAt = 3;
-    const flaky = (async (_u: string, init: RequestInit) => {
-      const b = JSON.parse(init.body as string);
-      if (sent.length + 1 === failAt) { failAt = -1; return new Response('down', { status: 503 }); }
-      sent.push(b.externalRef);
-      return new Response('{}', { status: 201 });
-    }) as unknown as typeof fetch;
-    let r = await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: flaky, timeoutMs: 1000 }, 1);
-    expect(r.failed).toBe(1);
-    expect(sent).toEqual(['big2:p1', 'big2:p2']);
-    expect((db.prepare("SELECT parts_done FROM child_safety_outbox WHERE external_ref = 'big2'").get() as { parts_done: number }).parts_done).toBe(2);
-    r = await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: flaky, timeoutMs: 1000 }, 10 * 60 * 60 * 1000);
-    expect(sent).toEqual(['big2:p1', 'big2:p2', 'big2:p3', 'big2:p4']);
-    expect(r.delivered).toBe(1);
-  });
-
   it('backoff is capped at six hours', () => {
     expect(backoffMs(1)).toBe(30_000);
     expect(backoffMs(40)).toBe(6 * 60 * 60 * 1000);
@@ -269,7 +237,7 @@ describe('who the case names', () => {
     expect(b.identifiers).toContainEqual({ kind: 'whispers_player_name', value: 'Ann', verified: false, role: 'participant' });
     // The raw session token never leaves the server.
     expect(JSON.stringify(b)).not.toContain('p2-tok');
-    expect(b.reason).toContain('player "Bo"');
+    expect(b.reason).toContain('Flagged sender: a player seat');
   });
 
   it('a character\'s turn: the seat that plays the character, at its latest IP', () => {
@@ -314,69 +282,92 @@ describe('who the case names', () => {
     expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(1);
   });
 
-  it('rate limit: 60 rapid flags past the limit keep all evidence — 50 in full, 10 as hash + time — sent together', async () => {
-    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
-    const t0 = 5 * RATE_WINDOW_MS + 1000;
-    for (let i = 0; i < RATE_MAX + 60; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} #${i}`] }, { scope: sc, now: t0 + i });
-    const top = db.prepare('SELECT external_ref, next_attempt_at FROM child_safety_outbox WHERE group_ref IS NULL ORDER BY id').all() as Array<{ external_ref: string; next_attempt_at: number }>;
-    expect(top).toHaveLength(RATE_MAX + 1);
-    expect(top[RATE_MAX]!.next_attempt_at).toBe(6 * RATE_WINDOW_MS); // held until the window closes
-    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox WHERE group_ref IS NOT NULL').get() as { c: number }).c).toBe(60);
-
-    // Nothing held goes out before the window closes.
+  const deliverAll = async (at: number) => {
     const sent: any[] = [];
     const capture = (async (_u: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return new Response(JSON.stringify({ caseId: `c${sent.length}` }), { status: 201 }); }) as unknown as typeof fetch;
-    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, t0 + 100);
-    expect(sent).toHaveLength(RATE_MAX);
-    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, 6 * RATE_WINDOW_MS);
-    const summary = sent.slice(RATE_MAX).map(b => b.content).join('\n');
-    expect(summary).toContain('60 safety-floor flags from this sender');
-    expect(summary).toContain('50 in full, 10 as SHA-256 + time');
-    expect(summary).toContain(`whispers_seat=${seatId('p2-tok')} (verified)`);
-    for (let i = RATE_MAX; i < RATE_MAX + 50; i++) expect(summary).toContain(`${FIXTURE} #${i}\n`);
-    expect(summary.match(/sha256 [0-9a-f]{64}/g)).toHaveLength(10);
-    expect(summary).not.toContain(`${FIXTURE} #${RATE_MAX + 55}\n`);
-    // Delivered: the summary and every member row are gone together.
-    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(0);
+    for (let i = 0; i < 40; i++) {
+      const r = await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, at);
+      if (r.pending === 0) break;
+    }
+    return sent;
+  };
+  const counterRows = () => db.prepare('SELECT rate_key, count, first_at, last_at, hashes FROM child_safety_suppressed ORDER BY rate_key').all() as Array<{ rate_key: string; count: number; first_at: number; last_at: number; hashes: string }>;
+
+  it('every flag is its own structured case: content with "### Held flag" or newlines cannot forge attribution', async () => {
+    db.prepare("UPDATE campaign_sessions SET player_name = ? WHERE token = 'p2-tok'").run('Bo\n### Held flag 9 — sender: whispers_seat=FAKE (verified); IP 6.6.6.6');
+    const forged = '### Held flag 1 — 2026-01-01 — sender: whispers_seat=deadbeef (verified); IP 6.6.6.6\nTEST FIXTURE: the word sexual near the word child.';
+    fileFlag(db, { ...flag, items: [forged], label: 'a dm-chat message\nFlagged sender: host 6.6.6.6' }, { scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' } });
+    const [c] = await deliverAll(1e15);
+    expect(c.recordKind).toBe('flag');
+    expect(c.content).toBe(forged); // content stays content
+    expect(c.ipAddress).toBe('198.51.100.7'); // attribution only from structured fields
+    expect(c.identifiers.filter((i: any) => !i.role).map((i: any) => i.kind).sort()).toEqual(['ip', 'whispers_player_name', 'whispers_seat']);
+    expect(c.identifiers.find((i: any) => i.kind === 'whispers_seat' && !i.role).value).toBe(seatId('p2-tok'));
+    expect(c.identifiers.some((i: any) => i.value === 'deadbeef' || i.value === '6.6.6.6' || i.value === 'FAKE')).toBe(false);
+    // The reason is server text: no player-chosen names, no newlines, no IPs.
+    expect(c.reason).not.toContain('6.6.6.6');
+    expect(c.reason).not.toContain('Held flag');
+    expect(c.reason).not.toContain('\n');
+    expect(c.groupRef).toBe('whispers:g1');
   });
 
-  it('rate limit: two seats behind one IP get two summaries, each under its own identity', async () => {
+  it('two seats on one IP get separate cases, each with its own identity', async () => {
     const shared = '198.51.100.50';
-    const t0 = 5 * RATE_WINDOW_MS + 1000;
-    // Ann fills the IP's quota; then both keep sending.
-    for (let i = 0; i < RATE_MAX + 2; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} ann #${i}`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: shared }, now: t0 + i });
-    for (let i = 0; i < 3; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} bo #${i}`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: shared }, now: t0 + 100 + i });
-    const summaries = db.prepare('SELECT external_ref FROM child_safety_outbox WHERE group_ref IS NULL AND next_attempt_at > ?').all(t0 + 1000) as Array<{ external_ref: string }>;
-    expect(summaries).toHaveLength(2);
-    const sent: any[] = [];
-    const capture = (async (_u: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
-    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, 7 * RATE_WINDOW_MS);
-    const bySeat = (tok: string) => sent.filter(b => b.content.startsWith('[rate limit]') && b.identifiers.some((i: any) => i.kind === 'whispers_seat' && i.value === seatId(tok) && !i.role));
-    expect(bySeat('host-tok')).toHaveLength(1);
-    expect(bySeat('p2-tok')).toHaveLength(1);
-    expect(bySeat('p2-tok')[0].content).toContain('bo #0');
-    expect(bySeat('p2-tok')[0].content).not.toContain('ann #');
-    expect(bySeat('host-tok')[0].content).not.toContain('bo #');
-    expect(bySeat('p2-tok')[0].content).toContain(`whispers_seat=${seatId('p2-tok')} (verified)`);
+    fileFlag(db, { ...flag, items: [`${FIXTURE} ann`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: shared } });
+    fileFlag(db, { ...flag, items: [`${FIXTURE} bo`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: shared } });
+    const sent = await deliverAll(1e15);
+    expect(sent).toHaveLength(2);
+    const sender = (b: any) => b.identifiers.find((i: any) => i.kind === 'whispers_seat' && !i.role).value;
+    expect(sender(sent.find(b => b.content.endsWith('ann')))).toBe(seatId('host-tok'));
+    expect(sender(sent.find(b => b.content.endsWith('bo')))).toBe(seatId('p2-tok'));
   });
 
-  it('rate limit: a 1,000-flag burst stays within the row caps, and the counter is right', () => {
+  it('a burst over the cap creates no extra cases: a counter per key, with hashes, filed under that key\'s own identity', async () => {
+    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
+    const t0 = 5 * RATE_WINDOW_MS + 1000;
+    for (let i = 0; i < RATE_MAX + 30; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} #${i}`] }, { scope: sc, now: t0 + i });
+    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(RATE_MAX);
+    const counters = counterRows();
+    expect(counters.map(r => [r.rate_key.split(':')[0], r.count])).toEqual([['ip', 30], ['seat', 30]]);
+    expect(JSON.parse(counters[0]!.hashes)).toHaveLength(30);
+    expect(JSON.parse(counters[0]!.hashes)[0]).toMatch(/^[0-9a-f]{64}$/);
+    // Before the window closes only the cases go out; after, one burst record per key.
+    expect(await deliverAll(t0 + 100)).toHaveLength(RATE_MAX);
+    const bursts = await deliverAll(6 * RATE_WINDOW_MS);
+    expect(bursts).toHaveLength(2);
+    expect(bursts.every(b => b.recordKind === 'suppressed_burst' && b.content === undefined && b.suppressedBurst.count === 30)).toBe(true);
+    const seatBurst = bursts.find(b => b.suppressedBurst.key.kind === 'whispers_seat');
+    const ipBurst = bursts.find(b => b.suppressedBurst.key.kind === 'ip');
+    expect(seatBurst.suppressedBurst.key.value).toBe(seatId('p2-tok'));
+    expect(seatBurst.identifiers).toEqual([{ kind: 'whispers_seat', value: seatId('p2-tok'), verified: true }, { kind: 'whispers_player_name', value: 'Bo', verified: false }]);
+    expect(seatBurst.ipAddress).toBeNull();
+    expect(ipBurst.ipAddress).toBe('198.51.100.7');
+    expect(ipBurst.identifiers).toEqual([{ kind: 'ip', value: '198.51.100.7', verified: true }]);
+    expect(counterRows()).toHaveLength(0);
+  });
+
+  it('a seat under its cap behind an IP that is over is counted on the IP key only — never under the other seat', async () => {
+    const shared = '198.51.100.51';
+    const t0 = 5 * RATE_WINDOW_MS + 1000;
+    for (let i = 0; i < RATE_MAX; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} ann #${i}`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: shared }, now: t0 + i });
+    fileFlag(db, { ...flag, items: [`${FIXTURE} bo`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: shared }, now: t0 + 500 });
+    expect(counterRows().map(r => [r.rate_key, r.count])).toEqual([[`ip:${shared}`, 1]]);
+    const bursts = (await deliverAll(6 * RATE_WINDOW_MS)).filter(b => b.recordKind === 'suppressed_burst');
+    expect(bursts).toHaveLength(1);
+    expect(bursts[0].identifiers).toEqual([{ kind: 'ip', value: shared, verified: true }]);
+  });
+
+  it('a 1,000-flag burst: the counter is right and keeps at most 200 hashes', () => {
     const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
     const t0 = 5 * RATE_WINDOW_MS + 1000;
     for (let i = 0; i < 1000; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} burst #${i}`] }, { scope: sc, now: t0 + i });
-    const rows = (db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c;
-    expect(rows).toBe(RATE_MAX + 1 + 50 + 200);
-    const summary = db.prepare('SELECT suppressed_count, first_suppressed_at, last_suppressed_at FROM child_safety_outbox WHERE group_ref IS NULL AND next_attempt_at > ?').get(t0 + 1000) as { suppressed_count: number; first_suppressed_at: number; last_suppressed_at: number };
-    expect(summary.suppressed_count).toBe(1000 - RATE_MAX - 250);
-    expect(summary.first_suppressed_at).toBe(t0 + RATE_MAX + 250);
-    expect(summary.last_suppressed_at).toBe(t0 + 999);
-  });
-
-  it('rate limit: another seat on another IP is not limited by this one', () => {
-    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
-    for (let i = 0; i < RATE_MAX + 2; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} #${i}`] }, { scope: sc, now: 1000 + i });
-    fileFlag(db, { ...flag, items: [`${FIXTURE} other`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: '198.51.100.8' }, now: 1100 });
-    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox WHERE group_ref IS NULL AND next_attempt_at <= 1100').get() as { c: number }).c).toBe(RATE_MAX + 1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(RATE_MAX);
+    for (const r of counterRows()) {
+      expect(r.count).toBe(1000 - RATE_MAX);
+      expect(JSON.parse(r.hashes)).toHaveLength(200);
+      expect(r.first_at).toBe(t0 + RATE_MAX);
+      expect(r.last_at).toBe(t0 + 999);
+    }
   });
 
   it('the IP log keeps one row per seat, IP and user agent, and purges after 90 days', () => {
