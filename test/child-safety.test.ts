@@ -254,6 +254,15 @@ describe('the outbox', () => {
     }
   });
 
+  it('concurrent delivery passes never post the same record twice', async () => {
+    enqueueEvidence(db, body({ externalRef: 'once' }), 'tok', 0);
+    let posts = 0;
+    const slow = (async () => { posts++; await new Promise(r => setTimeout(r, 20)); return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
+    const cfg = { url: 'u', token: 'tok', fetchImpl: slow, timeoutMs: 1000 };
+    await Promise.all([deliverDue(db, cfg, 1), deliverDue(db, cfg, 1), deliverDue(db, cfg, 1)]);
+    expect(posts).toBe(1);
+  });
+
   it('backoff is capped at six hours', () => {
     expect(backoffMs(1)).toBe(30_000);
     expect(backoffMs(40)).toBe(6 * 60 * 60 * 1000);
