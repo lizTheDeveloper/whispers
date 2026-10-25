@@ -1,5 +1,12 @@
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 
+/** Web cabinets: the campus identity rides on create, join and rejoin (only). */
+export function withCampusIdentity(msg: ClientMessage, identity: string | null): ClientMessage {
+  if (!identity) return msg;
+  if (msg.type === 'create' || msg.type === 'join' || msg.type === 'rejoin') return { ...msg, campusIdentity: identity };
+  return msg;
+}
+
 type MessageHandler = (msg: ServerMessage) => void;
 type StatusHandler = (connected: boolean) => void;
 
@@ -13,9 +20,15 @@ export class WsClient {
   private maxReconnectDelay = 10000;
   private intentionallyClosed = false;
   private rejoinInfo: { joinCode: string; sessionToken: string } | null = null;
+  private campusIdentity: () => string | null = () => null;
 
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /** Web cabinets: where to read the current campus identity token from. */
+  setCampusIdentitySource(source: () => string | null): void {
+    this.campusIdentity = source;
   }
 
   /** Remember who we are so an auto-reconnect lands back in the same seat. */
@@ -62,7 +75,7 @@ export class WsClient {
       console.warn('[ws] send() called while disconnected, message dropped:', msg.type);
       return;
     }
-    this.ws.send(JSON.stringify(msg));
+    this.ws.send(JSON.stringify(withCampusIdentity(msg, this.campusIdentity())));
   }
 
   on(type: string, handler: MessageHandler): void {

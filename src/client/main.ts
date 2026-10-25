@@ -7,10 +7,21 @@ import { renderWaitingRoom } from './waiting-room.js';
 import { getStoredSession, saveSession, removeSession, parseRoute, setRoute } from './session-store.js';
 import { renderKey, screenFor } from './render-key.js';
 import { trackContentRating } from './content-rating.js';
+import { CampusCabinet, setActiveCabinet } from './campus-cabinet.js';
 import type { GamePhase, TableRole } from '../shared/types.js';
 
 const root = document.getElementById('app')!;
 const ws = new WsClient();
+// Web cabinets: inert unless framed with ?cabinet=campus.
+const cabinet = new CampusCabinet();
+setActiveCabinet(cabinet);
+if (cabinet.active) {
+  ws.setCampusIdentitySource(() => cabinet.identity);
+  ws.on('campus-identity', (msg) => {
+    if (msg.type === 'campus-identity' && msg.status === 'unknown') cabinet.identityUnknown();
+  });
+  cabinet.start();
+}
 // Round 20: the table's rating, remembered for whichever view mounts next.
 trackContentRating(ws);
 
