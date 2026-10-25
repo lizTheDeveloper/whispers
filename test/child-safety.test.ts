@@ -300,6 +300,31 @@ describe('who the case names', () => {
     expect(b.reason).toContain('Flagged sender: a player seat');
   });
 
+  it('a seat signed in through a campus cabinet: its verified campus Matrix ID, with the seat\'s role', () => {
+    db.prepare("UPDATE campaign_sessions SET campus_sub = '@test-bo:themultiverse.school' WHERE token = 'p2-tok'").run();
+    db.prepare("UPDATE campaign_sessions SET campus_sub = '@test-ann:themultiverse.school' WHERE token = 'host-tok'").run();
+    const b = buildEvidence(db, { flag, scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok' } });
+    expect(b.identifiers).toContainEqual({ kind: 'matrix', value: '@test-bo:themultiverse.school', verified: true });
+    expect(b.identifiers).toContainEqual({ kind: 'matrix', value: '@test-ann:themultiverse.school', verified: true, role: 'participant' });
+    // an anonymous seat gets none
+    db.prepare("UPDATE campaign_sessions SET campus_sub = NULL").run();
+    expect(buildEvidence(db, { flag, scope: { campaignId: () => 'g1', seatToken: () => 'p2-tok' } }).identifiers.some(i => i.kind === 'matrix')).toBe(false);
+  });
+
+  it('a campus seat over its case cap: the suppressed-burst identity carries its Matrix ID', async () => {
+    db.prepare("UPDATE campaign_sessions SET campus_sub = '@test-bo:themultiverse.school' WHERE token = 'p2-tok'").run();
+    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok' };
+    const t0 = 5 * RATE_WINDOW_MS + 1000;
+    for (let i = 0; i <= RATE_MAX; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} campus #${i}`] }, { scope: sc, now: t0 + i });
+    const bursts = (await deliverAll(6 * RATE_WINDOW_MS)).filter(b => b.recordKind === 'suppressed_burst');
+    const seatBurst = bursts.find(b => b.suppressedBurst.key.kind === 'whispers_seat');
+    expect(seatBurst.identifiers).toEqual([
+      { kind: 'whispers_seat', value: seatId('p2-tok'), verified: true },
+      { kind: 'whispers_player_name', value: 'Bo', verified: false },
+      { kind: 'matrix', value: '@test-bo:themultiverse.school', verified: true },
+    ]);
+  });
+
   it('a character\'s turn: the seat that plays the character, at its latest IP', () => {
     const b = buildEvidence(db, { flag, scope: { campaignId: () => 'g1', characterId: 'char-bo' } });
     expect(b.ipAddress).toBe('203.0.113.2');

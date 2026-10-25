@@ -1,5 +1,16 @@
 import type { WsClient } from './ws-client.js';
 import { loadSessions, removeSession, type StoredSession } from './session-store.js';
+import { getActiveCabinet, type CampusCabinet } from './campus-cabinet.js';
+
+// Web cabinets: the join form's name field starts as the campus screen name
+// (whenever it arrives), until the player types their own.
+let lobbyRoot: HTMLElement | null = null;
+const hookedCabinets = new WeakSet<CampusCabinet>();
+function prefillCampusName(name: string | null): void {
+  const input = lobbyRoot?.querySelector('#player-name') as HTMLInputElement | null;
+  if (!input || !name || input.dataset.edited === '1') return;
+  input.value = name;
+}
 
 function relativeTime(ts: number): string {
   const mins = Math.max(1, Math.round((Date.now() - ts) / 60000));
@@ -105,7 +116,7 @@ export function renderLobby(root: HTMLElement, ws: WsClient, prefillJoinCode?: s
         </div>
       </div>
 
-      <p class="support-links">
+      <p class="support-links" data-real-money>
         <a href="https://buy.stripe.com/3cI14m0sy3rZf418Cd6c00s" target="_blank" rel="noopener" data-umami-event="support-click">Support $20+</a>
         <span class="support-sep">·</span>
         <a href="https://www.patreon.com/lizthedeveloper" target="_blank" rel="noopener" class="support-secondary">or any amount on Patreon</a>
@@ -114,6 +125,20 @@ export function renderLobby(root: HTMLElement, ws: WsClient, prefillJoinCode?: s
   `;
 
   renderYourGames(root.querySelector('#your-games') as HTMLElement);
+
+  const cabinet = getActiveCabinet();
+  if (cabinet?.active) {
+    // No real-money asks inside a campus cabinet.
+    root.querySelectorAll('[data-real-money]').forEach(el => el.remove());
+    lobbyRoot = root;
+    const nameInput = root.querySelector('#player-name') as HTMLInputElement;
+    nameInput.addEventListener('input', () => { nameInput.dataset.edited = '1'; });
+    prefillCampusName(cabinet.name);
+    if (!hookedCabinets.has(cabinet)) {
+      hookedCabinets.add(cabinet);
+      cabinet.onSignedIn(s => prefillCampusName(s.name));
+    }
+  }
 
   const createBtn = root.querySelector('#create-btn') as HTMLButtonElement;
   createBtn.addEventListener('click', () => {

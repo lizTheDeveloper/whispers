@@ -102,7 +102,7 @@ export function seatId(token: string): string {
   return createHash('sha256').update(`whispers-seat:${token}`).digest('hex').slice(0, 24);
 }
 
-interface SeatRow { token: string; player_name: string; is_host: number; character_id: string | null }
+interface SeatRow { token: string; player_name: string; is_host: number; character_id: string | null; campus_sub: string | null }
 interface IpRow { session_token: string; ip: string; user_agent: string; event: string; first_at: number; last_at: number }
 
 export interface BuildInput {
@@ -123,7 +123,7 @@ export function buildEvidence(db: Database.Database, input: BuildInput): Evidenc
   const s = input.scope;
   const campaignId = s?.campaignId() ?? null;
   const seats: SeatRow[] = campaignId
-    ? db.prepare('SELECT token, player_name, is_host, character_id FROM campaign_sessions WHERE campaign_id = ?').all(campaignId) as SeatRow[]
+    ? db.prepare('SELECT token, player_name, is_host, character_id, campus_sub FROM campaign_sessions WHERE campaign_id = ?').all(campaignId) as SeatRow[]
     : [];
   const ips: IpRow[] = campaignId
     ? db.prepare('SELECT session_token, ip, user_agent, event, first_at, last_at FROM child_safety_ip_log WHERE campaign_id = ? ORDER BY last_at').all(campaignId) as IpRow[]
@@ -155,6 +155,8 @@ export function buildEvidence(db: Database.Database, input: BuildInput): Evidenc
     identifiers.push({ kind: 'whispers_seat', value: seatId(token), verified: true, ...role(token) });
     const row = seats.find(r => r.token === token);
     if (row?.player_name) identifiers.push({ kind: 'whispers_player_name', value: row.player_name, verified: false, ...role(token) });
+    // Web cabinets: a campus Matrix ID this server verified from a signed campus pass.
+    if (row?.campus_sub) identifiers.push({ kind: 'matrix', value: row.campus_sub, verified: true, ...role(token) });
   }
   for (const r of ips) identifiers.push({ kind: 'ip', value: r.ip, verified: true, ...role(r.session_token) });
 
@@ -242,7 +244,8 @@ function rateKeys(db: Database.Database, body: EvidenceBody, campaignId: string 
   const seat = body.identifiers.find(i => i.kind === 'whispers_seat' && !i.role);
   if (seat) {
     const name = body.identifiers.find(i => i.kind === 'whispers_player_name' && !i.role);
-    keys.push({ key: `seat:${seat.value}`, identity: { key: { kind: 'whispers_seat', value: seat.value }, gameRef: body.gameRef, groupRef: body.groupRef ?? null, ipAddress: null, identifiers: [{ kind: 'whispers_seat', value: seat.value, verified: true }, ...(name ? [{ kind: name.kind, value: name.value, verified: false }] : [])] } });
+    const matrix = body.identifiers.find(i => i.kind === 'matrix' && !i.role);
+    keys.push({ key: `seat:${seat.value}`, identity: { key: { kind: 'whispers_seat', value: seat.value }, gameRef: body.gameRef, groupRef: body.groupRef ?? null, ipAddress: null, identifiers: [{ kind: 'whispers_seat', value: seat.value, verified: true }, ...(name ? [{ kind: name.kind, value: name.value, verified: false }] : []), ...(matrix ? [{ kind: 'matrix', value: matrix.value, verified: true }] : [])] } });
   }
   if (body.ipAddress) {
     keys.push({ key: `ip:${body.ipAddress}`, identity: { key: { kind: 'ip', value: body.ipAddress }, gameRef: null, groupRef: `whispers:ip:${body.ipAddress}`, ipAddress: body.ipAddress, identifiers: [{ kind: 'ip', value: body.ipAddress, verified: true }] } });

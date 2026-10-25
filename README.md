@@ -59,6 +59,28 @@ src/shared/   Types and the client/server protocol
 data/         Bundled system chunks (FATE Core) and stock scenarios
 ```
 
+## Campus cabinet
+
+Students on [campus.themultiverse.school](https://campus.themultiverse.school) can play
+Whispers inside a "web cabinet": campus loads `/whispers/?cabinet=campus` in an iframe.
+
+- **Framing.** Every response carries
+  `Content-Security-Policy: frame-ancestors 'self' https://campus.themultiverse.school`
+  (merged into any CSP a handler sets) and never `X-Frame-Options`.
+- **Cabinet mode** is on only when the page is framed *and* the URL has `?cabinet=campus`;
+  otherwise nothing changes. In cabinet mode the page posts `mg:ready` to the campus
+  origin, takes campus's `mg:pass` (a 5-minute Ed25519-signed launch pass), trades it at
+  `POST /whispers/api/campus-pass` for an opaque identity token (12 h, kept server-side in
+  `campus_identities`), pre-fills the join name with the campus screen name and posts
+  `mg:signed-in`. The support / Stripe links are hidden in cabinet mode.
+- **Seats.** `create` / `join` / `rejoin` carry the identity token; a valid one records the
+  campus Matrix ID on the seat (`campaign_sessions.campus_sub`), and child-safety evidence
+  then names it as a verified `matrix` identifier. An unknown or expired token is ignored —
+  play goes on anonymously — and the page asks campus for a fresh pass (at most once a minute).
+- **Key.** Passes are verified against campus's public key, pinned in
+  `src/server/campus-pass.ts`; set `CAMPUS_PASS_PUBLIC_KEY` (base64 SPKI DER) to override it.
+  The pass is never logged or stored — only its `jti` is logged.
+
 ## Running locally
 
 ```bash

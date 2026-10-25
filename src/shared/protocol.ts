@@ -3,12 +3,13 @@ import type {
 } from './types.js';
 
 export type ClientMessage =
-  | { type: 'join'; joinCode: string; playerName: string }
-  | { type: 'create'; name: string; dmPreset: string; scenarioId: string | null; systemId: string; houseRules: string | null }
+  // campusIdentity (web cabinets, optional): the token POST /api/campus-pass returned.
+  | { type: 'join'; joinCode: string; playerName: string; campusIdentity?: string }
+  | { type: 'create'; name: string; dmPreset: string; scenarioId: string | null; systemId: string; houseRules: string | null; campusIdentity?: string }
   | { type: 'submit-character'; definition: CharacterDefinition }
   | { type: 'char-chat'; text: string }
   | { type: 'confirm-character' }
-  | { type: 'rejoin'; joinCode: string; sessionToken: string }
+  | { type: 'rejoin'; joinCode: string; sessionToken: string; campusIdentity?: string }
   | { type: 'whisper'; text: string }
   | { type: 'dm-answer'; text: string }
   | { type: 'dm-inject'; text: string }
@@ -65,6 +66,8 @@ export type ReplayEntry =
   | { type: 'rating-note'; text: string };
 
 export type ServerMessage =
+  // Web cabinets: the campusIdentity sent with create/join/rejoin is unknown or expired (play goes on anonymously).
+  | { type: 'campus-identity'; status: 'unknown' }
   | { type: 'room-joined'; campaignId: string; joinCode: string; isOwner: boolean; tableRole: import('./types.js').TableRole | null; sessionToken: string; gameName: string; playerName: string; phase: GamePhase; characterId: string | null }
   | { type: 'lobby-state'; players: string[]; setupChat: Array<{ role: string; content: string }>; dmReady: boolean; approvedCount: number; phase: GamePhase; influences: string[]; hostTableRole: import('./types.js').TableRole | null; readiness: import('./types.js').WorldReadiness }
   | { type: 'room-state'; state: import('./types.js').RoomState }

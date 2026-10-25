@@ -348,6 +348,27 @@ export function migrate(db: Database.Database): void {
     db.exec('ALTER TABLE checkpoints ADD COLUMN transcript TEXT');
   }
 
+  // Web cabinets: a seat whose player arrived through a campus cabinet with a
+  // verified campus pass records that campus Matrix ID (child-safety evidence
+  // names it, verified). NULL for every anonymous seat.
+  const sessionCols = db.pragma('table_info(campaign_sessions)') as Array<{ name: string }>;
+  if (!sessionCols.some(c => c.name === 'campus_sub')) {
+    db.exec('ALTER TABLE campaign_sessions ADD COLUMN campus_sub TEXT');
+  }
+  // A verified campus pass, exchanged for an opaque identity token the client
+  // keeps for the rest of its visit (12 h). Kept here so a restart does not
+  // sign every cabinet player out.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campus_identities (
+      token TEXT PRIMARY KEY,
+      sub TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_campus_identities_expires ON campus_identities(expires_at);
+  `);
+
   const charCols = db.pragma('table_info(characters)') as Array<{ name: string }>;
   if (!charCols.some(c => c.name === 'revoked_at')) {
     db.exec('ALTER TABLE characters ADD COLUMN revoked_at TEXT');

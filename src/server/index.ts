@@ -48,6 +48,9 @@ import { installLogRedaction } from './child-safety/sink.js';
 import { startOutbox, deliverDue, outboxConfigFromEnv } from './child-safety/outbox.js';
 import { ensureChildSafetyTables, installChildSafetyReporter, runInSafetyScope, recordSeatIp, purgeIpLog, fileFlag, type ContextTurn } from './child-safety/reporter.js';
 import { floorBackstop } from './safety-floor.js';
+import { cabinetFraming } from './framing.js';
+import { verifyCampusPass } from './campus-pass.js';
+import { createCampusIdentity, lookupCampusIdentity, setSessionCampusSub, makeRateLimiter, type CampusIdentity } from './campus-identity.js';
 import { timingSafeEqual } from 'node:crypto';
 import type { CampaignMaterial } from '../shared/types.js';
 
@@ -71,6 +74,8 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const app = express();
+// Web cabinets: first, so every response (API, static, 404) may be framed by campus.
+app.use(cabinetFraming);
 app.use(express.json());
 
 const uploadTokens = new Map<string, { campaignId: string; expires: number }>();
@@ -131,6 +136,23 @@ app.post('/api/internal/child-safety/synthetic', async (req, res) => {
     db.prepare('DELETE FROM campaign_sessions WHERE campaign_id = ?').run(campaignId);
     db.prepare('DELETE FROM campaigns WHERE id = ?').run(campaignId);
   }
+});
+
+// ─── Web cabinets: campus launch pass → identity token ─────────────────────
+// Campus hands a framed Whispers page a 5-minute signed pass (campus-pass.ts);
+// the page trades it here for an opaque identity token it sends with
+// create/join/rejoin. Refusals say nothing beyond pass_refused. The pass is
+// never logged or stored — only its jti is logged.
+const campusPassLimiter = makeRateLimiter(30, 60_000);
+app.post('/api/campus-pass', (req, res) => {
+  const ip = requestClientIp(req) ?? 'unknown';
+  if (!campusPassLimiter(ip)) { res.status(429).json({ error: 'rate_limited' }); return; }
+  const pass = (req.body as { pass?: unknown } | undefined)?.pass;
+  const who = typeof pass === 'string' ? verifyCampusPass(pass, { audience: 'whispers' }) : null;
+  if (!who) { res.status(400).json({ error: 'pass_refused' }); return; }
+  const identity = createCampusIdentity(getDb(), { sub: who.sub, name: who.name });
+  console.log(`[campus] pass ${who.jti} exchanged for a campus identity`);
+  res.json({ identity, name: who.name, sub: who.sub });
 });
 
 /**
@@ -794,6 +816,18 @@ wss.on('connection', (ws, req) => {
     });
   });
 
+  // Web cabinets: a campus identity token on create/join/rejoin. A valid one
+  // binds the campus Matrix ID to the seat; anything else is ignored — play
+  // goes on anonymously — and the client hears it is unknown so a cabinet
+  // can fetch a fresh pass. Never an error, never a block.
+  const attachCampusIdentity = (sessionToken: string, token: unknown): CampusIdentity | null => {
+    if (token === undefined || token === null) return null;
+    const who = lookupCampusIdentity(db, token);
+    if (!who) { send(ws, { type: 'campus-identity', status: 'unknown' }); return null; }
+    setSessionCampusSub(db, sessionToken, who.sub);
+    return who;
+  };
+
   const handleMessage = async (msg: ClientMessage): Promise<void> => {
 
     if (msg.type === 'create') {
@@ -809,6 +843,7 @@ wss.on('connection', (ws, req) => {
         houseRules: msg.houseRules ?? undefined,
       });
       const session = createSession(db, { campaignId, joinCode, playerName: 'Host', isHost: true });
+      attachCampusIdentity(session.token, msg.campusIdentity);
       currentJoinCode = joinCode;
       currentPlayer = { ws, sessionToken: session.token, playerName: 'Host', characterId: null, isOwner: true, setupChat: [] };
       rooms.set(joinCode, [currentPlayer]);
@@ -866,6 +901,7 @@ wss.on('connection', (ws, req) => {
       const campaign = joinRoom(db, msg.joinCode);
       if (!campaign) { send(ws, { type: 'error', message: 'Invalid join code' }); return; }
       const session = createSession(db, { campaignId: campaign.id, joinCode: msg.joinCode, playerName: msg.playerName, isHost: false });
+      attachCampusIdentity(session.token, msg.campusIdentity);
       currentJoinCode = msg.joinCode;
       currentPlayer = { ws, sessionToken: session.token, playerName: msg.playerName, characterId: null, isOwner: false, setupChat: [] };
       const players = rooms.get(msg.joinCode) ?? [];
@@ -931,6 +967,7 @@ wss.on('connection', (ws, req) => {
         players.push(currentPlayer);
       }
       touchSession(db, session.token);
+      attachCampusIdentity(session.token, msg.campusIdentity);
       console.log(`[server] "${playerName}" rejoined room ${msg.joinCode} as ${isOwner ? 'host' : 'player'}`);
 
       send(ws, {
