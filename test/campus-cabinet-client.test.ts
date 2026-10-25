@@ -2,12 +2,12 @@
 // Web cabinets, client side: the postMessage handshake with campus, the pass
 // exchange, and what changes on screen in cabinet mode (and nothing outside it).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CampusCabinet, isCabinetMode, CAMPUS_ORIGIN, setActiveCabinet } from '../src/client/campus-cabinet.js';
+import { CampusCabinet, isCabinetMode, CAMPUS_ORIGIN, setActiveCabinet, campusPassUrl } from '../src/client/campus-cabinet.js';
 import { renderLobby } from '../src/client/lobby.js';
 
 type Listener = (e: { origin: string; source: unknown; data: unknown }) => void;
 
-function fakeWin(opts: { framed?: boolean; search?: string } = {}) {
+function fakeWin(opts: { framed?: boolean; search?: string; pathname?: string } = {}) {
   const parent = { postMessage: vi.fn() };
   const listeners: Listener[] = [];
   const store = new Map<string, string>();
@@ -16,7 +16,7 @@ function fakeWin(opts: { framed?: boolean; search?: string } = {}) {
     self,
     top: opts.framed === false ? self : {},
     parent,
-    location: { search: opts.search ?? '?cabinet=campus', pathname: '/whispers/' },
+    location: { search: opts.search ?? '?cabinet=campus', pathname: opts.pathname ?? '/whispers/', origin: GAME_ORIGIN },
     addEventListener: (type: string, l: Listener) => { if (type === 'message') listeners.push(l); },
     sessionStorage: {
       getItem: (k: string) => store.get(k) ?? null,
@@ -28,6 +28,7 @@ function fakeWin(opts: { framed?: boolean; search?: string } = {}) {
   return { win: win as unknown as Window, parent, deliver, store };
 }
 
+const GAME_ORIGIN = 'https://play.multiversegames.ai';
 const PASS_MSG = { type: 'mg:pass', v: 1, pass: 'cps.claims.sig' };
 const okFetch = () => vi.fn(async () => new Response(JSON.stringify({ identity: 'a'.repeat(64), name: 'Test Student', sub: '@test-student:themultiverse.school' }), { status: 200 }));
 const flush = () => new Promise(r => setTimeout(r, 0));
@@ -87,7 +88,7 @@ describe('CampusCabinet', () => {
     await flush(); await flush();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/whispers/api/campus-pass');
+    expect(url).toBe(`${GAME_ORIGIN}/whispers/api/campus-pass`);
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ pass: 'cps.claims.sig' });
     expect(c.identity).toBe('a'.repeat(64));
@@ -99,6 +100,58 @@ describe('CampusCabinet', () => {
     const again = new CampusCabinet({ win, fetchImpl });
     again.start();
     expect(again.identity).toBe('a'.repeat(64));
+  });
+
+  it('never sends the pass off its own origin, whatever the page path', async () => {
+    for (const pathname of ['//evil.example/x', '//evil.example', '/\\evil.example/x', '///evil.example/']) {
+      const { win, parent, deliver } = fakeWin({ pathname });
+      const fetchImpl = okFetch();
+      new CampusCabinet({ win, fetchImpl }).start();
+      deliver({ origin: CAMPUS_ORIGIN, source: parent, data: PASS_MSG });
+      await flush(); await flush();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const url = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
+      expect(url.origin, pathname).toBe(GAME_ORIGIN);
+      expect(url.pathname).toBe('/whispers/api/campus-pass');
+    }
+  });
+
+  it('campusPassUrl stays on the origin for any base, or refuses', () => {
+    expect(campusPassUrl(GAME_ORIGIN)).toBe(`${GAME_ORIGIN}/whispers/api/campus-pass`);
+    for (const base of ['//evil.example/', '/\\evil.example/', 'https://evil.example/', '///evil.example']) {
+      const u = campusPassUrl(GAME_ORIGIN, base);
+      expect(u === null || new URL(u).origin === GAME_ORIGIN, base).toBe(true);
+    }
+  });
+
+  it('holds a rejoin until the pass exchange settles, or 3 s at most', async () => {
+    vi.useFakeTimers();
+    try {
+      const { win, parent, deliver } = fakeWin();
+      const c = new CampusCabinet({ win, fetchImpl: okFetch() });
+      c.start();
+      const gate = c.whenSettled()!;
+      let released = false;
+      void gate.then(() => { released = true; });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(released).toBe(false);
+      deliver({ origin: CAMPUS_ORIGIN, source: parent, data: PASS_MSG });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(released).toBe(true);
+      expect(c.identity).toBe('a'.repeat(64));
+      expect(c.whenSettled()).toBeNull(); // signed in: nothing to wait for
+      // no pass ever arrives: released after 3 s
+      const other = new CampusCabinet({ win: fakeWin().win, fetchImpl: okFetch() });
+      other.start();
+      let late = false;
+      void other.whenSettled()!.then(() => { late = true; });
+      await vi.advanceTimersByTimeAsync(2900);
+      expect(late).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(late).toBe(true);
+      // outside a cabinet: never held
+      expect(new CampusCabinet({ win: fakeWin({ framed: false }).win }).whenSettled()).toBeNull();
+    } finally { vi.useRealTimers(); }
   });
 
   it('a refused pass leaves play signed out', async () => {
@@ -184,5 +237,26 @@ describe('the socket carries the campus identity', () => {
     expect(withCampusIdentity({ type: 'rejoin', joinCode: 'ABCDEF', sessionToken: 't' }, 'c'.repeat(64))).toMatchObject({ campusIdentity: 'c'.repeat(64) });
     expect(withCampusIdentity({ type: 'whisper', text: 'hi' }, 'c'.repeat(64))).toEqual({ type: 'whisper', text: 'hi' });
     expect(withCampusIdentity(create, null)).toEqual(create);
+  });
+});
+
+describe('WsClient holds a rejoin behind the cabinet gate', () => {
+  it('sends the rejoin, with the identity, only once the gate settles', async () => {
+    const { WsClient } = await import('../src/client/ws-client.js');
+    const sent: string[] = [];
+    const client = new WsClient();
+    (client as any).ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) };
+    let identity: string | null = null;
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    client.setCampusIdentitySource(() => identity);
+    client.setRejoinGate(() => (identity ? null : gate));
+    client.send({ type: 'rejoin', joinCode: 'ABCDEF', sessionToken: 't' });
+    client.send({ type: 'whisper', text: 'hi' });
+    expect(sent.map(d => JSON.parse(d).type)).toEqual(['whisper']);
+    identity = 'd'.repeat(64);
+    release();
+    await flush();
+    expect(JSON.parse(sent[1]!)).toEqual({ type: 'rejoin', joinCode: 'ABCDEF', sessionToken: 't', campusIdentity: 'd'.repeat(64) });
   });
 });

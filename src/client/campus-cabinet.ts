@@ -13,6 +13,23 @@ export const CAMPUS_ORIGIN = 'https://campus.themultiverse.school';
 export const GAME_KEY = 'whispers';
 const STORAGE_KEY = 'whispers:campus-identity:v1';
 const REASK_MIN_MS = 60_000;
+const REJOIN_HOLD_MS = 3_000;
+// The API path is a fixed constant — the app's base path, the same as vite's
+// `base` in vite.config.ts (dev and prod both serve under /whispers/) — never
+// derived from location.pathname: a path like `//evil.example/x` would turn
+// into a protocol-relative URL and send the pass to another origin.
+export const APP_BASE = '/whispers/';
+
+/** The absolute pass-exchange URL on `origin` itself, or null if it would leave it. */
+export function campusPassUrl(origin: string, base: string = APP_BASE): string | null {
+  const path = `/${`${base}/api/campus-pass`.replace(/^[/\\]+/, '').replace(/\/{2,}/g, '/')}`;
+  try {
+    const u = new URL(path, origin);
+    return u.origin === origin ? u.href : null;
+  } catch {
+    return null;
+  }
+}
 
 export function isCabinetMode(win: Window = window): boolean {
   let framed: boolean;
@@ -39,6 +56,7 @@ export class CampusCabinet {
   private readonly listeners = new Set<(s: SignedIn) => void>();
   private lastReadyAt = -Infinity;
   private started = false;
+  private settleWaiters: Array<() => void> = [];
 
   constructor(deps: CabinetDeps = {}) {
     this.win = deps.win ?? window;
@@ -56,6 +74,27 @@ export class CampusCabinet {
   }
 
   onSignedIn(cb: (s: SignedIn) => void): void { this.listeners.add(cb); }
+
+  /**
+   * For a rejoin: null when there is nothing to wait for (not a cabinet, or
+   * already signed in); otherwise a promise that settles when the pass
+   * exchange does (signed in or refused), or after at most `maxMs`.
+   */
+  whenSettled(maxMs = REJOIN_HOLD_MS): Promise<void> | null {
+    if (!this.active || this.identity) return null;
+    return new Promise<void>(resolve => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      this.settleWaiters.push(finish);
+      setTimeout(finish, maxMs);
+    });
+  }
+
+  private settle(): void {
+    const waiters = this.settleWaiters;
+    this.settleWaiters = [];
+    waiters.forEach(w => w());
+  }
 
   /** The server no longer knows our identity: drop it, and ask campus for a fresh pass (≤ once a minute). */
   identityUnknown(): void {
@@ -81,14 +120,11 @@ export class CampusCabinet {
     void this.exchange(d.pass);
   }
 
-  private apiUrl(): string {
-    const base = (this.win.location.pathname || '/').replace(/\/+$/, '');
-    return `${base}/api/campus-pass`;
-  }
-
   private async exchange(pass: string): Promise<void> {
     try {
-      const res = await this.fetchImpl(this.apiUrl(), {
+      const url = campusPassUrl(this.win.location.origin);
+      if (!url) return; // never send a pass off this origin
+      const res = await this.fetchImpl(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pass }),
@@ -104,6 +140,8 @@ export class CampusCabinet {
       this.listeners.forEach(l => { try { l(s); } catch (err) { console.error('[cabinet] sign-in listener failed', err); } });
     } catch {
       // network failure: play goes on signed out
+    } finally {
+      this.settle();
     }
   }
 

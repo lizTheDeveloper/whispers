@@ -21,6 +21,7 @@ export class WsClient {
   private intentionallyClosed = false;
   private rejoinInfo: { joinCode: string; sessionToken: string } | null = null;
   private campusIdentity: () => string | null = () => null;
+  private rejoinGate: () => Promise<void> | null = () => null;
 
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
@@ -29,6 +30,14 @@ export class WsClient {
   /** Web cabinets: where to read the current campus identity token from. */
   setCampusIdentitySource(source: () => string | null): void {
     this.campusIdentity = source;
+  }
+
+  /**
+   * Web cabinets: a rejoin waits for this (the campus pass exchange, ≤ 3 s)
+   * so a fresh tab's rejoin still carries the campus identity.
+   */
+  setRejoinGate(gate: () => Promise<void> | null): void {
+    this.rejoinGate = gate;
   }
 
   /** Remember who we are so an auto-reconnect lands back in the same seat. */
@@ -71,6 +80,14 @@ export class WsClient {
   }
 
   send(msg: ClientMessage): void {
+    if (msg.type === 'rejoin') {
+      const gate = this.rejoinGate();
+      if (gate) { void gate.then(() => this.sendNow(msg)); return; }
+    }
+    this.sendNow(msg);
+  }
+
+  private sendNow(msg: ClientMessage): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('[ws] send() called while disconnected, message dropped:', msg.type);
       return;

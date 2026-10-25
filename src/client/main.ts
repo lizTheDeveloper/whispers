@@ -17,6 +17,7 @@ const cabinet = new CampusCabinet();
 setActiveCabinet(cabinet);
 if (cabinet.active) {
   ws.setCampusIdentitySource(() => cabinet.identity);
+  ws.setRejoinGate(() => cabinet.whenSettled());
   ws.on('campus-identity', (msg) => {
     if (msg.type === 'campus-identity' && msg.status === 'unknown') cabinet.identityUnknown();
   });
