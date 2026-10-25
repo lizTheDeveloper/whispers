@@ -35,6 +35,7 @@ import { quoteRuns, storyUnits, isWarm, softenForChildren } from './narrative-gu
 import { SENTENCE_SPLIT } from './sentences.js';
 import type { ToneTier } from '../shared/rating.js';
 import { floorBackstop, withoutFloorBreaches, type ProtectedPerson } from './safety-floor.js';
+import { noteSexualFloor } from './child-safety/sink.js';
 
 export type { ToneTier };
 
@@ -84,6 +85,8 @@ export interface ToneVerdict {
   phrases: string[];
   /** Those of them that cross the safety floor (the judge's "floor" list, round 20). */
   floor?: string[];
+  /** Those that cross the floor's SEXUAL criterion (sexual content involving a minor) — filed in the child-safety evidence vault. */
+  floorSexual?: string[];
 }
 
 /** A judge: null when it could not give a verdict (timeout, error, unreadable reply) — the gate then fails open. */
@@ -174,7 +177,7 @@ const ADULT_OPTIONS_LABEL = "the choices a grown-up's character is offered for w
 const FLOOR_SEXUAL = 'SAFETY FLOOR — is sexual content involving a minor or a child character: anything sexual or sexualised about a child, a child\'s body described in a sexual way, or a sexual act near or aimed at a child (a parent\'s hug or goodnight kiss is fine);';
 const FLOOR_VIOLENCE = 'SAFETY FLOOR — is violence, injury or a threat of harm aimed at a minor or a child character, PC or NPC, by anyone: the child hit, stabbed, shot, cut, burned, beaten, strangled, drowned, killed, or threatened with it (danger near the child, the child\'s own stumble, or violence between adults is not this);';
 /** The judge's reply format: the phrases, and those that cross the floor again in "floor". */
-const REPLY_FORMAT = 'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"],"floor":[]}. A phrase that breaks a SAFETY FLOOR criterion is also copied into "floor". Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok" — except for the SAFETY FLOOR.';
+const REPLY_FORMAT = 'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"],"floor":[],"floor_sexual":[]}. A phrase that breaks a SAFETY FLOOR criterion is also copied into "floor"; one that breaks the SAFETY FLOOR\'s sexual criterion (sexual content involving a minor or child character) is copied into "floor" and into "floor_sexual" too. Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok" — except for the SAFETY FLOOR.';
 
 /** The minors line of a judge prompt. */
 function minorsLine(ctx: ToneContext): string {
@@ -339,13 +342,15 @@ export function parseToneVerdict(reply: unknown, text: string): ToneVerdict | nu
   if (verdict !== 'flag') return null;
   const quoted = Array.isArray(obj.phrases) ? obj.phrases.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
   const floorQuoted = Array.isArray(obj.floor) ? obj.floor.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
-  const floor = phrasesInText(text, floorQuoted);
+  const sexualQuoted = Array.isArray(obj.floor_sexual) ? obj.floor_sexual.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
+  const floorSexual = phrasesInText(text, sexualQuoted);
+  const floor = [...new Set([...phrasesInText(text, floorQuoted), ...floorSexual])];
   const found = [...new Set([...phrasesInText(text, quoted).slice(0, 5), ...floor])];
-  if (quoted.length + floorQuoted.length > 0 && found.length === 0) {
-    console.log(`[tone-gate] judge flagged phrases that are not in the text (${[...quoted, ...floorQuoted].map((q: string) => `"${q.slice(0, 60)}"`).join(', ')}) — treated as ok`);
+  if (quoted.length + floorQuoted.length + sexualQuoted.length > 0 && found.length === 0) {
+    console.log(`[tone-gate] judge flagged phrases that are not in the text (${[...quoted, ...floorQuoted, ...sexualQuoted].length}) — treated as ok`);
     return { flagged: false, phrases: [] };
   }
-  return { flagged: found.length > 0, phrases: found, ...(floor.length > 0 ? { floor } : {}) };
+  return { flagged: found.length > 0, phrases: found, ...(floor.length > 0 ? { floor } : {}), ...(floorSexual.length > 0 ? { floorSexual } : {}) };
 }
 
 /**
@@ -680,6 +685,13 @@ function tierFeedback(phrases: string[], kind: ToneKind, tier: ToneTier): string
   return `A reader for this gentle table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with none of these phrases and nothing like them: no filing, erasing or forgetting a person, nobody turned into furniture or part of the system, nothing that parts the child from their grown-up, nobody sealed in, nothing lost or closed forever, nobody chased or collected, nothing curious about the child's things, no creepy or bodily imagery, no creeping shadows and nothing going into or coming out of the dark, no predator and prey, nothing shrinking, closing in or trapping anyone, no panic or fright, nobody suspecting, scolding or judging the child, no aches, pains or injuries, nothing about anyone's body.${ending}`;
 }
 
+/** The judge's sexual-floor phrases go to the child-safety evidence vault (child-safety/sink.ts). */
+function noteJudgeSexualFloor(verdict: ToneVerdict | null, text: string, label: string): void {
+  for (const phrase of verdict?.floorSexual ?? []) {
+    noteSexualFloor({ content: phrase, detector: 'judge', label, origin: 'ai', ...(phrase.trim() !== text.trim() ? { passage: text } : {}) });
+  }
+}
+
 export interface GateResult<T> {
   value: T;
   /** The kept draft was still flagged: the caller's softener has run over it. */
@@ -724,9 +736,10 @@ export async function gateGentleTone<T>(opts: {
     const started = Date.now();
     if (!text.trim()) return { verdict: { flagged: false, phrases: [] }, judged: [], floor: [], ms: 0 };
     // Round 20: the floor's deterministic first pass, at every rating.
-    const caught = floorBackstop(text, floorCtx);
+    const caught = floorBackstop(text, { ...floorCtx, label: what });
     const judged = await judge(text, opts.kind, opts.ctx);
     const ms = Date.now() - started;
+    noteJudgeSexualFloor(judged, text, what);
     if (!judged) {
       // The floor never fails open: no verdict means the backstop decides.
       console.error(`[floor] ${what}: THE JUDGE GAVE NO VERDICT (${ms}ms) — the safety floor does not fail open; the deterministic backstop ${caught.length > 0 ? `caught ${caught.map(c => `"${c.slice(0, 80)}"`).join(', ')}` : 'found nothing'}`);
@@ -848,7 +861,7 @@ export async function gateChildOptions(options: string[], opts: { judge?: ToneLi
   // Round 20: an option that crosses the safety floor never reaches anyone,
   // whatever the judge says (or fails to say).
   const floorCtx = { minors: [...(opts.minors ?? []), ...(opts.protectedPeople ?? []).map(p => p.name), ...(opts.children ?? [])] };
-  const crossing = options.map(o => floorBackstop(o, floorCtx).length > 0);
+  const crossing = options.map(o => floorBackstop(o, { ...floorCtx, label: `options${opts.label ? ` (${opts.label})` : ''}` }).length > 0);
   for (const [i, o] of options.entries()) if (crossing[i]) console.warn(`[floor] options${opts.label ? ` (${opts.label})` : ''}: dropped "${o.slice(0, 160)}"`);
   const r = await gateOptionsByJudge(options, opts);
   return { keep: r.keep.filter(i => !crossing[i]), dropped: [...r.dropped, ...options.filter((_, i) => crossing[i] && r.keep.includes(i))] };
@@ -909,6 +922,7 @@ async function gateThoughtByJudge(thought: string, opts: { judge?: ToneJudge; la
   const ctx: ToneContext = { children: opts.children, ownFeelings: opts.ownFeelings, people: opts.people, ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}), ...(opts.minors?.length ? { minors: opts.minors } : {}), ...(opts.protectedPeople?.length ? { protectedPeople: opts.protectedPeople } : {}) };
   const started = Date.now();
   const verdict = await judge(softened, 'thought', ctx);
+  noteJudgeSexualFloor(verdict, softened, what);
   if (!verdict || !verdict.flagged) {
     console.log(`[tone-gate] ${what}: ${verdict ? 'ok' : 'no verdict — kept as written'} (${Date.now() - started}ms)`);
     return softened;

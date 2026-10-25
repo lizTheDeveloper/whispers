@@ -39,6 +39,21 @@ Multiplayer agentic TTRPG. AI agents play characters, humans whisper to influenc
   (a separate mounted volume in prod) precisely so it doesn't collide with the static
   content above. See `src/server/db.ts` and "Production" below.
 
+## Child safety
+- Every safety-floor flag for sexual content involving a minor (the deterministic backstop in
+  `safety-floor.ts`, the judge's `floor_sexual` list in `tone-gate.ts`, and a player's own words
+  in any socket message) is filed in the studio's evidence vault — Raising Intelligences'
+  `/api/internal/child-safety/evidence`, see RI's `docs/child-safety.md` — through a durable
+  SQLite outbox (`src/server/child-safety/`). Never block gameplay on it, never drop a row.
+- Attribution: the async scope says who sent it (socket message → that seat; a character's turn
+  → the seat playing it; DM narration → the only human seat, else nobody). Verified = what this
+  server authenticated (IPs via trusted proxies only, the seat's server-issued token, hashed).
+  Player names are client-claimed → unverified. Co-players are always `role: participant`.
+- Flagged text is withheld from logs (`installLogRedaction`). Client IPs come from
+  `child-safety/trusted-ip.ts`; never read `X-Forwarded-For` directly.
+- Check prod with the synthetic hook: `POST /whispers/api/internal/child-safety/synthetic` with
+  `Authorization: Bearer $CHILD_SAFETY_INGEST_TOKEN` — files an `isTest` case; delete it in RI.
+
 ## Production
 - This repo (not `games/whispers` inside the `multiverse_games` monorepo — that's now a
   submodule/gitlink pointing here) deploys itself. Run `./deploy.sh` on the server; see

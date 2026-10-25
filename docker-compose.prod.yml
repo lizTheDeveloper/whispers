@@ -21,6 +21,14 @@ services:
       # it survives `docker compose up --build` recreating the container.
       STATE_DIR: /app/state
       DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      # Child-safety evidence vault (Raising Intelligences' ingest, over the
+      # Docker network). The token lives in /opt/whispers/.env (untracked)
+      # and in VaultWarden as "child-safety ingest token". Without it flags
+      # are kept in the outbox and delivered once it is set.
+      CHILD_SAFETY_INGEST_URL: http://raising-intelligences:3000/api/internal/child-safety/evidence
+      CHILD_SAFETY_INGEST_TOKEN: ${CHILD_SAFETY_INGEST_TOKEN:-}
+      # Only Traefik (on the coolify bridge) may set X-Forwarded-For.
+      TRUSTED_PROXIES: 127.0.0.1/32,172.19.0.0/16
     volumes:
       - whispers_state:/app/state
     networks:

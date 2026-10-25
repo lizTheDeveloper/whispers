@@ -30,6 +30,7 @@
  */
 import { childrenInParty, type PartyMember } from './agents/dm.js';
 import { splitSentences } from './sentences.js';
+import { noteSexualFloor, redactLog } from './child-safety/sink.js';
 
 const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen'];
 const AGE = new RegExp(String.raw`\b(\d{1,3}|${NUMBER_WORDS.join('|')})[- ]years?[- ]old\b`, 'gi');
@@ -129,6 +130,13 @@ export interface ProtectedPerson {
 export interface FloorContext {
   /** Minors and child characters by name: child PCs and NPCs described as children. */
   minors?: string[];
+  /**
+   * For the child-safety report: what is being checked ("narration", "a
+   * whisper"), and whether a human wrote it or an AI agent did. A sexual
+   * breach is filed in the evidence vault (child-safety/sink.ts).
+   */
+  label?: string;
+  origin?: 'ai' | 'human';
 }
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -453,14 +461,28 @@ function sentenceBreaches(sentence: string, minors: string[]): boolean {
   // A weapon aimed at a child: "raises his pistol at the kid", "levels a crossbow at Biz".
   const aimed = new RegExp(String.raw`\b(?:rais|aim|point|level|swing|throw|train|draw)(?:s|es|ed|ing)?\s+${WEAPON}\s+(?:\w+\s+){0,2}(?:at|toward|towards)\s+(${ref})`, 'i').exec(sentence);
   if (aimed && !refused(sentence, aimed.index)) return true;
-  // Sexual content and a child in the same sentence.
-  if (refs.length > 0) {
-    for (const m of sentence.matchAll(SEXUAL)) {
-      if (/^(?:naked|nude)$/i.test(m[0]) && NOT_SEXUAL_AFTER.test(sentence.slice(m.index! + m[0].length))) continue;
-      return true;
-    }
+  return sexualBreach(sentence, minors);
+}
+
+/** Sexual content and a child in the same sentence: the floor's sexual criterion. */
+function sexualBreach(sentence: string, minors: string[]): boolean {
+  const refs = refsIn(sentence, childRef(minors));
+  if (refs.length === 0) return false;
+  for (const m of sentence.matchAll(SEXUAL)) {
+    if (/^(?:naked|nude)$/i.test(m[0]) && NOT_SEXUAL_AFTER.test(sentence.slice(m.index! + m[0].length))) continue;
+    return true;
   }
   return false;
+}
+
+/**
+ * The sentences of `text` that cross the floor's SEXUAL criterion (sexual
+ * content involving a minor). Pure: reports nothing.
+ */
+export function sexualFloorSentences(text: string, ctx: FloorContext = {}): string[] {
+  if (!text?.trim()) return [];
+  const minors = protectedNames(ctx.minors);
+  return splitSentences(text).filter(s => sexualBreach(s, minors));
 }
 
 // ─── Who the floor protects: sticky, from anything the story says (round 21) ─
@@ -654,12 +676,17 @@ export function addProtected(list: ProtectedPerson[], person: ProtectedPerson): 
 export function floorBackstop(text: string, ctx: FloorContext = {}): string[] {
   if (!text?.trim()) return [];
   const minors = protectedNames(ctx.minors);
-  return splitSentences(text).filter(s => sentenceBreaches(s, minors));
+  const found = splitSentences(text).filter(s => sentenceBreaches(s, minors));
+  // Sexual content involving a minor goes to the child-safety evidence vault.
+  for (const s of found) {
+    if (sexualBreach(s, minors)) noteSexualFloor({ content: s, detector: 'backstop', label: ctx.label ?? 'text', origin: ctx.origin ?? 'ai', ...(s.trim() !== text.trim() ? { passage: text } : {}) });
+  }
+  return found;
 }
 
 /** `text` without the sentences that cross the floor (logged with [floor]). */
 export function withoutFloorBreaches(text: string, ctx: FloorContext = {}, label = 'text'): { text: string; removed: string[] } {
-  const removed = floorBackstop(text, ctx);
+  const removed = floorBackstop(text, { label, ...ctx });
   if (removed.length === 0) return { text, removed };
   let out = text;
   for (const s of removed) {
@@ -668,6 +695,6 @@ export function withoutFloorBreaches(text: string, ctx: FloorContext = {}, label
     out = `${out.slice(0, at).replace(/[ \t]+$/, '')} ${out.slice(at + s.length).replace(/^[ \t]+/, '')}`;
   }
   out = out.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').trim();
-  for (const s of removed) console.warn(`[floor] ${label}: removed by the deterministic backstop: "${s.slice(0, 160)}"`);
+  for (const s of removed) console.warn(`[floor] ${label}: removed by the deterministic backstop: "${redactLog(s).slice(0, 160)}"`);
   return { text: out, removed };
 }
