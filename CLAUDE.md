@@ -39,6 +39,31 @@ Multiplayer agentic TTRPG. AI agents play characters, humans whisper to influenc
   (a separate mounted volume in prod) precisely so it doesn't collide with the static
   content above. See `src/server/db.ts` and "Production" below.
 
+## Child safety
+- Every safety-floor flag for sexual content involving a minor (the deterministic backstop in
+  `safety-floor.ts`, the judge's `floor_sexual` list in `tone-gate.ts`, and a player's own words
+  in any socket message) is filed in the studio's evidence vault — Raising Intelligences'
+  `/api/internal/child-safety/evidence`, see RI's `docs/child-safety.md` — through a durable
+  SQLite outbox (`src/server/child-safety/`). Never block gameplay on it, never drop a row.
+- Attribution: the async scope says who sent it (socket message → that seat; a character's turn
+  → the seat playing it; DM narration → the only human seat, else nobody). Verified = what this
+  server authenticated (IPs via trusted proxies only, the seat's server-issued token, hashed).
+  Player names are client-claimed → unverified. Co-players are always `role: participant`.
+- One flag = one structured RI case (identifiers, IP, UA, seat, game, time, content as separate
+  fields; the reason is server text with no player-chosen names). Related cases share
+  `groupRef` (`whispers:<campaign>`). Player text in a socket message is scanned in FULL; a
+  message over the caps (`PLAYER_TEXT_MAX_*`, 512 KiB socket `maxPayload`) is refused unprocessed.
+  Rate limit: 50 cases per seat and per IP per 10 minutes; when either key is over, no case —
+  a counter row for that key (count, first/last, ≤200 SHA-256) becomes one structured
+  `suppressed_burst` record under that key's own identity when the window closes (RI ≥ 2.3.0).
+- Logs: call sites that print model or player text use `redactLog` (exact normalised hash match,
+  ≥12 chars, incl. the 60/80/120/160-char prefixes logs print), and `installLogRedaction` filters
+  every console line by the hashes of exact flagged sentences / quoted runs as a backstop.
+- Client IPs come from `child-safety/trusted-ip.ts` (prod: only Traefik's 172.30.42.3 on
+  llm-relay); never read `X-Forwarded-For` directly.
+- Check prod with the synthetic hook: `POST /whispers/api/internal/child-safety/synthetic` with
+  `Authorization: Bearer $CHILD_SAFETY_INGEST_TOKEN` — files an `isTest` case; delete it in RI.
+
 ## Production
 - This repo (not `games/whispers` inside the `multiverse_games` monorepo — that's now a
   submodule/gitlink pointing here) deploys itself. Run `./deploy.sh` on the server; see

@@ -21,13 +21,35 @@ services:
       # it survives `docker compose up --build` recreating the container.
       STATE_DIR: /app/state
       DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      # Child-safety evidence vault (Raising Intelligences' ingest, over the
+      # Docker network). The token lives in /opt/whispers/.env (untracked)
+      # and in VaultWarden as "child-safety ingest token". Without it flags
+      # are kept in the outbox and delivered once it is set.
+      CHILD_SAFETY_INGEST_URL: http://raising-intelligences:3000/api/internal/child-safety/evidence
+      CHILD_SAFETY_INGEST_TOKEN: ${CHILD_SAFETY_INGEST_TOKEN:-}
+      # Dead-lettered evidence (a permanent refusal from the vault) alerts this
+      # Matrix room. Token and room in /opt/whispers/.env (VaultWarden: the
+      # ops alert bot). Never carries content.
+      MATRIX_ALERT_TOKEN: ${MATRIX_ALERT_TOKEN:-}
+      MATRIX_ALERT_ROOM: ${MATRIX_ALERT_ROOM:-}
+      # Only Traefik may set X-Forwarded-For: its fixed address on llm-relay
+      # (it has no forwardedHeaders.trustedIPs, so it overwrites any
+      # client-sent header). Nothing on the shared coolify bridge is trusted.
+      TRUSTED_PROXIES: 172.30.42.3/32
     volumes:
       - whispers_state:/app/state
+    # Two networks on purpose, like feedback-api and the LLM relay. Traefik
+    # reaches us over llm-relay, where it has the static IP 172.30.42.3 that
+    # TRUSTED_PROXIES trusts (its coolify IP is dynamic, and any coolify
+    # container could otherwise forge a client IP). coolify stays for the
+    # LLM proxy and the child-safety ingest (raising-intelligences).
     networks:
-      - coolify
+      coolify: {}
+      llm-relay:
+        ipv4_address: 172.30.42.12
     labels:
       - traefik.enable=true
-      - traefik.docker.network=coolify
+      - traefik.docker.network=llm-relay
       - traefik.http.routers.whispers-play.rule=Host(`play.multiversestudios.xyz`) && PathPrefix(`/whispers`)
       - traefik.http.routers.whispers-play.entrypoints=https
       - traefik.http.routers.whispers-play.tls.certresolver=letsencrypt
@@ -58,6 +80,10 @@ services:
 
 networks:
   coolify:
+    external: true
+  # docker network create --subnet 172.30.42.0/24 llm-relay
+  # docker network connect --ip 172.30.42.3 llm-relay traefik   # redo if Traefik is recreated
+  llm-relay:
     external: true
 
 volumes:

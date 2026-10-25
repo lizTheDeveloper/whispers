@@ -43,6 +43,12 @@ import {
 import { checkCharacterReadiness, checkInterviewReadiness } from './character-readiness.js';
 import { appendReplayEntry, loadReplayLog } from './replay-log.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
+import { requestClientIp } from './child-safety/trusted-ip.js';
+import { installLogRedaction } from './child-safety/sink.js';
+import { startOutbox, deliverDue, outboxConfigFromEnv } from './child-safety/outbox.js';
+import { ensureChildSafetyTables, installChildSafetyReporter, runInSafetyScope, recordSeatIp, purgeIpLog, fileFlag, type ContextTurn } from './child-safety/reporter.js';
+import { floorBackstop } from './safety-floor.js';
+import { timingSafeEqual } from 'node:crypto';
 import type { CampaignMaterial } from '../shared/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -70,6 +76,95 @@ app.use(express.json());
 const uploadTokens = new Map<string, { campaignId: string; expires: number }>();
 
 app.get('/healthz', (_req, res) => { res.json({ status: 'ok' }); });
+
+// ─── Child safety (child-safety/*.ts) ───────────────────────────────────────
+// Every safety-floor flag for sexual content involving a minor is filed in
+// the studio's child-safety evidence vault (Raising Intelligences) through a
+// durable outbox; flagged text is withheld from logs at the call sites and,
+// as a backstop, by a console filter on its exact hashes (sink.ts).
+installLogRedaction();
+ensureChildSafetyTables(getDb());
+installChildSafetyReporter(getDb);
+if (!process.env.VITEST) {
+  startOutbox(getDb());
+  const purge = () => { try { purgeIpLog(getDb()); } catch (e) { console.error('[child-safety] ip log purge failed:', e); } };
+  purge();
+  setInterval(purge, 6 * 60 * 60 * 1000).unref();
+}
+
+function bearerIs(header: string | undefined, token: string | undefined): boolean {
+  if (!token || !header) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(`Bearer ${token}`);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** The fixed, benign fixture the synthetic test files. Never real content. */
+export const SYNTHETIC_FIXTURE = 'SYNTHETIC TEST FIXTURE — Whispers child-safety pipeline check. This text is benign and is not a real flag.';
+
+/**
+ * Test hook: files a synthetic case through the real reporter and outbox,
+ * from a throwaway game and seat, with this request's trusted client IP, and
+ * marks it isTest so a confirm in the vault bans nothing. Then deletes the
+ * throwaway game. Needs the ingest token. Use after a deploy to check prod.
+ */
+app.post('/api/internal/child-safety/synthetic', async (req, res) => {
+  if (!bearerIs(req.headers.authorization, process.env.CHILD_SAFETY_INGEST_TOKEN)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  const db = getDb();
+  const ip = requestClientIp(req);
+  const ua = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
+  const { campaignId, joinCode } = createRoom(db, { name: 'Synthetic child-safety test', dmPreset: 'chronicler', systemId: 'fate-core' });
+  const session = createSession(db, { campaignId, joinCode, playerName: 'Synthetic Tester', isHost: true });
+  const other = createSession(db, { campaignId, joinCode, playerName: 'Synthetic Co-player', isHost: false });
+  try {
+    recordSeatIp(db, { campaignId, sessionToken: session.token, ip, userAgent: ua, event: 'synthetic' });
+    recordSeatIp(db, { campaignId, sessionToken: other.token, ip: '192.0.2.77', userAgent: 'synthetic co-player', event: 'synthetic' });
+    const body = runInSafetyScope({
+      campaignId: () => campaignId, seatToken: () => session.token, requestIp: ip, userAgent: ua, where: 'synthetic test hook',
+      context: () => [{ speaker: 'system', content: 'SYNTHETIC TEST CONTEXT — no real conversation.', at: Date.now() }],
+    }, () => fileFlag(db, { items: [`${SYNTHETIC_FIXTURE} ${randomBytes(4).toString('hex')}`], detector: 'backstop', label: 'synthetic test', origin: 'human' }, { isTest: true }));
+    if (!body) { res.status(500).json({ error: 'could not queue' }); return; }
+    const delivery = await deliverDue(db, outboxConfigFromEnv());
+    res.json({ queued: body.externalRef, ipAddress: body.ipAddress, gameRef: body.gameRef, delivery });
+  } finally {
+    db.prepare('DELETE FROM child_safety_ip_log WHERE campaign_id = ?').run(campaignId);
+    db.prepare('DELETE FROM campaign_sessions WHERE campaign_id = ?').run(campaignId);
+    db.prepare('DELETE FROM campaigns WHERE id = ?').run(campaignId);
+  }
+});
+
+/**
+ * Caps on the player text in one message, generous for real play (the longest
+ * real field is a few thousand characters; a whole world seed is well under
+ * the total). A message over any cap is refused outright — never processed —
+ * so every word the game uses has been scanned in full.
+ */
+export const PLAYER_TEXT_MAX_STRINGS = 300;
+export const PLAYER_TEXT_MAX_STRING = 20_000;
+export const PLAYER_TEXT_MAX_TOTAL = 120_000;
+
+/**
+ * One message's player text for the floor check, ALL of it, as one text (so
+ * a message files at most one case, however many sentences cross the floor)
+ * — or tooLong when it is over a cap and must be refused.
+ */
+export function playerTextForFloor(msg: unknown): { text: string; tooLong: boolean } {
+  const strings = playerTextIn(msg);
+  const total = strings.reduce((n, t) => n + t.length, 0);
+  const tooLong = strings.length > PLAYER_TEXT_MAX_STRINGS || total > PLAYER_TEXT_MAX_TOTAL || strings.some(t => t.length > PLAYER_TEXT_MAX_STRING);
+  return { text: tooLong ? '' : strings.join('\n'), tooLong };
+}
+
+/** Free text a player typed, from any client message (not ids, codes or tokens). */
+const NOT_PLAYER_TEXT = new Set(['type', 'joinCode', 'sessionToken', 'characterId', 'dmPreset', 'systemId', 'scenarioId', 'rating', 'role', 'tableRole']);
+function playerTextIn(value: unknown, key = '', out: string[] = [], depth = 0): string[] {
+  // Past the cap the count alone refuses the message; no need to collect more.
+  if (depth > 6 || NOT_PLAYER_TEXT.has(key) || out.length > PLAYER_TEXT_MAX_STRINGS) return out;
+  if (typeof value === 'string') { if (value.trim()) out.push(value); }
+  else if (Array.isArray(value)) value.forEach(v => playerTextIn(v, key, out, depth + 1));
+  else if (value && typeof value === 'object') for (const [k, v] of Object.entries(value)) playerTextIn(v, k, out, depth + 1);
+  return out;
+}
 
 function loadPresetPrompt(presetName: string): string {
   const p = safeDataFile('dm-presets', presetName, '.txt');
@@ -130,7 +225,10 @@ if (existsSync(clientDir)) {
 }
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+// maxPayload: the largest real message (an accepted world seed, a character
+// sheet) is a few tens of KiB; nothing bigger is worth parsing or scanning.
+export const WS_MAX_PAYLOAD = 512 * 1024;
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: WS_MAX_PAYLOAD });
 
 interface ConnectedPlayer {
   /** The seat's live socket: private sends go here. */
@@ -638,14 +736,65 @@ async function sendWorldIntroduction(ws: WebSocket, campaign: import('../shared/
   }
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   const db = getDb();
   let currentJoinCode: string | null = null;
   let currentPlayer: ConnectedPlayer | null = null;
+  // Child safety: the client's IP through trusted proxies only (never a
+  // client-sent X-Forwarded-For), and its user agent, for every seat.
+  const clientIpAddr = requestClientIp(req);
+  const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 512) : null;
+  let campaignFor: { joinCode: string; id: string | null } | null = null;
+  const currentCampaignId = (): string | null => {
+    if (!currentJoinCode) return null;
+    if (campaignFor?.joinCode !== currentJoinCode) campaignFor = { joinCode: currentJoinCode, id: joinRoom(db, currentJoinCode)?.id ?? null };
+    return campaignFor.id;
+  };
+  const noteSeatIp = (event: string) => {
+    const campaignId = currentCampaignId();
+    if (campaignId && currentPlayer?.sessionToken) recordSeatIp(db, { campaignId, sessionToken: currentPlayer.sessionToken, ip: clientIpAddr, userAgent, event });
+  };
+  const seatContext = (): ContextTurn[] => {
+    const loop = currentJoinCode ? gameLoops.get(currentJoinCode) : undefined;
+    if (loop) return loop.safetyContext();
+    return (currentPlayer?.setupChat ?? []).slice(-20).map(m => ({ speaker: m.role === 'user' ? `seat ${currentPlayer?.playerName ?? ''}`.trim() : 'ai dm', content: m.content }));
+  };
 
-  ws.on('message', async (raw) => {
+  ws.on('message', (raw) => {
     let msg: ClientMessage;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
+    // Everything this message causes runs in this seat's child-safety scope:
+    // a floor flag raised while handling it is attributed to this seat, with
+    // this request's IP and user agent.
+    return runInSafetyScope({
+      campaignId: currentCampaignId,
+      seatToken: () => currentPlayer?.sessionToken ?? null,
+      requestIp: clientIpAddr,
+      userAgent,
+      context: seatContext,
+      where: `${msg?.type ?? 'unknown'} message`,
+    }, async () => {
+      noteSeatIp(String(msg?.type ?? 'message'));
+      // The player's own words are checked for the floor's sexual criterion
+      // too (deterministic pass only), in full; a hit is filed with this seat
+      // as sender. A message too long to scan in full is refused unprocessed.
+      const { text, tooLong } = playerTextForFloor(msg);
+      if (tooLong) {
+        send(ws, { type: 'error', message: 'That message is too long to send. Please shorten it and try again.' });
+        return;
+      }
+      try {
+        if (text) floorBackstop(text, { label: `a ${msg.type} message (player's own words)`, origin: 'human' });
+      } catch (e) { console.error('[child-safety] player-text check failed:', e instanceof Error ? e.message : e); }
+      try {
+        await handleMessage(msg);
+      } finally {
+        noteSeatIp(String(msg?.type ?? 'message'));
+      }
+    });
+  });
+
+  const handleMessage = async (msg: ClientMessage): Promise<void> => {
 
     if (msg.type === 'create') {
       if (!isValidShortField(msg.name)) {
@@ -2073,7 +2222,7 @@ wss.on('connection', (ws) => {
         broadcast(jc, { type: 'phase-change', phase: 'ended' });
       }
     }
-  });
+  };
 
   ws.on('close', () => {
     if (!currentJoinCode || !currentPlayer) return;

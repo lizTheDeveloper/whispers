@@ -20,6 +20,8 @@ import { getSessionTokenForCharacter } from './room.js';
 import { trustHint as trustHintLine } from './trust-hint.js';
 import { pacingFromEnv, ReadingClock } from './pacing.js';
 import { LineRotation, invokeLines, compelLines, gentleCompelLines, gentleAdultCompelLines, appendBeat, withoutStockBeats } from './template-lines.js';
+import { runInSafetyScope, withSafetyScope, type ContextTurn } from './child-safety/reporter.js';
+import { redactLog } from './child-safety/sink.js';
 import { gateGentleTone, gateChildOptions, gateChildThought, type ToneJudge, type ToneListJudge, type ToneKind } from './tone-gate.js';
 import { castPronounLine, correctNpcPronouns, npcPronounBlock, seedNpcPronouns, npcsMet, partyRolesLine } from './npc-pronouns.js';
 import { shortenSuggestion, lowerFirst, endSentence, npcPronounInNarration, askWhatHidingChip, hearThemOutChip } from './whisper-suggestions.js';
@@ -1446,7 +1448,31 @@ export class GameLoop {
    * introduced as the others would see them, stated relationships included.
    * No agent acts until this returns: start() awaits it before runScene.
    */
-  private async runOpening(campaign: any): Promise<void> {
+  /**
+   * The child-safety scope for the loop's own work (child-safety/reporter.ts):
+   * a safety-floor flag raised here is filed against this game, with the
+   * transcript as context. The loop is started and resumed from a socket
+   * message, so without this it would inherit — and be attributed to — the
+   * seat that pressed the button.
+   */
+  private safetyScope() {
+    return { campaignId: () => this.campaignId, context: () => this.safetyContext(), where: 'game loop' };
+  }
+
+  /** The last turns of the story, for a child-safety case's context. */
+  safetyContext(): ContextTurn[] {
+    return this.transcript.slice(-20).map(m => ({
+      speaker: m.role === 'character' && m.characterId ? `character ${this.characters.get(m.characterId)?.definition.name ?? m.characterId}` : m.role,
+      content: m.content,
+      at: m.timestamp,
+    }));
+  }
+
+  private runOpening(campaign: any): Promise<void> {
+    return runInSafetyScope(this.safetyScope(), () => this.runOpeningUnscoped(campaign));
+  }
+
+  private async runOpeningUnscoped(campaign: any): Promise<void> {
     const seed = getWorldSeed(this.db, this.campaignId);
     const stock = campaign.scenario_id ? loadStockScenario(campaign.scenario_id) : null;
     const scenarioOpening = stock?.openingNarration?.trim() || null;
@@ -1602,7 +1628,11 @@ export class GameLoop {
     this.drainWhisperQueue();
   }
 
-  async endGame(): Promise<void> {
+  endGame(): Promise<void> {
+    return runInSafetyScope({ ...this.safetyScope(), where: 'game ending' }, () => this.endGameUnscoped());
+  }
+
+  private async endGameUnscoped(): Promise<void> {
     // stop() has closed any open whisper window with no whisper, and the
     // turn waiting on it bails on isStopped — no silence verdict, no trust
     // change. Tell every client now, not after the epilogue and closing
@@ -1727,7 +1757,11 @@ export class GameLoop {
     this.stopped = true;
   }
 
-  private async runScene(campaign: any): Promise<void> {
+  private runScene(campaign: any): Promise<void> {
+    return runInSafetyScope(this.safetyScope(), () => this.runSceneUnscoped(campaign));
+  }
+
+  private async runSceneUnscoped(campaign: any): Promise<void> {
     if (!(await this.awaitRunnable())) return;
     const partySize = this.characters.size || 1;
     const sessionHardLimit = 50 + (partySize - 1) * 10;
@@ -1972,7 +2006,12 @@ export class GameLoop {
     if (!this.stopped) await this.runScene(campaign);
   }
 
-  private async processTurn(characterId: string, campaign: any): Promise<void> {
+  /** A character's turn: a floor flag in it is attributed to the seat that plays the character. */
+  private processTurn(characterId: string, campaign: any): Promise<void> {
+    return withSafetyScope({ ...this.safetyScope(), characterId, where: `${this.characters.get(characterId)?.definition.name ?? 'a character'}'s turn` }, () => this.processTurnUnscoped(characterId, campaign));
+  }
+
+  private async processTurnUnscoped(characterId: string, campaign: any): Promise<void> {
     const character = this.characters.get(characterId);
     if (!character) return;
     // Who was already down before this turn: only they can be helped up by it.
@@ -2131,7 +2170,7 @@ export class GameLoop {
       const floorCtx = { minors: this.minorNames() };
       proposals.actions = proposals.actions.filter(a => {
         if (floorBackstop(a.description, floorCtx).length === 0) return true;
-        console.warn(`[floor] options (${character.definition.name}): dropped "${a.description.slice(0, 160)}"`);
+        console.warn(`[floor] options (${character.definition.name}): dropped "${redactLog(a.description).slice(0, 160)}"`);
         return false;
       });
     }

@@ -35,6 +35,7 @@ import { quoteRuns, storyUnits, isWarm, softenForChildren } from './narrative-gu
 import { SENTENCE_SPLIT } from './sentences.js';
 import type { ToneTier } from '../shared/rating.js';
 import { floorBackstop, withoutFloorBreaches, type ProtectedPerson } from './safety-floor.js';
+import { noteSexualFloor, redactLog, isWithheld, passageWindow } from './child-safety/sink.js';
 
 export type { ToneTier };
 
@@ -84,6 +85,8 @@ export interface ToneVerdict {
   phrases: string[];
   /** Those of them that cross the safety floor (the judge's "floor" list, round 20). */
   floor?: string[];
+  /** Those that cross the floor's SEXUAL criterion (sexual content involving a minor) — filed in the child-safety evidence vault. */
+  floorSexual?: string[];
 }
 
 /** A judge: null when it could not give a verdict (timeout, error, unreadable reply) — the gate then fails open. */
@@ -174,7 +177,7 @@ const ADULT_OPTIONS_LABEL = "the choices a grown-up's character is offered for w
 const FLOOR_SEXUAL = 'SAFETY FLOOR — is sexual content involving a minor or a child character: anything sexual or sexualised about a child, a child\'s body described in a sexual way, or a sexual act near or aimed at a child (a parent\'s hug or goodnight kiss is fine);';
 const FLOOR_VIOLENCE = 'SAFETY FLOOR — is violence, injury or a threat of harm aimed at a minor or a child character, PC or NPC, by anyone: the child hit, stabbed, shot, cut, burned, beaten, strangled, drowned, killed, or threatened with it (danger near the child, the child\'s own stumble, or violence between adults is not this);';
 /** The judge's reply format: the phrases, and those that cross the floor again in "floor". */
-const REPLY_FORMAT = 'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"],"floor":[]}. A phrase that breaks a SAFETY FLOOR criterion is also copied into "floor". Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok" — except for the SAFETY FLOOR.';
+const REPLY_FORMAT = 'Reply with JSON only: {"verdict":"ok","phrases":[]} or {"verdict":"flag","phrases":["exact words copied from the passage"],"floor":[],"floor_sexual":[]}. A phrase that breaks a SAFETY FLOOR criterion is also copied into "floor"; one that breaks the SAFETY FLOOR\'s sexual criterion (sexual content involving a minor or child character) is copied into "floor" and into "floor_sexual" too. Copy each phrase exactly as written, a few words up to one clause, at most 5. When in doubt, "ok" — except for the SAFETY FLOOR.';
 
 /** The minors line of a judge prompt. */
 function minorsLine(ctx: ToneContext): string {
@@ -339,13 +342,15 @@ export function parseToneVerdict(reply: unknown, text: string): ToneVerdict | nu
   if (verdict !== 'flag') return null;
   const quoted = Array.isArray(obj.phrases) ? obj.phrases.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
   const floorQuoted = Array.isArray(obj.floor) ? obj.floor.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
-  const floor = phrasesInText(text, floorQuoted);
+  const sexualQuoted = Array.isArray(obj.floor_sexual) ? obj.floor_sexual.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
+  const floorSexual = phrasesInText(text, sexualQuoted);
+  const floor = [...new Set([...phrasesInText(text, floorQuoted), ...floorSexual])];
   const found = [...new Set([...phrasesInText(text, quoted).slice(0, 5), ...floor])];
-  if (quoted.length + floorQuoted.length > 0 && found.length === 0) {
-    console.log(`[tone-gate] judge flagged phrases that are not in the text (${[...quoted, ...floorQuoted].map((q: string) => `"${q.slice(0, 60)}"`).join(', ')}) — treated as ok`);
+  if (quoted.length + floorQuoted.length + sexualQuoted.length > 0 && found.length === 0) {
+    console.log(`[tone-gate] judge flagged phrases that are not in the text (${[...quoted, ...floorQuoted, ...sexualQuoted].length}) — treated as ok`);
     return { flagged: false, phrases: [] };
   }
-  return { flagged: found.length > 0, phrases: found, ...(floor.length > 0 ? { floor } : {}) };
+  return { flagged: found.length > 0, phrases: found, ...(floor.length > 0 ? { floor } : {}), ...(floorSexual.length > 0 ? { floorSexual } : {}) };
 }
 
 /**
@@ -645,11 +650,11 @@ function droppedSpan(before: string, after: string): string {
 /** The same, logged for the gate: what was removed, and what could not be. */
 function removeFlagged(text: string, phrases: string[], what: string, people?: ToneContext['people']): string {
   const r = withoutFlaggedPhrases(text, phrases, { people });
-  for (const x of r.removed) console.warn(`[tone-gate] ${what}: removed flagged "${x.phrase}" — dropped: "${x.dropped.slice(0, 160)}"`);
-  for (const k of r.kept) console.warn(`[tone-gate] ${what}: flagged "${k}" kept — removing it would leave nothing, or a pronoun with no one to point to`);
+  for (const x of r.removed) console.warn(`[tone-gate] ${what}: removed flagged "${redactLog(x.phrase)}" — dropped: "${isWithheld(x.phrase) ? '[withheld]' : redactLog(x.dropped).slice(0, 160)}"`);
+  for (const k of r.kept) console.warn(`[tone-gate] ${what}: flagged "${redactLog(k)}" kept — removing it would leave nothing, or a pronoun with no one to point to`);
   // Round 19 (KAZQX3): the epilogue's backstop logged neither: the softener
   // had already taken the judge's phrase out, and the check skipped it silently.
-  for (const a of r.absent) console.log(`[tone-gate] ${what}: flagged "${a}" is no longer in the text after softening — nothing to remove`);
+  for (const a of r.absent) console.log(`[tone-gate] ${what}: flagged "${redactLog(a)}" is no longer in the text after softening — nothing to remove`);
   return r.text;
 }
 
@@ -678,6 +683,14 @@ function tierFeedback(phrases: string[], kind: ToneKind, tier: ToneTier): string
     ? ' This is the ending: close warm and settled — the party together and safe, the trouble done enough to rest — never on an open question, a wait or something still unsettled.'
     : '';
   return `A reader for this gentle table flagged these phrases in your last draft: ${quoted}. Write it fresh, telling the same events, with none of these phrases and nothing like them: no filing, erasing or forgetting a person, nobody turned into furniture or part of the system, nothing that parts the child from their grown-up, nobody sealed in, nothing lost or closed forever, nobody chased or collected, nothing curious about the child's things, no creepy or bodily imagery, no creeping shadows and nothing going into or coming out of the dark, no predator and prey, nothing shrinking, closing in or trapping anyone, no panic or fright, nobody suspecting, scolding or judging the child, no aches, pains or injuries, nothing about anyone's body.${ending}`;
+}
+
+/** The judge's sexual-floor phrases go to the child-safety evidence vault (child-safety/sink.ts). */
+function noteJudgeSexualFloor(verdict: ToneVerdict | null, text: string, label: string): void {
+  const items = verdict?.floorSexual ?? [];
+  if (items.length === 0) return;
+  const whole = items.length === 1 && items[0]!.trim() === text.trim();
+  noteSexualFloor({ items, detector: 'judge', label, origin: 'ai', ...(whole ? {} : { passage: passageWindow(text, items) }) });
 }
 
 export interface GateResult<T> {
@@ -724,16 +737,17 @@ export async function gateGentleTone<T>(opts: {
     const started = Date.now();
     if (!text.trim()) return { verdict: { flagged: false, phrases: [] }, judged: [], floor: [], ms: 0 };
     // Round 20: the floor's deterministic first pass, at every rating.
-    const caught = floorBackstop(text, floorCtx);
+    const caught = floorBackstop(text, { ...floorCtx, label: what });
     const judged = await judge(text, opts.kind, opts.ctx);
     const ms = Date.now() - started;
+    noteJudgeSexualFloor(judged, text, what);
     if (!judged) {
       // The floor never fails open: no verdict means the backstop decides.
-      console.error(`[floor] ${what}: THE JUDGE GAVE NO VERDICT (${ms}ms) — the safety floor does not fail open; the deterministic backstop ${caught.length > 0 ? `caught ${caught.map(c => `"${c.slice(0, 80)}"`).join(', ')}` : 'found nothing'}`);
+      console.error(`[floor] ${what}: THE JUDGE GAVE NO VERDICT (${ms}ms) — the safety floor does not fail open; the deterministic backstop ${caught.length > 0 ? `caught ${caught.map(c => `"${redactLog(c).slice(0, 80)}"`).join(', ')}` : 'found nothing'}`);
     }
-    for (const c of caught) console.warn(`[floor] ${what}: the deterministic backstop caught "${c.slice(0, 160)}"`);
+    for (const c of caught) console.warn(`[floor] ${what}: the deterministic backstop caught "${redactLog(c).slice(0, 160)}"`);
     const floor = [...new Set([...(judged?.floor ?? []), ...caught])];
-    if (judged?.floor?.length) console.warn(`[floor] ${what}: the judge flagged the safety floor: ${judged.floor.map(f => `"${f}"`).join(', ')}`);
+    if (judged?.floor?.length) console.warn(`[floor] ${what}: the judge flagged the safety floor: ${judged.floor.map(f => `"${redactLog(f)}"`).join(', ')}`);
     const extra = opts.extraFlags?.(text) ?? [];
     if (!judged && extra.length === 0 && caught.length === 0) return { verdict: null, judged: [], floor: [], ms };
     const phrases = [...new Set([...(judged?.phrases ?? []), ...caught, ...extra])];
@@ -749,7 +763,7 @@ export async function gateGentleTone<T>(opts: {
   const backstop = (value: T, phrases: string[], flagged: string[] = phrases, floor: string[] = []): T => {
     const softened = opts.soften(value);
     for (const p of flagged) {
-      if (p && !phrases.includes(p)) console.log(`[tone-gate] ${what}: flagged "${p}" is an ending flag — left to the ending softener, not removed`);
+      if (p && !phrases.includes(p)) console.log(`[tone-gate] ${what}: flagged "${redactLog(p)}" is an ending flag — left to the ending softener, not removed`);
     }
     const real = phrases.filter(p => p && !p.startsWith('(the passage'));
     if (real.length === 0) {
@@ -777,7 +791,7 @@ export async function gateGentleTone<T>(opts: {
     console.log(`[tone-gate] ${what}: ok (${a.ms}ms)`);
     return { value: opts.first, stillFlagged: false, regenerated: false };
   }
-  console.warn(`[${a.floor.length > 0 ? 'floor' : 'tone-gate'}] ${what}: flagged (${a.ms}ms) ${a.verdict.phrases.map(p => `"${p}"`).join(', ')} — generating once more`);
+  console.warn(`[${a.floor.length > 0 ? 'floor' : 'tone-gate'}] ${what}: flagged (${a.ms}ms) ${a.verdict.phrases.map(p => `"${redactLog(p)}"`).join(', ')} — generating once more`);
 
   let second: T | null | undefined;
   try {
@@ -808,7 +822,7 @@ export async function gateGentleTone<T>(opts: {
     : b.floor.length === 0 && a.floor.length > 0 ? false
     : a.verdict.phrases.length < b.verdict.phrases.length;
   const kept = keepFirst ? a : b;
-  console.warn(`[${kept.floor.length > 0 ? 'floor' : 'tone-gate'}] ${what}: second draft still flagged (${b.ms}ms) ${b.verdict.phrases.map(p => `"${p}"`).join(', ')} — keeping the ${keepFirst ? 'first' : 'second'} (${Math.min(a.verdict.phrases.length, b.verdict.phrases.length)} vs ${Math.max(a.verdict.phrases.length, b.verdict.phrases.length)} phrases), softened; the judge's phrases go`);
+  console.warn(`[${kept.floor.length > 0 ? 'floor' : 'tone-gate'}] ${what}: second draft still flagged (${b.ms}ms) ${b.verdict.phrases.map(p => `"${redactLog(p)}"`).join(', ')} — keeping the ${keepFirst ? 'first' : 'second'} (${Math.min(a.verdict.phrases.length, b.verdict.phrases.length)} vs ${Math.max(a.verdict.phrases.length, b.verdict.phrases.length)} phrases), softened; the judge's phrases go`);
   return { value: backstop(keepFirst ? opts.first : second, kept.judged, kept.verdict!.phrases, kept.floor), stillFlagged: true, regenerated: true };
 }
 
@@ -826,7 +840,7 @@ function withoutFloorSentences(text: string, floor: string[], floorCtx: { minors
     if (/^\n+$/.test(line)) return line;
     return storyUnits(line.trim()).filter(u => {
       const bad = still.some(f => has(u, f)) || caught.some(c => u.includes(c) || c.includes(u));
-      if (bad) console.warn(`[floor] ${what}: sentence removed (the floor holds even when nothing is left): "${u.slice(0, 160)}"`);
+      if (bad) console.warn(`[floor] ${what}: sentence removed (the floor holds even when nothing is left): "${redactLog(u).slice(0, 160)}"`);
       return !bad;
     }).join(' ');
   }).join('').replace(/\n{3,}/g, '\n\n').trim();
@@ -848,8 +862,8 @@ export async function gateChildOptions(options: string[], opts: { judge?: ToneLi
   // Round 20: an option that crosses the safety floor never reaches anyone,
   // whatever the judge says (or fails to say).
   const floorCtx = { minors: [...(opts.minors ?? []), ...(opts.protectedPeople ?? []).map(p => p.name), ...(opts.children ?? [])] };
-  const crossing = options.map(o => floorBackstop(o, floorCtx).length > 0);
-  for (const [i, o] of options.entries()) if (crossing[i]) console.warn(`[floor] options${opts.label ? ` (${opts.label})` : ''}: dropped "${o.slice(0, 160)}"`);
+  const crossing = options.map(o => floorBackstop(o, { ...floorCtx, label: `options${opts.label ? ` (${opts.label})` : ''}` }).length > 0);
+  for (const [i, o] of options.entries()) if (crossing[i]) console.warn(`[floor] options${opts.label ? ` (${opts.label})` : ''}: dropped "${redactLog(o).slice(0, 160)}"`);
   const r = await gateOptionsByJudge(options, opts);
   return { keep: r.keep.filter(i => !crossing[i]), dropped: [...r.dropped, ...options.filter((_, i) => crossing[i] && r.keep.includes(i))] };
 }
@@ -873,14 +887,14 @@ async function gateOptionsByJudge(options: string[], opts: { judge?: ToneListJud
   }
   // Round 21: the floor judge's flags are all the floor's — never kept, even when nothing is left.
   if (keep.length === 0 && opts.tier === 'floor') {
-    console.warn(`[floor] ${what}: every option crossed the safety floor (${Date.now() - started}ms) — all dropped: ${dropped.map(d => `"${d}"`).join(', ')}`);
+    console.warn(`[floor] ${what}: every option crossed the safety floor (${Date.now() - started}ms) — all dropped: ${dropped.map(d => `"${redactLog(d)}"`).join(', ')}`);
     return { keep: [], dropped };
   }
   if (keep.length === 0) {
-    console.warn(`[tone-gate] ${what}: every option flagged (${Date.now() - started}ms) — kept, softened: ${dropped.map(d => `"${d}"`).join(', ')}`);
+    console.warn(`[tone-gate] ${what}: every option flagged (${Date.now() - started}ms) — kept, softened: ${dropped.map(d => `"${redactLog(d)}"`).join(', ')}`);
     return { keep: all, dropped: [] };
   }
-  console.warn(`[${opts.tier === 'floor' ? 'floor' : 'tone-gate'}] ${what}: dropped (${Date.now() - started}ms) ${dropped.map(d => `"${d}"`).join(', ')}`);
+  console.warn(`[${opts.tier === 'floor' ? 'floor' : 'tone-gate'}] ${what}: dropped (${Date.now() - started}ms) ${dropped.map(d => `"${redactLog(d)}"`).join(', ')}`);
   return { keep, dropped };
 }
 
@@ -909,11 +923,12 @@ async function gateThoughtByJudge(thought: string, opts: { judge?: ToneJudge; la
   const ctx: ToneContext = { children: opts.children, ownFeelings: opts.ownFeelings, people: opts.people, ...(opts.tier && opts.tier !== 'gentle' ? { tier: opts.tier } : {}), ...(opts.minors?.length ? { minors: opts.minors } : {}), ...(opts.protectedPeople?.length ? { protectedPeople: opts.protectedPeople } : {}) };
   const started = Date.now();
   const verdict = await judge(softened, 'thought', ctx);
+  noteJudgeSexualFloor(verdict, softened, what);
   if (!verdict || !verdict.flagged) {
     console.log(`[tone-gate] ${what}: ${verdict ? 'ok' : 'no verdict — kept as written'} (${Date.now() - started}ms)`);
     return softened;
   }
-  console.warn(`[tone-gate] ${what}: flagged (${Date.now() - started}ms) ${verdict.phrases.map(p => `"${p}"`).join(', ')}`);
+  console.warn(`[tone-gate] ${what}: flagged (${Date.now() - started}ms) ${verdict.phrases.map(p => `"${redactLog(p)}"`).join(', ')}`);
   // Round 17 (5YHBZS): the child's own fear is softened, never cut.
   let out = softened;
   const menace: string[] = [];
@@ -921,7 +936,7 @@ async function gateThoughtByJudge(thought: string, opts: { judge?: ToneJudge; la
     const unit = storyUnits(out).find(u => has(u, phrase));
     if (unit && FEAR.test(phrase) && !MENACE.test(phrase) && isOwnFear(unit, ctx)) {
       const gentler = softenOwnFear(unit);
-      console.log(`[tone-gate] ${what}: "${phrase}" is the child's own feeling — kept${gentler !== unit ? ', softened' : ''}`);
+      console.log(`[tone-gate] ${what}: "${redactLog(phrase)}" is the child's own feeling — kept${gentler !== unit ? ', softened' : ''}`);
       out = out.replace(unit, gentler);
     } else {
       menace.push(phrase);
