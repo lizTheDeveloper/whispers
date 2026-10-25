@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { clientIp, buildTrustedList, normalizeIp } from '../src/server/child-safety/trusted-ip.js';
-import { setSexualFloorHandler, resetSexualFloorSink, noteSexualFloor, redactLog, isWithheld, passageWindow, type SexualFloorFlag } from '../src/server/child-safety/sink.js';
+import { setSexualFloorHandler, resetSexualFloorSink, noteSexualFloor, redactLog, redactLine, installLogRedaction, isWithheld, passageWindow, type SexualFloorFlag } from '../src/server/child-safety/sink.js';
 import { enqueueEvidence, deliverDue, backoffMs, type EvidenceBody } from '../src/server/child-safety/outbox.js';
 import { ensureChildSafetyTables, buildEvidence, recordSeatIp, runInSafetyScope, withSafetyScope, fileFlag, seatId, purgeIpLog, resetRateLimit, RATE_MAX, RATE_WINDOW_MS } from '../src/server/child-safety/reporter.js';
 import { floorBackstop, withoutFloorBreaches, sexualFloorSentences } from '../src/server/safety-floor.js';
@@ -121,6 +121,31 @@ describe('log redaction', () => {
     noteSexualFloor({ items: ['the child', 'and'], detector: 'backstop', label: 'x', origin: 'human' });
     expect(isWithheld('the child')).toBe(false);
     expect(redactLog('and')).toBe('and');
+  });
+  it('call sites withhold the truncated forms logs print', () => {
+    const long = 'TEST FIXTURE: a long flagged sentence, the word sexual near the word child, that runs on well past one hundred and sixty characters so that a log line would only ever print a prefix of it.';
+    noteSexualFloor({ items: [long], detector: 'backstop', label: 'x', origin: 'ai' });
+    expect(isWithheld(long.slice(0, 160))).toBe(true);
+    expect(isWithheld(long.slice(0, 80))).toBe(true);
+  });
+  it('the global console filter withholds an exact flagged sentence, and leaves unrelated lines with common words alone', () => {
+    noteSexualFloor({ items: [FIXTURE], detector: 'backstop', label: 'x', origin: 'ai' });
+    const seen: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { seen.push(a.join(' ')); };
+    try {
+      installLogRedaction();
+      console.log(`[llm-client] reply: The room is quiet. ${FIXTURE} The lamp burns.`);
+      console.log(`[dm] "${FIXTURE}"`);
+      console.log('[game-loop] the child near the word sexual education poster is fine: the word child appears.');
+      console.log('[tone-gate] narration: ok (12ms)');
+    } finally { console.log = orig; }
+    expect(seen[0]).not.toContain('the word sexual near');
+    expect(seen[0]).toContain('The room is quiet.');
+    expect(seen[1]).not.toContain('the word sexual near');
+    expect(seen[2]).toBe('[game-loop] the child near the word sexual education poster is fine: the word child appears.');
+    expect(seen[3]).toBe('[tone-gate] narration: ok (12ms)');
+    expect(redactLine('and the child')).toBe('and the child');
   });
   it('long content is matched by its capped normal form', () => {
     const long = `TEST FIXTURE ${'x'.repeat(5000)}`;
@@ -257,25 +282,36 @@ describe('who the case names', () => {
     expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(1);
   });
 
-  it('rate limit: past RATE_MAX cases a seat files one held "N more suppressed" case, never silence', () => {
-    const s = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
+  it('rate limit: 60 rapid flags past the limit keep all evidence — 50 in full, 10 as hash + time — sent together', async () => {
+    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
     const t0 = 5 * RATE_WINDOW_MS + 1000;
-    for (let i = 0; i < RATE_MAX + 3; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} #${i}`] }, { scope: s, now: t0 + i });
-    const rows = db.prepare('SELECT external_ref, next_attempt_at FROM child_safety_outbox ORDER BY id').all() as Array<{ external_ref: string; next_attempt_at: number }>;
-    expect(rows).toHaveLength(RATE_MAX + 1);
-    const held = rows[RATE_MAX]!;
-    expect(held.next_attempt_at).toBe(5 * RATE_WINDOW_MS + RATE_WINDOW_MS);
-    // The held summary says how many were suppressed and keeps the latest text.
-    let summary: any = null;
-    const capture = (async (_u: string, init: RequestInit) => { const b = JSON.parse(init.body as string); if (b.content.startsWith('[rate limit]')) summary = b; return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
-    return (async () => {
-      await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, 7 * RATE_WINDOW_MS);
-      expect(summary.content).toContain('3 more safety-floor flags from this seat were suppressed');
-      expect(summary.content).toContain(`${FIXTURE} #${RATE_MAX + 2}`);
-      // Another IP on another seat is not limited by this one.
-      fileFlag(db, { ...flag, items: [`${FIXTURE} other`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: '198.51.100.8' }, now: t0 + 50 });
-      expect((db.prepare("SELECT COUNT(*) AS c FROM child_safety_outbox WHERE payload NOT LIKE '%rate limit%'").get() as { c: number }).c).toBe(1);
-    })();
+    for (let i = 0; i < RATE_MAX + 60; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} #${i}`] }, { scope: sc, now: t0 + i });
+    const top = db.prepare('SELECT external_ref, next_attempt_at FROM child_safety_outbox WHERE group_ref IS NULL ORDER BY id').all() as Array<{ external_ref: string; next_attempt_at: number }>;
+    expect(top).toHaveLength(RATE_MAX + 1);
+    expect(top[RATE_MAX]!.next_attempt_at).toBe(6 * RATE_WINDOW_MS); // held until the window closes
+    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox WHERE group_ref IS NOT NULL').get() as { c: number }).c).toBe(60);
+
+    // Nothing held goes out before the window closes.
+    const sent: any[] = [];
+    const capture = (async (_u: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return new Response(JSON.stringify({ caseId: `c${sent.length}` }), { status: 201 }); }) as unknown as typeof fetch;
+    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, t0 + 100);
+    expect(sent).toHaveLength(RATE_MAX);
+    await deliverDue(db, { url: 'u', token: 'tok', fetchImpl: capture, timeoutMs: 1000 }, 6 * RATE_WINDOW_MS);
+    const summary = sent.slice(RATE_MAX).map(b => b.content).join('\n');
+    expect(summary).toContain('60 safety-floor flags');
+    expect(summary).toContain('50 in full, 10 more');
+    for (let i = RATE_MAX; i < RATE_MAX + 50; i++) expect(summary).toContain(`${FIXTURE} #${i}\n`);
+    expect(summary.match(/sha256 [0-9a-f]{64}/g)).toHaveLength(10);
+    expect(summary).not.toContain(`${FIXTURE} #${RATE_MAX + 55}\n`);
+    // Delivered: the summary and every member row are gone together.
+    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c).toBe(0);
+  });
+
+  it('rate limit: another seat on another IP is not limited by this one', () => {
+    const sc = { campaignId: () => 'g1', seatToken: () => 'p2-tok', requestIp: '198.51.100.7' };
+    for (let i = 0; i < RATE_MAX + 2; i++) fileFlag(db, { ...flag, items: [`${FIXTURE} #${i}`] }, { scope: sc, now: 1000 + i });
+    fileFlag(db, { ...flag, items: [`${FIXTURE} other`] }, { scope: { campaignId: () => 'g1', seatToken: () => 'host-tok', requestIp: '198.51.100.8' }, now: 1100 });
+    expect((db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox WHERE group_ref IS NULL AND next_attempt_at <= 1100').get() as { c: number }).c).toBe(RATE_MAX + 1);
   });
 
   it('the IP log keeps one row per seat, IP and user agent, and purges after 90 days', () => {

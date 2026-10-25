@@ -7,6 +7,7 @@
  * approved later still makes an unchosen table gentle. See
  * src/shared/rating.ts for what each level does.
  */
+import { redactLog } from './child-safety/sink.js';
 import type Database from 'better-sqlite3';
 import { childrenInParty, wantsGentlePeril, type PartyMember } from './agents/dm.js';
 import { defaultContentRating, parseContentRating, type ContentRating } from '../shared/rating.js';
@@ -123,7 +124,7 @@ export function withoutUnsetRatingClaims(reply: string, actual: ContentRating, f
       if (new Set(levels).size >= 2) return true;
       const claimed = claimedLevels(sentence);
       if (claimed.length === 0 || claimed.every(c => c === actual)) return true;
-      console.log(`[dm-chat] the reply claims a rating it did not set (${claimed.join(', ')}; the table is ${actual}) — sentence removed: "${sentence.slice(0, 120)}"`);
+      console.log(`[dm-chat] the reply claims a rating it did not set (${claimed.join(', ')}; the table is ${actual}) — sentence removed: "${redactLog(sentence).slice(0, 120)}"`);
       changed = true;
       return false;
     });

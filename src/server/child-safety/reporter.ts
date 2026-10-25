@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { enqueueEvidence, upsertHeldEvidence, ensureOutboxTables, type EvidenceBody, type EvidenceIdentifier } from './outbox.js';
+import { enqueueEvidence, holdSuppressed, ensureOutboxTables, type EvidenceBody, type EvidenceIdentifier } from './outbox.js';
 import { contentSha256, setSexualFloorHandler, type SexualFloorFlag } from './sink.js';
 
 /**
@@ -257,16 +257,10 @@ export function fileFlag(db: Database.Database, flag: SexualFloorFlag, opts: { i
     if (over >= 0 && !opts.isTest) {
       const w = ws[over]!;
       w.suppressed++;
-      const ref = contentSha256(`suppressed\n${keys[over]}\n${w.start}`).slice(0, 40);
-      const summary: EvidenceBody = {
-        ...body,
-        content: `[rate limit] ${w.suppressed} more safety-floor ${w.suppressed === 1 ? 'flag' : 'flags'} from this ${keys[over]!.split(':')[0]} were suppressed in the ${RATE_WINDOW_MS / 60000}-minute window from ${new Date(w.start).toISOString()} (after ${RATE_MAX} cases were filed). The latest suppressed flag:\n\n${body.content}`,
-        reason: `${w.suppressed} more suppressed by the per-seat/IP rate limit. ${body.reason ?? ''}`,
-        externalRef: ref,
-      };
-      upsertHeldEvidence(db, summary, w.start + RATE_WINDOW_MS, undefined, now);
-      console.warn(`[child-safety] safety-floor flag (${flag.detector}, ${flag.label}) over the rate limit for ${keys[over]!.split(':')[0]}: ${w.suppressed} suppressed this window, summary ${ref.slice(0, 16)} held until the window closes`);
-      return summary;
+      const summaryRef = contentSha256(`suppressed\n${keys[over]}\n${w.start}`).slice(0, 40);
+      const r = holdSuppressed(db, { summaryRef, flag: body, deliverAt: w.start + RATE_WINDOW_MS, now });
+      console.warn(`[child-safety] safety-floor flag (${flag.detector}, ${flag.label}) over the rate limit for ${keys[over]!.split(':')[0]}: held ${r.full ? 'in full' : 'as hash + time'} with summary ${summaryRef.slice(0, 16)} (${r.held} held this window), delivered when the window closes`);
+      return body;
     }
     for (const w of ws) w.count++;
     const queued = enqueueEvidence(db, body, undefined, now);

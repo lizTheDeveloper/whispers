@@ -114,18 +114,40 @@ describe('child safety over the socket', () => {
   }, 30_000);
 });
 
-describe('child safety: bounded input', () => {
-  it('player text for the floor is capped in count and size, and one message files one case', async () => {
-    const { playerTextForFloor, WS_MAX_PAYLOAD } = await import('../src/server/index.js');
-    expect(WS_MAX_PAYLOAD).toBe(256 * 1024);
-    const big = { type: 'submit-character', definition: { aspects: Array.from({ length: 500 }, () => 'y'.repeat(10_000)) } };
-    const t = playerTextForFloor(big);
-    expect(t.length).toBeLessThanOrEqual(16_000);
-    expect(playerTextForFloor({ type: 'whisper', text: 'hello', joinCode: 'ABCDEF', sessionToken: 'secret' })).toBe('hello');
+describe('child safety: bounded input, scanned in full', () => {
+  it('player text is read whole; an over-cap message is flagged too long', async () => {
+    const { playerTextForFloor, PLAYER_TEXT_MAX_STRING, PLAYER_TEXT_MAX_TOTAL } = await import('../src/server/index.js');
+    expect(playerTextForFloor({ type: 'whisper', text: 'hello', joinCode: 'ABCDEF', sessionToken: 'secret' })).toEqual({ text: 'hello', tooLong: false });
+    expect(playerTextForFloor({ type: 'dm-chat', text: 'y'.repeat(PLAYER_TEXT_MAX_STRING + 1) }).tooLong).toBe(true);
+    expect(playerTextForFloor({ type: 'submit-character', definition: { aspects: Array.from({ length: 20 }, () => 'y'.repeat(PLAYER_TEXT_MAX_TOTAL / 10)) } }).tooLong).toBe(true);
+    const long = `${'The lantern flickers. '.repeat(800)}${FIXTURE}`;
+    expect(long.length).toBeGreaterThan(16_000);
+    expect(playerTextForFloor({ type: 'dm-chat', text: long }).text.endsWith(FIXTURE)).toBe(true);
+  });
 
+  it('an over-cap message is refused with a friendly error and never processed', async () => {
+    const { PLAYER_TEXT_MAX_STRING } = await import('../src/server/index.js');
+    received.length = 0;
+    const host = seatOn(await connect({}));
+    sendMsg(host.ws, { type: 'create', name: 'CS long', dmPreset: 'chronicler', systemId: 'fate-core', scenarioId: null, houseRules: null } as any);
+    const joined = await host.q.waitFor('room-joined', 10_000) as any;
+    const before = host.log.length;
+    // A flagged sentence placed past the cap: never processed, so never echoed into the setup chat.
+    sendMsg(host.ws, { type: 'dm-chat', text: `${'z'.repeat(PLAYER_TEXT_MAX_STRING)} ${FIXTURE}` } as any);
+    await waitUntil(() => host.log.slice(before).some(m => m.type === 'error'), 10_000, 'the too-long error');
+    const err = host.log.slice(before).find(m => m.type === 'error') as any;
+    expect(err.message).toMatch(/too long/i);
+    await new Promise(r => setTimeout(r, 300));
+    expect(host.log.slice(before).some(m => m.type === 'dm-chat-reply')).toBe(false);
+    const chat = getDb().prepare('SELECT setup_chat FROM campaigns WHERE id = ?').get(joined.campaignId) as { setup_chat: string | null };
+    expect(chat.setup_chat ?? '').not.toContain('zzzz');
+    host.ws.close();
+  }, 30_000);
+
+  it('a flagged sentence after the old 16k truncation point is caught; one message files one case', async () => {
     received.length = 0;
     const many = Array.from({ length: 25 }, (_, i) => `TEST FIXTURE ${i}: the word sexual near the word child.`).join(' ');
-    const { campaignId } = await hostSays({}, many);
+    const { campaignId } = await hostSays({}, `${'The lantern flickers. '.repeat(800)}${many}`);
     await deliverDue(getDb(), cfg(), Date.now() + 1);
     const cases = received.filter(b => b.gameRef === `whispers:${campaignId}`);
     expect(cases).toHaveLength(1);
@@ -133,9 +155,10 @@ describe('child safety: bounded input', () => {
   }, 60_000);
 
   it('a message over maxPayload is refused by the socket', async () => {
+    const { WS_MAX_PAYLOAD } = await import('../src/server/index.js');
     const ws = await connect({});
     const closed = new Promise<number>(r => ws.on('close', code => r(code)));
-    ws.send(JSON.stringify({ type: 'whisper', text: 'z'.repeat(300 * 1024) }));
+    ws.send(JSON.stringify({ type: 'whisper', text: 'z'.repeat(WS_MAX_PAYLOAD + 1024) }));
     expect(await closed).toBe(1009);
   }, 30_000);
 });

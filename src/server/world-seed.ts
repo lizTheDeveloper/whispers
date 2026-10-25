@@ -1,3 +1,4 @@
+import { redactLog } from './child-safety/sink.js';
 import { readFileSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import { WorldBible } from './world-bible.js';
@@ -274,7 +275,7 @@ export function withoutUnreadyClaim(reply: string, opts: { ready: boolean; fallb
     return p.split(SENTENCE_SPLIT).filter(sentence => {
       if (/\?["”’']?\s*$/.test(sentence) || !READY_CLAIM.test(sentence)) return true;
       dropped++;
-      console.log(`[dm-chat] the reply claims the game is ready while readiness has unmet items — sentence removed: "${sentence.slice(0, 120)}"`);
+      console.log(`[dm-chat] the reply claims the game is ready while readiness has unmet items — sentence removed: "${redactLog(sentence).slice(0, 120)}"`);
       return false;
     }).join(' ');
   }).join('').replace(/\n{3,}/g, '\n\n').trim();

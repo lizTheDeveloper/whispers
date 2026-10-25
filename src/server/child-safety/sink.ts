@@ -8,10 +8,14 @@ import { createHash } from 'node:crypto';
  * phrase in it — and the server installs the handler that files the case in
  * the child-safety evidence vault (reporter.ts). Tests install a spy.
  *
- * The same module keeps the flagged text out of Whispers' own logs: the call
- * sites that log flagged sentences or phrases pass them through redactLog(),
- * which withholds an exact (normalised) match of anything reported here.
- * Nothing else is touched: no global console hook, no substring matching.
+ * The same module keeps the flagged text out of Whispers' own logs, in two
+ * layers, both by hash of the exact (normalised) flagged text — never by
+ * substring, so common words never hide a line:
+ *  - call sites that log model or player text pass it through redactLog()
+ *    (which also knows the truncated forms the logs print: the first 80 and
+ *    160 characters);
+ *  - installLogRedaction() wraps the console as a backstop: any quoted run
+ *    or sentence of a log line whose hash is a flagged sentence's is withheld.
  */
 
 export type FloorDetector = 'backstop' | 'judge';
@@ -49,7 +53,7 @@ export function contentSha256(text: string): string {
 
 const norm = (s: string) => (s ?? '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, MAX_NORM);
 
-function remember(text: string): void {
+function rememberOne(text: string): void {
   const n = norm(text);
   if (n.length < MIN_REDACT) return;
   const h = contentSha256(n);
@@ -58,6 +62,22 @@ function remember(text: string): void {
   recentHashes.push(h);
   if (recentHashes.length > RECENT_MAX) recentSet.delete(recentHashes.shift()!);
 }
+
+/** A sentence split good enough for log lines. */
+function sentencesOf(text: string): string[] {
+  return text.split(/(?<=[.!?…])\s+|\n+/).map(t => t.trim()).filter(Boolean);
+}
+
+/** The flagged text, each of its sentences, and the truncated forms logs print. */
+function remember(text: string): void {
+  for (const t of [text, ...sentencesOf(text)]) {
+    rememberOne(t);
+    for (const n of TRUNCATIONS) if (t.length > n) rememberOne(t.slice(0, n));
+  }
+}
+
+/** The prefixes call sites print ("…".slice(0, N)). */
+const TRUNCATIONS = [60, 80, 120, 160];
 
 /** True when `text` is (after normalisation) exactly something reported to the vault. */
 export function isWithheld(text: string): boolean {
@@ -116,6 +136,30 @@ export function passageWindow(passage: string, items: string[]): string {
     out += (out ? '\n' : '') + piece;
   }
   return out;
+}
+
+/**
+ * A log line with every quoted run or sentence that hashes to flagged text
+ * withheld. Exact matches only.
+ */
+export function redactLine(line: string): string {
+  if (recentSet.size === 0 || typeof line !== 'string' || line.length < MIN_REDACT) return line;
+  let out = line.replace(/"([^"\n]{12,})"/g, (whole, inner: string) => (isWithheld(inner) ? `"${withheld(inner)}"` : whole));
+  for (const sentence of sentencesOf(out)) {
+    if (isWithheld(sentence)) out = out.replace(sentence, withheld(sentence));
+  }
+  return isWithheld(out) ? withheld(out) : out;
+}
+
+let consoleWrapped = false;
+/** Defence in depth: every console line goes through redactLine (a no-op while nothing is flagged). */
+export function installLogRedaction(): void {
+  if (consoleWrapped) return;
+  consoleWrapped = true;
+  for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+    const orig = console[level].bind(console);
+    console[level] = (...args: unknown[]) => orig(...(recentSet.size === 0 ? args : args.map(a => (typeof a === 'string' ? redactLine(a) : a))));
+  }
 }
 
 /** For tests. */

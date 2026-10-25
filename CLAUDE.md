@@ -49,11 +49,17 @@ Multiplayer agentic TTRPG. AI agents play characters, humans whisper to influenc
   → the seat playing it; DM narration → the only human seat, else nobody). Verified = what this
   server authenticated (IPs via trusted proxies only, the seat's server-issued token, hashed).
   Player names are client-claimed → unverified. Co-players are always `role: participant`.
-- One case per checked text (all its flagged sentences, a bounded passage window); player text
-  is capped per message; at most 5 cases per seat and per IP per 10 minutes, then one held
-  "N more suppressed" case. Call sites that log flagged sentences/phrases use `redactLog`
-  (exact normalised match, ≥12 chars). Client IPs come from `child-safety/trusted-ip.ts`
-  (prod: only Traefik's 172.30.42.3 on llm-relay); never read `X-Forwarded-For` directly.
+- One case per checked text (all its flagged sentences, a bounded passage window). Player text in
+  a socket message is scanned in FULL; a message over the caps (`PLAYER_TEXT_MAX_*`, 512 KiB
+  socket `maxPayload`) is refused unprocessed with "too long". Rate limit: 5 cases per seat and
+  per IP per 10 minutes; past that every flag is still kept — as its own held row linked to one
+  summary case, in full up to 50 per window then as SHA-256 + time — and sent together when the
+  window closes (split into parts under RI's 100k content limit; nothing overwritten).
+- Logs: call sites that print model or player text use `redactLog` (exact normalised hash match,
+  ≥12 chars, incl. the 60/80/120/160-char prefixes logs print), and `installLogRedaction` filters
+  every console line by the hashes of exact flagged sentences / quoted runs as a backstop.
+- Client IPs come from `child-safety/trusted-ip.ts` (prod: only Traefik's 172.30.42.3 on
+  llm-relay); never read `X-Forwarded-For` directly.
 - Check prod with the synthetic hook: `POST /whispers/api/internal/child-safety/synthetic` with
   `Authorization: Bearer $CHILD_SAFETY_INGEST_TOKEN` — files an `isTest` case; delete it in RI.
 

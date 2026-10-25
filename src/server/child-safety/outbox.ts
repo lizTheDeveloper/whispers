@@ -57,9 +57,11 @@ export function ensureOutboxTables(db: Database.Database): void {
       attempts INTEGER NOT NULL DEFAULT 0,
       next_attempt_at INTEGER NOT NULL,
       last_error TEXT,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      group_ref TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_child_safety_outbox_next ON child_safety_outbox(next_attempt_at);
+    CREATE INDEX IF NOT EXISTS idx_child_safety_outbox_group ON child_safety_outbox(group_ref);
   `);
 }
 
@@ -68,7 +70,7 @@ function keyFor(token: string): { id: string; key: Buffer } {
   return { id: createHash('sha256').update(key).digest('hex').slice(0, 12), key };
 }
 
-function seal(body: EvidenceBody, token: string | undefined): { keyId: string; payload: string } {
+function seal(body: unknown, token: string | undefined): { keyId: string; payload: string } {
   const json = JSON.stringify(body);
   if (!token) return { keyId: 'none', payload: json };
   const { id, key } = keyFor(token);
@@ -78,7 +80,7 @@ function seal(body: EvidenceBody, token: string | undefined): { keyId: string; p
   return { keyId: id, payload: [iv, cipher.getAuthTag(), ct].map(b => b.toString('base64')).join('.') };
 }
 
-function open(keyId: string, payload: string, token: string | undefined): EvidenceBody {
+function open<T = EvidenceBody>(keyId: string, payload: string, token: string | undefined): T {
   if (keyId === 'none') return JSON.parse(payload);
   if (!token) throw new Error('no ingest token to decrypt the pending case');
   const { id, key } = keyFor(token);
@@ -116,16 +118,69 @@ export function enqueueEvidence(db: Database.Database, body: EvidenceBody, token
   return r.changes > 0;
 }
 
+/** A flag held back by the rate limit: in full up to the cap, then its hash and time only. */
+type HeldMember =
+  | { kind: 'full'; content: string; incidentAt: number; ipAddress: string | null; userAgent: string | null; reason: string | null }
+  | { kind: 'hash'; sha256: string; incidentAt: number };
+
+/** Per summary case (one per seat or IP and window), this many suppressed flags are kept in full. */
+export const HELD_FULL_CAP = 50;
+/** Never "due" on its own: a member row goes out with its summary. */
+const NEVER = Number.MAX_SAFE_INTEGER;
+/** RI keeps at most 100k characters of content; parts stay well under. */
+const PART_MAX = 90_000;
+
 /**
- * Insert or replace a case that is held until `deliverAt` (the rate limit's
- * "N more suppressed" summary, updated as the count grows). Once it has been
- * tried it is left alone.
+ * Hold one suppressed flag. Nothing is overwritten: the summary row (created
+ * once, due when the window closes) carries the first suppressed flag's
+ * identifiers and context, and every suppressed flag is its own member row
+ * linked to it — in full up to HELD_FULL_CAP, then as a SHA-256 and a time.
+ * At delivery the summary and its members are sent together.
  */
-export function upsertHeldEvidence(db: Database.Database, body: EvidenceBody, deliverAt: number, token: string | undefined = process.env.CHILD_SAFETY_INGEST_TOKEN || undefined, now = Date.now()): void {
-  const { keyId, payload } = seal(body, token);
-  db.prepare(`INSERT INTO child_safety_outbox (external_ref, key_id, payload, next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(external_ref) DO UPDATE SET key_id = excluded.key_id, payload = excluded.payload WHERE child_safety_outbox.attempts = 0`)
-    .run(body.externalRef, keyId, payload, deliverAt, now);
+export function holdSuppressed(db: Database.Database, opts: { summaryRef: string; flag: EvidenceBody; deliverAt: number; token?: string; now?: number }): { held: number; full: boolean } {
+  const token = opts.token ?? (process.env.CHILD_SAFETY_INGEST_TOKEN || undefined);
+  const now = opts.now ?? Date.now();
+  return db.transaction(() => {
+    const base = seal({ ...opts.flag, externalRef: opts.summaryRef }, token);
+    db.prepare('INSERT OR IGNORE INTO child_safety_outbox (external_ref, key_id, payload, next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(opts.summaryRef, base.keyId, base.payload, opts.deliverAt, now);
+    const n = (db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox WHERE group_ref = ?').get(opts.summaryRef) as { c: number }).c;
+    const full = n < HELD_FULL_CAP;
+    const member: HeldMember = full
+      ? { kind: 'full', content: opts.flag.content, incidentAt: opts.flag.incidentAt, ipAddress: opts.flag.ipAddress, userAgent: opts.flag.userAgent, reason: opts.flag.reason ?? null }
+      : { kind: 'hash', sha256: createHash('sha256').update(opts.flag.content, 'utf8').digest('hex'), incidentAt: opts.flag.incidentAt };
+    const m = seal(member, token);
+    db.prepare('INSERT OR IGNORE INTO child_safety_outbox (external_ref, key_id, payload, next_attempt_at, created_at, group_ref) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(`${opts.summaryRef}:m:${opts.flag.externalRef}`, m.keyId, m.payload, NEVER, now, opts.summaryRef);
+    return { held: n + 1, full };
+  })();
+}
+
+/** The bodies one held summary goes out as: one case, split into parts only to fit RI's content limit. */
+function summaryParts(base: EvidenceBody, members: HeldMember[]): EvidenceBody[] {
+  const fullN = members.filter(m => m.kind === 'full').length;
+  const hashN = members.length - fullN;
+  const header = `[rate limit] ${members.length} safety-floor ${members.length === 1 ? 'flag' : 'flags'} from this sender ${members.length === 1 ? 'was' : 'were'} held back by the per-seat/IP rate limit and are filed together here: ${fullN} in full${hashN ? `, ${hashN} more (over the cap of ${HELD_FULL_CAP} per window) as SHA-256 and time only` : ''}.`;
+  const entries = members.map((m, i) => m.kind === 'full'
+    ? `### Held flag ${i + 1} — ${new Date(m.incidentAt).toISOString()}${m.ipAddress ? ` — IP ${m.ipAddress}` : ''}${m.userAgent ? ` — UA ${m.userAgent}` : ''}\n${m.content}`
+    : `### Held flag ${i + 1} — ${new Date(m.incidentAt).toISOString()} — sha256 ${m.sha256} (content not kept: over the per-window cap)`);
+  // A flag longer than a part is split across parts; nothing is cut.
+  const step = PART_MAX - 1000;
+  const chunks: string[] = [];
+  for (const e of entries) for (let i = 0; i < e.length; i += step) chunks.push(i === 0 ? e.slice(0, step) : `(continued) ${e.slice(i, i + step)}`);
+  const parts: string[] = [];
+  let cur = header;
+  for (const c of chunks) {
+    if (cur.length + c.length + 2 > PART_MAX) { parts.push(cur); cur = header; }
+    cur += `\n\n${c}`;
+  }
+  parts.push(cur);
+  return parts.map((content, k) => ({
+    ...base,
+    content: parts.length > 1 ? `[part ${k + 1} of ${parts.length}] ${content}` : content,
+    reason: `${members.length} held by the rate limit. ${base.reason ?? ''}`,
+    externalRef: parts.length > 1 ? `${base.externalRef}:p${k + 1}of${parts.length}` : base.externalRef,
+  }));
 }
 
 /** Backoff after `attempts` failures: 30s, 1m, 2m, … capped at 6h. */
@@ -137,7 +192,7 @@ export interface DeliveryResult { delivered: number; failed: number; pending: nu
 
 /** One pass: post every due row. Never throws. */
 export async function deliverDue(db: Database.Database, cfg: OutboxConfig, now = Date.now()): Promise<DeliveryResult> {
-  const rows = db.prepare('SELECT id, external_ref, key_id, payload, attempts FROM child_safety_outbox WHERE next_attempt_at <= ? ORDER BY id LIMIT 50').all(now) as Array<{ id: number; external_ref: string; key_id: string; payload: string; attempts: number }>;
+  const rows = db.prepare('SELECT id, external_ref, key_id, payload, attempts FROM child_safety_outbox WHERE next_attempt_at <= ? AND group_ref IS NULL ORDER BY id LIMIT 50').all(now) as Array<{ id: number; external_ref: string; key_id: string; payload: string; attempts: number }>;
   const result: DeliveryResult = { delivered: 0, failed: 0, pending: 0, caseIds: [] };
   const fail = (row: { id: number; attempts: number; external_ref: string }, why: string) => {
     const attempts = row.attempts + 1;
@@ -148,29 +203,37 @@ export async function deliverDue(db: Database.Database, cfg: OutboxConfig, now =
   };
   for (const row of rows) {
     if (!cfg.token) { fail(row, 'CHILD_SAFETY_INGEST_TOKEN is not set'); continue; }
-    let body: EvidenceBody;
-    try { body = open(row.key_id, row.payload, cfg.token); } catch (e) { fail(row, e instanceof Error ? e.message : String(e)); continue; }
+    let bodies: EvidenceBody[];
     try {
-      const res = await cfg.fetchImpl(cfg.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.token}` },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(cfg.timeoutMs),
-      });
-      if (res.ok) {
+      const body = open(row.key_id, row.payload, cfg.token);
+      const members = db.prepare('SELECT key_id, payload FROM child_safety_outbox WHERE group_ref = ? ORDER BY id').all(row.external_ref) as Array<{ key_id: string; payload: string }>;
+      bodies = members.length > 0 ? summaryParts(body, members.map(m => open<HeldMember>(m.key_id, m.payload, cfg.token))) : [body];
+    } catch (e) { fail(row, e instanceof Error ? e.message : String(e)); continue; }
+    try {
+      const ids: string[] = [];
+      let failed: string | null = null;
+      for (const body of bodies) {
+        const res = await cfg.fetchImpl(cfg.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.token}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(cfg.timeoutMs),
+        });
+        // A part already filed answers with its existing case (idempotent), so a retry re-sends safely.
+        if (!res.ok) { failed = `HTTP ${res.status}`; break; }
         const json = await res.json().catch(() => ({})) as { caseId?: string };
-        db.prepare('DELETE FROM child_safety_outbox WHERE id = ?').run(row.id);
-        if (json.caseId) result.caseIds.push(json.caseId);
-        console.log(`[child-safety] evidence ${row.external_ref.slice(0, 16)} filed in the vault as case ${json.caseId ?? '(no id)'}`);
-        result.delivered++;
-      } else {
-        fail(row, `HTTP ${res.status}`);
+        if (json.caseId) ids.push(json.caseId);
       }
+      if (failed) { fail(row, failed); continue; }
+      db.prepare('DELETE FROM child_safety_outbox WHERE id = ? OR group_ref = ?').run(row.id, row.external_ref);
+      result.caseIds.push(...ids);
+      console.log(`[child-safety] evidence ${row.external_ref.slice(0, 16)} filed in the vault as case ${ids.join(', ') || '(no id)'}`);
+      result.delivered++;
     } catch (e) {
       fail(row, e instanceof Error ? e.message : String(e));
     }
   }
-  result.pending = (db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox').get() as { c: number }).c;
+  result.pending = (db.prepare('SELECT COUNT(*) AS c FROM child_safety_outbox WHERE group_ref IS NULL').get() as { c: number }).c;
   return result;
 }
 
