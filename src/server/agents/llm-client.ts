@@ -153,7 +153,7 @@ function tryRepairJson(text: string): { json: string; truncated: boolean } | nul
 }
 
 // ---------------------------------------------------------------------------
-// Truncation. The proxy forwards to a reasoning model (gpt-oss-120b on Groq),
+// Truncation. The proxy forwards to a reasoning model (gpt-oss-120b on OpenRouter),
 // whose hidden reasoning tokens count against max_tokens: too small a budget
 // and the visible reply stops mid-sentence (or comes back empty) with no
 // error anywhere. The proxy (/api/llm/think) currently returns only { text } —
